@@ -286,7 +286,7 @@ function findPriceLevels(bars, last) {
   };
   return { supports: nearest(supports, false), resistances: nearest(resistances, true) };
 }
-function analyseTechnicals(bars) {
+function analyseTechnicals(bars, levelBars = bars) {
   const usable = (bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
   const values = usable.map(bar => Number(bar.close));
   if (values.length < 30) return null;
@@ -329,7 +329,7 @@ function analyseTechnicals(bars) {
   const buy = Object.values(signals).filter(value => value === 'ซื้อ').length;
   const sell = Object.values(signals).filter(value => value === 'ขาย').length;
   const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
-  const levels = findPriceLevels(usable, last);
+  const levels = findPriceLevels(levelBars || usable, last);
   return { values, rsi, sma20, emas, macd: macd.at(-1), macdSignal: signalLine.at(-1), last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 7 };
 }
 function updateSignalDonut(buy, hold, sell, total) {
@@ -345,8 +345,8 @@ function updateSignalDonut(buy, hold, sell, total) {
   donut.setAttribute('aria-label', safeTotal ? `สัดส่วนสัญญาณ ซื้อ ${counts[0]} ถือ ${counts[1]} ขาย ${counts[2]} จาก ${safeTotal} สัญญาณ` : 'ยังไม่มีข้อมูลพอสรุปสัญญาณ');
 }
 
-function drawSignals(bars) {
-  const analysis = analyseTechnicals(bars);
+function drawSignals(bars, levelBars = bars) {
+  const analysis = analyseTechnicals(bars, levelBars);
   if (!analysis) {
     setText('#analysis-note', `ได้รับข้อมูล ${(bars || []).length} จุด ต้องมีอย่างน้อย 30 แท่งเพื่อสรุปสัญญาณ`);
     $('#technical-reasons').innerHTML = '<p class="reason-empty">ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยให้ครบ</p>';
@@ -475,7 +475,7 @@ function updateStockCards(rows) {
   setText('#chart-meta', `SET:${activeSymbol} · ${activeName} · THB`);
   updateWatchlistAddButton();
   setText('#history-count', String(latestMarket?.history?.length || 0));
-  drawSignals(latestMarket?.history || []);
+  drawSignals(latestMarket?.history || [], latestMarket?.levelsHistory || latestMarket?.history || []);
 }
 async function getMarket() {
   try {
