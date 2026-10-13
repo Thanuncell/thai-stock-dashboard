@@ -6,15 +6,20 @@ const DEFAULT_WATCHLIST = [
   { symbol: 'CPALL', name: 'ซีพี ออลล์' }
 ];
 const MAX_WATCHLIST = 30;
+const MAX_WATCHLISTS = 5;
 const THAI_NAMES = Object.fromEntries(DEFAULT_WATCHLIST.map(x => [x.symbol, x.name]));
 const $ = selector => document.querySelector(selector);
 const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-let watchlist = loadWatchlist();
+let watchlists = loadWatchlists();
+let activeWatchlistId = localStorage.getItem('setscope-active-watchlist') || 'list-1';
+if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
+let watchlist = currentWatchlist().items;
 let activeSymbol = watchlist[0]?.symbol || 'PTT';
 let activeName = watchlist[0]?.name || 'ปตท.';
 let latestMarket = null;
 let activeSource = 'all';
+let latestNews = [];
 let searchTimer;
 let searchSequence = 0;
 let currentRange = '1D';
@@ -27,16 +32,39 @@ function readLocal(key, fallback) {
   try { const value = JSON.parse(localStorage.getItem(key)); return value ?? fallback; } catch (_) { return fallback; }
 }
 
-function loadWatchlist() {
+function loadWatchlists() {
   try {
-    const saved = JSON.parse(localStorage.getItem('setscope-watchlist') || 'null');
-    if (Array.isArray(saved)) {
-      return saved.filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(x.symbol || '')).slice(0, MAX_WATCHLIST);
+    const savedLists = JSON.parse(localStorage.getItem('setscope-watchlists') || 'null');
+    if (Array.isArray(savedLists) && savedLists.length) {
+      return savedLists.slice(0, MAX_WATCHLISTS).map((list, i) => ({ id: list.id || `list-${i + 1}`, name: list.name || `Watchlist ${i + 1}`, items: (Array.isArray(list.items) ? list.items : []).filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(x.symbol || '')).slice(0, MAX_WATCHLIST) }));
     }
   } catch (_) {}
-  return DEFAULT_WATCHLIST.map(x => ({ ...x }));
+  let legacy = DEFAULT_WATCHLIST;
+  try { const old = JSON.parse(localStorage.getItem('setscope-watchlist') || 'null'); if (Array.isArray(old)) legacy = old; } catch (_) {}
+  const first = legacy.filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(x.symbol || '')).slice(0, MAX_WATCHLIST);
+  const lists = [{ id: 'list-1', name: 'Watchlist 1', items: first }];
+  localStorage.setItem('setscope-watchlists', JSON.stringify(lists));
+  return lists;
 }
-function saveWatchlist() { localStorage.setItem('setscope-watchlist', JSON.stringify(watchlist)); }
+function currentWatchlist() { return watchlists.find(list => list.id === activeWatchlistId) || watchlists[0]; }
+function saveWatchlist() { currentWatchlist().items = watchlist; localStorage.setItem('setscope-watchlists', JSON.stringify(watchlists)); localStorage.setItem('setscope-watchlist', JSON.stringify(watchlist)); localStorage.setItem('setscope-active-watchlist', activeWatchlistId); }
+function renderWatchlistPicker() {
+  const selected = currentWatchlist();
+  const options = watchlists.map(list => `<option value="${escapeHtml(list.id)}" ${list.id === selected.id ? 'selected' : ''}>${escapeHtml(list.name)} (${list.items.length})</option>`).join('');
+  ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => { const el = $(selector); if (el) el.innerHTML = options; });
+  let create = $('#watchlist-create');
+  if (!create) { create = document.createElement('button'); create.id = 'watchlist-create'; create.type = 'button'; create.className = 'watchlist-create'; create.textContent = '+ ใหม่'; $('#watchlist-select')?.parentElement?.append(create); }
+  create.disabled = watchlists.length >= MAX_WATCHLISTS;
+  create.title = watchlists.length >= MAX_WATCHLISTS ? 'สร้างได้สูงสุด 5 Watchlist' : 'สร้าง Watchlist ใหม่';
+  const mobileCreate = $('#watchlist-create-mobile');
+  if (mobileCreate) { mobileCreate.disabled = create.disabled; mobileCreate.title = create.title; }
+}
+function switchWatchlist(id) {
+  const chosen = watchlists.find(list => list.id === id); if (!chosen) return;
+  activeWatchlistId = id; watchlist = chosen.items; localStorage.setItem('setscope-active-watchlist', id);
+  if (watchlist.length && !watchlist.some(item => item.symbol === activeSymbol)) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; updateTradingViewChart(); }
+  renderWatchlistPicker(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateWatchlistAddButton(); getMarket();
+}
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
@@ -55,8 +83,6 @@ function updateWatchlistAddButton() {
   const saved = watchlist.some(item => item.symbol === activeSymbol);
   button.disabled = saved;
   button.textContent = saved ? '✓ อยู่ใน Watchlist' : '＋ เพิ่มเข้า Watchlist';
-  const sidebarButton = $('#add-watchlist');
-  if (sidebarButton) sidebarButton.disabled = saved;
 }
 
 function renderWatchlist(rows = []) {
@@ -73,6 +99,7 @@ function renderWatchlist(rows = []) {
   }).join('') : '<div class="watch-empty">ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist</div>';
   $('#watchlist').innerHTML = markup;
   $('#watchlist-mobile').innerHTML = markup;
+  renderWatchlistPicker();
   setText('.nav-count', String(watchlist.length));
   setText('#watch-metric', String(watchlist.length));
   updateWatchlistAddButton();
@@ -173,6 +200,7 @@ async function selectStock(symbol, name = symbol) {
   renderWatchlist(latestMarket?.stocks || []);
   $('#stock-search').value = '';
   hideSuggestions();
+  renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
   updateTradingViewChart();
   await getMarket();
 }
@@ -185,8 +213,26 @@ async function addActiveToWatchlist() {
   if (!watchlist.some(item => item.symbol === symbol)) watchlist.push({ symbol, name: activeName || symbol });
   saveWatchlist();
   renderWatchlist(latestMarket?.stocks || []);
+  renderMovers(latestMarket?.stocks || []);
   renderAlertSettings();
   await getMarket();
+}
+
+function createWatchlist() {
+  if (watchlists.length >= MAX_WATCHLISTS) return;
+  const id = `list-${Date.now()}`, name = `Watchlist ${watchlists.length + 1}`;
+  watchlists.push({ id, name, items: [] }); activeWatchlistId = id; watchlist = currentWatchlist().items;
+  saveWatchlist(); renderWatchlistPicker(); renderWatchlist(); renderAlertSettings(); renderMovers([]); getMarket();
+}
+
+let moverMode = 'up';
+function renderMovers(rows = []) {
+  const list = $('#mover-list'); if (!list) return;
+  const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
+  const values = watchlist.map(item => ({ ...item, quote: bySymbol[item.symbol] })).filter(item => item.quote && Number.isFinite(Number(item.quote.last)));
+  const pct = item => Number(item.quote.prior) ? (Number(item.quote.last) - Number(item.quote.prior)) / Number(item.quote.prior) * 100 : 0;
+  values.sort((a, b) => moverMode === 'up' ? pct(b) - pct(a) : moverMode === 'down' ? pct(a) - pct(b) : Number(b.quote.volume || 0) - Number(a.quote.volume || 0));
+  list.innerHTML = values.length ? values.map(item => { const change = Number(item.quote.last) - Number(item.quote.prior || 0); return `<button class="mover-row" type="button" data-mover-symbol="${escapeHtml(item.symbol)}" data-mover-name="${escapeHtml(item.name)}"><span><b>${escapeHtml(item.symbol)}</b><small>${escapeHtml(item.name)}</small></span><span class="mover-quote"><b>${number(item.quote.last)}</b><small class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${pct(item).toFixed(2)}%</small></span></button>`; }).join('') : '<div class="mover-empty">ยังไม่มีข้อมูลหุ้นใน Watchlist นี้</div>';
 }
 
 function computeEma(values, period) {
@@ -320,7 +366,8 @@ function drawSignals(bars) {
 function getAlertPref(symbol) { return alertPrefs[symbol] || { technical: true, above: '', below: '' }; }
 function renderAlertSettings() {
   const root = $('#alerts-settings');
-  if (!watchlist.length) { root.innerHTML = '<p class="alert-empty">เพิ่มหุ้นเข้า Watchlist ก่อนตั้งการเตือน</p>'; return; }
+  setText('#alerts-scope', `${currentWatchlist().name} · แจ้งเตือนเฉพาะหุ้นในรายการนี้ · ทำงานเมื่อเปิดเว็บไว้`);
+  if (!watchlist.length) { root.innerHTML = `<p class="alert-empty">${escapeHtml(currentWatchlist().name)} ยังไม่มีหุ้น · เพิ่มหุ้นก่อนตั้งการเตือน</p>`; return; }
   root.innerHTML = watchlist.map(item => {
     const pref = getAlertPref(item.symbol);
     return `<article class="alert-stock-setting" data-alert-symbol="${escapeHtml(item.symbol)}"><header><b>${escapeHtml(item.symbol)}</b><span>${escapeHtml(item.name || item.symbol)}</span></header><label class="alert-check"><input type="checkbox" data-field="technical" ${pref.technical ? 'checked' : ''}> เตือนเมื่อสัญญาณเทคนิคเปลี่ยนเป็นซื้อ/ขาย</label><div class="alert-price-fields"><label>สูงกว่า<input type="number" min="0" step="0.01" data-field="above" value="${escapeHtml(pref.above)}" placeholder="ไม่ตั้ง"></label><label>ต่ำกว่า<input type="number" min="0" step="0.01" data-field="below" value="${escapeHtml(pref.below)}" placeholder="ไม่ตั้ง"></label></div></article>`;
@@ -335,10 +382,10 @@ function renderAlertHistory() {
 }
 function updateNotificationStatus() {
   const permission = 'Notification' in window ? Notification.permission : 'unsupported';
-  const text = permission === 'granted' ? 'อนุญาตแล้ว · แจ้งเมื่อเปิดเว็บค้างไว้' : permission === 'denied' ? 'ถูกปิดกั้นโดยเบราว์เซอร์ · ปรับได้จากการตั้งค่าเว็บไซต์' : permission === 'unsupported' ? 'เบราว์เซอร์นี้ไม่รองรับแจ้งเตือนนอกหน้าเว็บ' : 'ยังไม่ได้อนุญาต · รายการแจ้งเตือนในหน้านี้ยังใช้ได้';
+  const text = permission === 'granted' ? 'เปิดอยู่ · แจ้งเตือนระหว่างเปิด SETscope ไว้' : permission === 'denied' ? 'เบราว์เซอร์ปิดสิทธิ์ไว้ · เปิดได้จากการตั้งค่าเว็บไซต์' : permission === 'unsupported' ? 'เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือนบนเดสก์ท็อป' : 'ปิดอยู่ · การแจ้งเตือนในหน้านี้ยังทำงานได้';
   setText('#notification-status', text);
-  setText('#notification-permission', permission === 'granted' ? 'เปิดรับแจ้งเตือนแล้ว' : 'อนุญาตการแจ้งเตือนบนเบราว์เซอร์');
-  $('#notification-permission').disabled = permission === 'granted' || permission === 'unsupported';
+  setText('#notification-permission', permission === 'granted' ? '✓ เปิดแจ้งเตือนบนเบราว์เซอร์แล้ว' : permission === 'denied' ? 'เบราว์เซอร์ปิดสิทธิ์การแจ้งเตือน' : 'เปิดแจ้งเตือนบนเบราว์เซอร์');
+  $('#notification-permission').disabled = permission === 'granted' || permission === 'unsupported' || permission === 'denied';
 }
 function recordAlert(symbol, title, body) {
   const item = { symbol, title, body, time: new Date().toISOString() };
@@ -346,7 +393,7 @@ function recordAlert(symbol, title, body) {
   localStorage.setItem('setscope-alert-history', JSON.stringify(alertHistory));
   if ($('#alerts-panel').hidden) unreadAlerts++;
   if ('Notification' in window && Notification.permission === 'granted') {
-    try { new Notification(`${symbol} · ${title}`, { body, tag: `setscope-${symbol}-${title}` }); } catch (_) {}
+    try { new Notification(`SETscope  ·  ${symbol}`, { body: `${title} — ${body}`, tag: `setscope-${symbol}-${title}` }); } catch (_) {}
   }
   renderAlertHistory();
 }
@@ -406,6 +453,7 @@ async function getMarket() {
     const stocks = data.stocks || [];
     evaluateWatchlistAlerts(stocks);
     updateStockCards(stocks);
+    renderMovers(stocks);
     const index = (data.indices || []).find(item => item.symbol === 'SET');
     if (index && Number(index.last) > 0) {
       const change = Number(index.last) - Number(index.prior);
@@ -427,12 +475,18 @@ async function getNews() {
   try {
     const response = await fetch('/api/news'); const data = await response.json();
     if (!response.ok) throw new Error(data.error);
-    renderNews((data.items || []).filter(item => activeSource === 'all' || item.source === activeSource));
+    latestNews = data.items || [];
+    renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
     setNewsStatus(`ดึงฟีดล่าสุด · ${stamp(data.fetchedAt)}`);
   } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · เปิดเว็บไซต์ต้นทางจากลิงก์ด้านบน'); }
 }
 function renderNews(items) {
-  $('#news-list').innerHTML = items.length ? items.map(item => `<a class="news-item" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none"><div><div class="news-title">${escapeHtml(item.title)}</div><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName)}</span><span class="demo-tag">ข่าวล่าสุด · ต้นทาง</span></div></div><span class="news-time">${escapeHtml(stamp(item.pubDate))} ↗</span></a>`).join('') : '<div class="news-item"><div class="news-title">ไม่มีข่าวจากตัวกรองนี้ในขณะนี้</div></div>';
+  const positive = /(กำไรเพิ่ม|กำไรพุ่ง|โตเด่น|เติบโต|บวก|รับอานิสงส์|ปรับขึ้น|เพิ่มขึ้น|ยอดขายโต|ซื้อคืน|ปันผลเพิ่ม|ผ่านจุดต่ำสุด|ฟื้นตัว|ชนะประมูล|คว้างาน|กำไรสุทธิ.*เพิ่ม)/i;
+  const negative = /(ขาดทุน|กำไรลด|กำไรวูบ|ร่วง|ลดลง|หดตัว|ปิดลบ|ผิดนัด|ถูกฟ้อง|คดี|เพิ่มทุน|ลดเป้า|เลื่อนโครงการ|ผลกระทบ|คว่ำบาตร|ภัยแล้ง|ต้นทุนพุ่ง)/i;
+  const title = item => String(item.title || '');
+  const sentiment = item => positive.test(title(item)) && !negative.test(title(item)) ? 'บวก' : negative.test(title(item)) && !positive.test(title(item)) ? 'ลบ' : 'เป็นกลาง';
+  const relevance = item => { const text = title(item).toLocaleUpperCase('th-TH'); const symbol = activeSymbol.toLocaleUpperCase('th-TH'); const name = String(activeName || '').trim(); return text.includes(symbol) || (name.length > 3 && title(item).includes(name)); };
+  $('#news-list').innerHTML = items.length ? items.map(item => { const mood = sentiment(item), related = relevance(item), cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral'; const badge = related ? `${mood}ต่อ ${activeSymbol}` : `ข่าวตลาด · ${mood}`; return `<a class="news-item" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none"><div><div class="news-title">${escapeHtml(item.title)}</div><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName)}</span><span class="news-impact ${cls}" title="ประเมินจากคำในพาดหัว ไม่ใช่การวิเคราะห์เนื้อหาฉบับเต็ม">${badge}</span>${related ? '' : '<span class="news-relevance">ไม่ได้ระบุหุ้นที่กำลังดู</span>'}</div></div><span class="news-time">${escapeHtml(stamp(item.pubDate))} ↗</span></a>`; }).join('') : '<div class="news-item"><div class="news-title">ไม่มีข่าวจากตัวกรองนี้ในขณะนี้</div></div>';
 }
 
 function setup() {
@@ -443,14 +497,13 @@ function setup() {
     const remove = event.target.closest('[data-remove]');
     if (remove) {
       event.stopPropagation();
-      if (watchlist.length === 1) { showSuggestions([], 'ต้องเหลือหุ้นอย่างน้อยหนึ่งตัวในรายการ'); return; }
       const symbol = remove.dataset.remove;
       watchlist = watchlist.filter(item => item.symbol !== symbol);
-      if (activeSymbol === symbol) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; }
-      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); updateTradingViewChart(); getMarket(); return;
+      if (activeSymbol === symbol && watchlist.length) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; }
+      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); return;
     }
     const row = event.target.closest('.watch-item');
-    if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; renderWatchlist(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); }
+    if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; renderWatchlist(latestMarket?.stocks || []); renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource)); updateTradingViewChart(); getMarket(); }
   };
   $('#watchlist').addEventListener('click', handleWatchlistClick);
   $('#watchlist-mobile').addEventListener('click', handleWatchlistClick);
@@ -483,8 +536,15 @@ function setup() {
   document.addEventListener('click', event => {
     if (!event.target.closest('.alerts-menu') && !alertsPanel.hidden) { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); }
   });
-  $('#add-watchlist').addEventListener('click', addActiveToWatchlist);
   $('#watchlist-add-active').addEventListener('click', addActiveToWatchlist);
+  ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => $(selector)?.addEventListener('change', event => switchWatchlist(event.target.value)));
+  $('#watchlist-create')?.addEventListener('click', createWatchlist);
+  $('#watchlist-create-mobile')?.addEventListener('click', createWatchlist);
+  $('#mover-list').addEventListener('click', event => { const row = event.target.closest('[data-mover-symbol]'); if (row) selectStock(row.dataset.moverSymbol, row.dataset.moverName); });
+  document.querySelectorAll('.movers-tabs button').forEach((button, index) => button.addEventListener('click', () => {
+    document.querySelectorAll('.movers-tabs button').forEach(item => item.classList.remove('selected'));
+    button.classList.add('selected'); moverMode = ['up', 'down', 'volume'][index]; renderMovers(latestMarket?.stocks || []);
+  }));
   $('#view-stock').addEventListener('click', () => {
     const first = $('.suggestion-item');
     if (first) selectStock(first.dataset.symbol, first.dataset.name);
