@@ -67,13 +67,13 @@
     finally { submit.disabled = false; }
   }
   async function onSignup(event) {
-    event.preventDefault(); const form = new FormData(event.currentTarget); const password = String(form.get('password') || ''); const submit = event.currentTarget.querySelector('[type=submit]');
+    event.preventDefault(); const signupForm = event.currentTarget; const form = new FormData(signupForm); const password = String(form.get('password') || ''); const submit = signupForm.querySelector('[type=submit]');
     if (password !== form.get('confirmPassword')) { message('รหัสผ่านที่กรอกไม่ตรงกัน', 'error'); return; }
     submit.disabled = true; message('กำลังสร้างบัญชี…');
     try {
       const result = await authRequest(`signup?redirect_to=${encodeURIComponent(window.location.origin)}`, { method: 'POST', body: JSON.stringify({ email: form.get('email'), password, data: { terms_accepted_at: new Date().toISOString(), terms_version: '2026-10-13' } }) });
       if (result.access_token) { saveSession(sessionFrom(result)); user = result.user || await authRequest('user', { headers: { Authorization: `Bearer ${session.access_token}` } }); scheduleRefresh(); showDashboard(); }
-      else { event.currentTarget.reset(); setMode('login'); message('สมัครสมาชิกแล้ว กรุณากดยืนยันจากอีเมลก่อน แล้วกลับมาเข้าสู่ระบบ', 'success'); }
+      else { signupForm.reset(); setMode('login'); message('สมัครสมาชิกแล้ว กรุณากดยืนยันจากอีเมลก่อน แล้วกลับมาเข้าสู่ระบบ', 'success'); }
     } catch (error) { message(error.message, 'error'); }
     finally { submit.disabled = false; }
   }
