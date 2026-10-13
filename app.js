@@ -31,6 +31,76 @@ let alertPrefs = readLocal('setscope-alert-prefs', {});
 let alertStates = readLocal('setscope-alert-states', {});
 let alertHistory = readLocal('setscope-alert-history', []);
 let unreadAlerts = 0;
+let watchlistCloudReady = false;
+let watchlistSyncTimer = null;
+let watchlistSyncChain = Promise.resolve();
+
+function setWatchlistSyncStatus(text, state = '') {
+  ['#watchlist-sync-status', '#watchlist-sync-status-mobile'].forEach(selector => {
+    const el = $(selector); if (el) { el.textContent = text; el.dataset.state = state; }
+  });
+}
+function persistWatchlistsLocal() {
+  currentWatchlist().items = watchlist;
+  localStorage.setItem('setscope-watchlists', JSON.stringify(watchlists));
+  localStorage.setItem('setscope-watchlist', JSON.stringify(watchlist));
+  localStorage.setItem('setscope-active-watchlist', activeWatchlistId);
+}
+function scheduleWatchlistCloudSync() {
+  persistWatchlistsLocal();
+  if (!watchlistCloudReady) return;
+  clearTimeout(watchlistSyncTimer);
+  setWatchlistSyncStatus('กำลังซิงก์…', 'pending');
+  watchlistSyncTimer = setTimeout(() => {
+    const payload = { watchlists: JSON.parse(JSON.stringify(watchlists)), activeWatchlistId };
+    watchlistSyncChain = watchlistSyncChain.catch(() => {}).then(async () => {
+      const response = await apiFetch('/api/watchlists', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Sync failed');
+      setWatchlistSyncStatus('ซิงก์แล้ว', 'synced');
+    }).catch(() => setWatchlistSyncStatus('ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error'));
+  }, 450);
+}
+function mergeWatchlists(localLists, cloudLists) {
+  const merged = (Array.isArray(cloudLists) ? cloudLists : []).slice(0, MAX_WATCHLISTS).map((list, i) => ({ id: String(list.id || `list-${i + 1}`), name: String(list.name || `Watchlist ${i + 1}`), items: Array.isArray(list.items) ? list.items.filter(item => item && /^[A-Z0-9&.-]{1,20}$/.test(item.symbol || '')).slice(0, MAX_WATCHLIST) : [] }));
+  for (const local of localLists) {
+    let target = merged.find(list => list.id === local.id);
+    if (!target && merged.length < MAX_WATCHLISTS) { target = { ...local, items: [] }; merged.push(target); }
+    if (!target) continue;
+    const seen = new Set(target.items.map(item => item.symbol));
+    for (const item of local.items) if (!seen.has(item.symbol) && target.items.length < MAX_WATCHLIST) { target.items.push(item); seen.add(item.symbol); }
+  }
+  return merged.length ? merged : loadWatchlists();
+}
+async function initializeWatchlistCloudSync() {
+  watchlistCloudReady = false;
+  setWatchlistSyncStatus('กำลังโหลด…', 'pending');
+  const localLists = JSON.parse(JSON.stringify(watchlists));
+  const localActive = activeWatchlistId;
+  try {
+    const response = await apiFetch('/api/watchlists');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'โหลด Watchlist ไม่สำเร็จ');
+    const record = data.record;
+    if (record && Array.isArray(record.watchlists)) {
+      watchlists = mergeWatchlists(localLists, record.watchlists);
+      activeWatchlistId = watchlists.some(list => list.id === record.active_watchlist_id) ? record.active_watchlist_id : (watchlists.some(list => list.id === localActive) ? localActive : watchlists[0].id);
+      watchlist = currentWatchlist().items;
+    } else {
+      watchlists = localLists;
+      activeWatchlistId = watchlists.some(list => list.id === localActive) ? localActive : watchlists[0].id;
+      watchlist = currentWatchlist().items;
+    }
+    persistWatchlistsLocal();
+    watchlistCloudReady = true;
+    setWatchlistSyncStatus('ซิงก์แล้ว', 'synced');
+    // First-time sync also uploads this device's existing Watchlist.
+    scheduleWatchlistCloudSync();
+  } catch (_) {
+    watchlist = currentWatchlist().items;
+    setWatchlistSyncStatus('ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error');
+  }
+}
 
 function readLocal(key, fallback) {
   try { const value = JSON.parse(localStorage.getItem(key)); return value ?? fallback; } catch (_) { return fallback; }
@@ -51,7 +121,7 @@ function loadWatchlists() {
   return lists;
 }
 function currentWatchlist() { return watchlists.find(list => list.id === activeWatchlistId) || watchlists[0]; }
-function saveWatchlist() { currentWatchlist().items = watchlist; localStorage.setItem('setscope-watchlists', JSON.stringify(watchlists)); localStorage.setItem('setscope-watchlist', JSON.stringify(watchlist)); localStorage.setItem('setscope-active-watchlist', activeWatchlistId); }
+function saveWatchlist() { scheduleWatchlistCloudSync(); }
 function renderWatchlistPicker() {
   const selected = currentWatchlist();
   const options = watchlists.map(list => `<option value="${escapeHtml(list.id)}" ${list.id === selected.id ? 'selected' : ''}>${escapeHtml(list.name)} (${list.items.length})</option>`).join('');
@@ -65,7 +135,7 @@ function renderWatchlistPicker() {
 }
 function switchWatchlist(id) {
   const chosen = watchlists.find(list => list.id === id); if (!chosen) return;
-  activeWatchlistId = id; watchlist = chosen.items; localStorage.setItem('setscope-active-watchlist', id);
+  activeWatchlistId = id; watchlist = chosen.items; scheduleWatchlistCloudSync();
   if (watchlist.length && !watchlist.some(item => item.symbol === activeSymbol)) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; updateTradingViewChart(); }
   syncTechnicalSearch();
   renderWatchlistPicker(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateWatchlistAddButton(); getMarket();
@@ -546,7 +616,9 @@ function renderNews(items) {
   $('#news-list').innerHTML = items.length ? items.map(item => { const mood = sentiment(item), related = relevance(item), cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral'; const badge = related ? `${mood}ต่อ ${activeSymbol}` : `ข่าวตลาด · ${mood}`; return `<a class="news-item" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none"><div><div class="news-title">${escapeHtml(item.title)}</div><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName)}</span><span class="news-impact ${cls}" title="ประเมินจากคำในพาดหัว ไม่ใช่การวิเคราะห์เนื้อหาฉบับเต็ม">${badge}</span>${related ? '' : '<span class="news-relevance">ไม่ได้ระบุหุ้นที่กำลังดู</span>'}</div></div><span class="news-time">${escapeHtml(stamp(item.pubDate))} ↗</span></a>`; }).join('') : '<div class="news-item"><div class="news-title">ไม่มีข่าวจากตัวกรองนี้ในขณะนี้</div></div>';
 }
 
-function setup() {
+async function setup() {
+  await initializeWatchlistCloudSync();
+  renderWatchlistPicker();
   setTheme(localStorage.getItem('setscope-theme') || 'light');
   syncTechnicalSearch();
   renderWatchlist();

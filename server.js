@@ -13,9 +13,10 @@ async function requireUser(req,res){
  if(!authConfigured){send(res,503,{error:'ระบบสมาชิกยังไม่ได้ตั้งค่า'});return false}
  const token=(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i)?.[1];
  if(!token){send(res,401,{error:'กรุณาเข้าสู่ระบบ'});return false}
- try{const response=await fetch(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/auth/v1/user`,{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(7000)});if(response.ok)return true}catch(_){}
+ try{const response=await fetch(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/auth/v1/user`,{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(7000)});if(response.ok)return await response.json()}catch(_){}
  send(res,401,{error:'เซสชันไม่ถูกต้อง กรุณาเข้าสู่ระบบอีกครั้ง'});return false;
 }
+function readJson(req){return new Promise((resolve,reject)=>{let body='';req.on('data',chunk=>{body+=chunk;if(body.length>64000){reject(Error('ข้อมูลมีขนาดใหญ่เกินไป'));req.destroy()}});req.on('end',()=>{try{resolve(JSON.parse(body||'{}'))}catch(_){reject(Error('รูปแบบข้อมูลไม่ถูกต้อง'))}});req.on('error',reject)})}
 function decodeXml(s=''){return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,'$1').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;|&apos;/g,"'").replace(/&#(\d+);/g,(_,n)=>String.fromCodePoint(Number(n))).replace(/&#x([\da-f]+);/gi,(_,n)=>String.fromCodePoint(parseInt(n,16))).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()}
 function xmlTag(block,name){return block.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`,'i'))?.[1]||''}
 const feeds=[['thunhoon','ทันหุ้น','site:thunhoon.com'],['kaohoon','ข่าวหุ้น','site:kaohoon.com'],['settrade','SETTRADE','site:settrade.com'],['settrade','SET','site:set.or.th']];
@@ -70,10 +71,21 @@ async function getMarket(symbols,active,range){
  const history=selected?.history||[];
  return{stocks,indices:index?[index]:[],history,levelsHistory:history,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
 }
-const server=http.createServer(async(req,res)=>{const url=new URL(req.url,'http://localhost');if(req.method!=='GET'){res.writeHead(405);return res.end('Method Not Allowed')}
+const server=http.createServer(async(req,res)=>{const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/healthz'){return send(res,200,{ok:true,service:'setscope',time:new Date().toISOString()})}
+ if(req.method==='OPTIONS'){res.writeHead(204,{'access-control-allow-methods':'GET, PUT, OPTIONS','access-control-allow-headers':'authorization, content-type'});return res.end()}
  if(url.pathname==='/api/auth-config'){return send(res,200,{configured:authConfigured,url:authConfigured?process.env.SUPABASE_URL.replace(/\/$/,''):null,anonKey:authConfigured?process.env.SUPABASE_ANON_KEY:null})}
- if(url.pathname.startsWith('/api/')&&!await requireUser(req,res))return;
+ const user=url.pathname.startsWith('/api/')?await requireUser(req,res):null;if(url.pathname.startsWith('/api/')&&!user)return;
+ if(url.pathname==='/api/watchlists'){
+  if(req.method==='GET'){
+   try{const endpoint=new URL(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/rest/v1/user_watchlists`);endpoint.searchParams.set('select','watchlists,active_watchlist_id');endpoint.searchParams.set('user_id',`eq.${user.id}`);const upstream=await fetch(endpoint,{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:req.headers.authorization},signal:AbortSignal.timeout(8000)});if(!upstream.ok)throw Error((await upstream.text()).slice(0,300));const rows=await upstream.json();return send(res,200,{record:rows[0]||null})}catch(e){return send(res,502,{error:'โหลด Watchlist จาก Supabase ไม่สำเร็จ',detail:e.message})}
+  }
+  if(req.method==='PUT'){
+   try{const body=await readJson(req),lists=body.watchlists;if(!Array.isArray(lists)||lists.length<1||lists.length>5)return send(res,400,{error:'ต้องมี Watchlist 1–5 รายการ'});const clean=lists.map((list,i)=>{const id=String(list.id||`list-${i+1}`).slice(0,40),name=String(list.name||`Watchlist ${i+1}`).trim().slice(0,40),items=Array.isArray(list.items)?list.items.slice(0,30).filter(item=>item&&/^[A-Z0-9&.-]{1,20}$/.test(String(item.symbol||'').toUpperCase())).map(item=>({symbol:String(item.symbol).toUpperCase(),name:String(item.name||item.symbol).slice(0,100)})):[];return{id,name,items}});const active=clean.some(list=>list.id===body.activeWatchlistId)?body.activeWatchlistId:clean[0].id;const endpoint=new URL(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/rest/v1/user_watchlists`);endpoint.searchParams.set('on_conflict','user_id');const upstream=await fetch(endpoint,{method:'POST',headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:req.headers.authorization,'content-type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:user.id,watchlists:clean,active_watchlist_id:active}),signal:AbortSignal.timeout(8000)});if(!upstream.ok)throw Error((await upstream.text()).slice(0,300));return send(res,200,{ok:true,syncedAt:new Date().toISOString()})}catch(e){return send(res,502,{error:'บันทึก Watchlist ไป Supabase ไม่สำเร็จ',detail:e.message})}
+  }
+  res.writeHead(405);return res.end('Method Not Allowed')
+ }
+ if(req.method!=='GET'){res.writeHead(405);return res.end('Method Not Allowed')}
  if(url.pathname==='/api/search'){const q=(url.searchParams.get('q')||'').trim().slice(0,80);if(q.length<1)return send(res,200,{items:[]});try{send(res,200,{items:await yahooSearch(q),provider:'Yahoo Finance'})}catch(e){send(res,502,{error:e.message,items:[]})}return}
  if(url.pathname==='/api/market'){try{const symbols=(url.searchParams.has('symbols')?url.searchParams.get('symbols'):'PTT,AOT,ADVANC,KBANK,CPALL').split(',').map(s=>s.trim().toUpperCase()).filter(s=>/^[A-Z0-9&.-]{1,20}$/.test(s)).slice(0,30);const active=(url.searchParams.get('symbol')||symbols[0]||'PTT').toUpperCase();if(!/^[A-Z0-9&.-]{1,20}$/.test(active))return send(res,400,{error:'ชื่อย่อหุ้นไม่ถูกต้อง'});if(!symbols.includes(active))symbols.push(active);const range=url.searchParams.get('range')||'1D';send(res,200,await getMarket(symbols,active,range))}catch(e){send(res,502,{error:e.message})}return}
  if(url.pathname==='/api/news'){try{const d=await getNews();send(res,200,d)}catch(e){send(res,502,{error:e.message})}return}
