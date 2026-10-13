@@ -1,21 +1,327 @@
-const SYMBOLS=['PTT','AOT','ADVANC','KBANK','CPALL'];
-const THAI_NAMES={PTT:'ปตท.',AOT:'ท่าอากาศยานไทย',ADVANC:'แอดวานซ์ อินโฟร์',KBANK:'ธนาคารกสิกรไทย',CPALL:'ซีพี ออลล์'};
-let activeSymbol='PTT', intervalId, snapshots=JSON.parse(localStorage.getItem('setscope-live-history')||'{}'), latestMarket=null, activeSource='all';
-const $=s=>document.querySelector(s), number=n=>n!==null&&n!==undefined&&n!==''&&Number.isFinite(Number(n))?Number(n).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
-function status(text,kind='wait'){const el=$('.market-hours');if(el)el.innerHTML=`<i class="${kind}"></i> ${text}`}
-function stamp(value){if(!value)return '—';const d=new Date(value);return Number.isNaN(+d)?value:d.toLocaleString('th-TH',{timeZone:'Asia/Bangkok',hour:'2-digit',minute:'2-digit',second:'2-digit',day:'2-digit',month:'short'})}
-function setLinkNewsStatus(text){const e=$('.news-foot span');if(e)e.textContent=text}
-function updateLiveBadge(text){document.querySelectorAll('.live-badge').forEach(e=>e.textContent=text)}
-function noData(text){$('#chart-price').textContent='—';$('#chart-change').textContent=text;$('#chart-change').className='';$('#chart-name').textContent=THAI_NAMES[activeSymbol];$('#price-chart').getContext('2d').clearRect(0,0,$('#price-chart').width,$('#price-chart').height);$('#axis-labels').innerHTML='';$('#rsi-value').textContent='—';['rsi-signal','macd-signal','sma-signal','ema-signal'].forEach(id=>{let x=document.getElementById(id);x.textContent='รอข้อมูล';x.className='pill neutral-pill'});$('#analysis-note').textContent=text;$('#overall-signal').textContent='รอข้อมูล';$('.signal-score strong').textContent='รอข้อมูล';$('.signal-counts').innerHTML='<div><strong>—</strong><span>ซื้อ</span></div><div><strong>—</strong><span>ถือ</span></div><div><strong>—</strong><span>ขาย</span></div>';$('#set-index').innerHTML='กำลังรอข้อมูล SET <span class="up"></span>';document.querySelectorAll('.banner-stats b').forEach(x=>x.textContent='—')}
-function drawHistory(){const canvas=$('#price-chart'),ctx=canvas.getContext('2d'),rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;if(!rect.width)return;canvas.width=rect.width*dpr;canvas.height=rect.height*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,rect.width,rect.height);let data=(latestMarket?.history||[]).map(x=>({time:x.time,price:x.close})).filter(x=>x.price>0);const w=rect.width,h=rect.height,p={l:8,r:44,t:13,b:17};if(data.length<2){ctx.strokeStyle='#edf0f2';for(let i=0;i<4;i++){let y=p.t+i*(h-p.t-p.b)/3;ctx.beginPath();ctx.moveTo(p.l,y);ctx.lineTo(w-p.r,y);ctx.stroke()}ctx.fillStyle='#9aa5ad';ctx.font='11px "IBM Plex Sans Thai"';ctx.fillText(data.length?'Yahoo ไม่มีจุดราคาเพิ่มในช่วงนี้':'กำลังรอราคาและกราฟจาก Yahoo Finance',p.l+4,h/2);$('#axis-labels').innerHTML='';return}
-const values=data.map(d=>d.price),ma=(n)=>values.map((_,i)=>i+1<n?null:values.slice(i-n+1,i+1).reduce((a,b)=>a+b,0)/n),ema=n=>{const k=2/(n+1);let v=values[0];return values.map((x,i)=>v=i?x*k+v*(1-k):x)},rsi=()=>{let up=0,dn=0;for(let i=Math.max(1,values.length-14);i<values.length;i++){let d=values[i]-values[i-1];d>0?up+=d:dn-=d}return 100-100/(1+up/Math.max(dn,.00001))};const sma=ma(20),em=ema(50),all=values.concat(sma.filter(Number.isFinite),em),lo=Math.min(...all),hi=Math.max(...all),pad=(hi-lo||1)*.18,min=lo-pad,max=hi+pad,cw=w-p.l-p.r,ch=h-p.t-p.b,x=i=>p.l+i/(values.length-1)*cw,y=v=>p.t+(max-v)/(max-min)*ch;
-for(let j=0;j<4;j++){const yy=p.t+j*ch/3;ctx.strokeStyle='#edf0f2';ctx.beginPath();ctx.moveTo(p.l,yy);ctx.lineTo(w-p.r,yy);ctx.stroke();ctx.fillStyle='#a7b0b7';ctx.font='9px Manrope';ctx.fillText((max-j*(max-min)/3).toFixed(2),w-p.r+6,yy+3)}function line(a,c,l){ctx.beginPath();let on=false;a.forEach((v,i)=>{if(v==null)return;on?ctx.lineTo(x(i),y(v)):ctx.moveTo(x(i),y(v));on=true});ctx.strokeStyle=c;ctx.lineWidth=l;ctx.stroke()}if($('#toggle-ema').checked)line(em,'#9c91ce',1.2);if($('#toggle-sma').checked)line(sma,'#e1b45f',1.3);line(values,'#289c7c',1.8);const last=values.at(-1),ly=y(last);ctx.setLineDash([3,3]);ctx.strokeStyle='#7fc8b2';ctx.beginPath();ctx.moveTo(p.l,ly);ctx.lineTo(w-p.r,ly);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#eaf5f0';ctx.fillRect(w-p.r+2,ly-9,p.r-4,17);ctx.fillStyle='#258367';ctx.font='9px Manrope';ctx.fillText(number(last),w-p.r+5,ly+3);const rv=rsi();$('#rsi-value').textContent=rv.toFixed(1);$('.rsi-track i').style.left=rv+'%';const span=data.at(-1).time-data[0].time;$('#axis-labels').innerHTML=[0,.33,.66,1].map(t=>{const d=new Date(data[0].time+span*t);return `<span>${span<86400000?d.toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString('th-TH',{day:'numeric',month:'short'})}</span>`}).join('');drawSignals(values,rv,sma.at(-1),em.at(-1))}
-function drawSignals(v,rv,ma,ev){if(v.length<15){$('#analysis-note').textContent=`ได้รับข้อมูลแล้ว ${v.length} จุด ระบบจะเริ่มคำนวณ RSI เมื่อมีข้อมูลเพียงพอ`;return}const last=v.at(-1),r=rv<30?'ซื้อ':rv>70?'ขาย':'เป็นกลาง',s=Number.isFinite(ma)?(last>ma?'ซื้อ':'ขาย'):'เป็นกลาง',e=Number.isFinite(ev)?(last>ev?'ซื้อ':'ถือ'):'เป็นกลาง',fast=ema(v,12),slow=ema(v,26),diff=fast.map((x,i)=>x-slow[i]),sig=ema(diff,9),mac=diff.at(-1)>sig.at(-1)?'ซื้อ':'ขาย',buy=[r,s,e,mac].filter(a=>a==='ซื้อ').length,sell=[r,s,e,mac].filter(a=>a==='ขาย').length,overall=buy>sell+1?'ซื้อ':sell>buy+1?'ขาย':'เป็นกลาง';[['rsi-signal',r],['sma-signal',s],['ema-signal',e],['macd-signal',mac]].forEach(([id,t])=>{let z=document.getElementById(id);z.textContent=t;z.className='pill '+(t==='ซื้อ'?'buy-pill':t==='ขาย'?'sell-pill':'neutral-pill')});$('#buy-count').textContent=buy;$('#sell-count').textContent=sell;$('#neutral-count').textContent=4-buy-sell;$('#overall-signal').textContent=overall;$('.signal-score strong').textContent=overall;$('.neutral-chip').textContent=overall;$('.signal-gauge>b').textContent=Math.round(50+(buy-sell)*12);$('.gauge-needle').style.transform=`rotate(${(-90+(50+(buy-sell)*12)*1.8)}deg)`;$('#analysis-note').textContent=`RSI ${rv.toFixed(1)} · MACD เทียบเส้นสัญญาณ · SMA 20 และ EMA 50 คำนวณจาก ${v.length} จุดราคาที่บันทึกไว้`}
-function updateStockCards(rows){const map=Object.fromEntries(rows.map(r=>[r.symbol,r]));document.querySelectorAll('.watch-item').forEach(el=>{let r=map[el.dataset.sym];if(!r)return;const d=Number(r.last)-Number(r.prior),p=Number(r.prior)?100*d/Number(r.prior):0;el.querySelector('.watch-price').innerHTML=`${number(r.last)}<span class="watch-change ${d>=0?'up':'down'}">${d>=0?'+':''}${p.toFixed(2)}%</span>`});let r=map[activeSymbol];if(!r){noData(`ไม่พบราคา ${activeSymbol} จาก Yahoo Finance`);return}const diff=Number(r.last)-Number(r.prior),pct=Number(r.prior)?100*diff/Number(r.prior):0;$('#chart-price').textContent=number(r.last);$('#chart-change').textContent=`${diff>=0?'+':''}${number(diff)} (${pct>=0?'+':''}${pct.toFixed(2)}%)`;$('#chart-change').className=diff>=0?'up':'down';$('#chart-name').textContent=r.fullName||THAI_NAMES[activeSymbol];$('#history-count').textContent=latestMarket?.history?.length??'—'}
-async function getMarket(){try{const params=new URLSearchParams({symbols:SYMBOLS.join(','),symbol:activeSymbol,range:window.activeRange||'1D'});const r=await fetch('/api/market?'+params);const d=await r.json();if(!r.ok)throw Error(d.error||'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');latestMarket=d;const rows=d.stocks||[];updateStockCards(rows);const indices=d.indices||[],idx=indices.find(x=>x.symbol==='SET');if(idx&&Number(idx.last)>0){const change=Number(idx.last)-Number(idx.prior),pct=Number(idx.prior)?100*change/Number(idx.prior):0;$('#set-index').innerHTML=`${number(idx.last)} <span class="${change>=0?'up':'down'}">${change>=0?'▲':'▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;let bs=document.querySelectorAll('.banner-stats b');if(bs[0])bs[0].innerHTML=`${number(idx.volume)} <em>หุ้น</em>`;if(bs[2])bs[2].textContent=`${number(idx.high)} / ${number(idx.low)}`;document.querySelector('.market-banner .banner-label').innerHTML=`SET INDEX <span class="live-badge">DELAYED 15M</span>`}setText('#market-connection','Yahoo · ล่าช้า 15 นาที');const r0=rows.find(x=>x.symbol===activeSymbol);if(r0)document.querySelector('.chart-meta').innerHTML=`Yahoo Finance · ${r0.fullName||THAI_NAMES[activeSymbol]} · ${r0.currency} <span>ราคาล่าช้า 15 นาที · อัปเดต ${stamp(r0.time)}</span>`;setText('.date-button span',stamp(d.fetchedAt));status('Yahoo · ล่าช้า 15 นาที','wait');updateLiveBadge('DELAYED 15M');drawHistory()}catch(e){status('Yahoo Finance ไม่พร้อม','error');updateLiveBadge('OFFLINE');setText('#market-connection',latestMarket?'ข้อมูลล่าสุดอาจเก่า':'ยังไม่เชื่อมต่อ');if(!latestMarket){noData(e.message);$('#set-index').innerHTML='— <span class="down">Yahoo Finance ยังไม่พร้อมใช้งาน</span>'}}}
-function setText(sel,val){const el=$(sel);if(el)el.textContent=val}
-async function getNews(){try{const r=await fetch('/api/news');const d=await r.json();if(!r.ok)throw Error(d.error);renderNews((d.items||[]).filter(x=>activeSource==='all'||x.source===activeSource));setLinkNewsStatus(`ดึงฟีดล่าสุด · ${stamp(d.fetchedAt)}`)}catch(e){setLinkNewsStatus('โหลดฟีดไม่สำเร็จ · เปิดเว็บไซต์ต้นทางจากลิงก์ด้านบน')}}
-function renderNews(items){$('#news-list').innerHTML=items.length?items.map(x=>`<a class="news-item" href="${escapeHtml(x.url)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none"><div><div class="news-title">${escapeHtml(x.title)}</div><div class="news-tags"><span class="source-tag">${escapeHtml(x.sourceName)}</span><span class="demo-tag">ข่าวล่าสุด · ต้นทาง</span></div></div><span class="news-time">${escapeHtml(stamp(x.pubDate))} ↗</span></a>`).join(''):'<div class="news-item"><div class="news-title">ไม่มีข่าวจากตัวกรองนี้ในขณะนี้</div></div>'}
-function escapeHtml(s=''){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function setup(){document.querySelectorAll('.watch-item').forEach(el=>el.addEventListener('click',()=>{activeSymbol=el.dataset.sym;document.querySelectorAll('.watch-item').forEach(x=>x.classList.toggle('selected',x===el));$('#symbol-select').value=activeSymbol;getMarket()}));$('#symbol-select').addEventListener('change',e=>{activeSymbol=e.target.value;getMarket()});document.querySelectorAll('.range-tabs button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.range-tabs button').forEach(x=>x.classList.remove('selected'));b.classList.add('selected');window.activeRange=b.dataset.range;getMarket()}));['#toggle-sma','#toggle-ema'].forEach(s=>$(s).addEventListener('change',drawHistory));let showRsi=false;$('#toggle-rsi').addEventListener('click',()=>{showRsi=!showRsi;$('#rsi-panel').classList.toggle('visible',showRsi);$('#toggle-rsi').textContent=showRsi?'− RSI':'+ RSI'});document.querySelectorAll('.source-chip').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.source-chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');activeSource=b.dataset.source;getNews()}));const c=$('#price-chart'),t=$('#chart-tooltip');c.addEventListener('mousemove',e=>{const d=latestMarket?.history||[],i=Math.round((e.clientX-c.getBoundingClientRect().left)/c.getBoundingClientRect().width*(d.length-1));if(!d[i])return;t.style.display='block';t.style.left=Math.min(e.offsetX+8,c.clientWidth-100)+'px';t.style.top=Math.max(5,e.offsetY-20)+'px';t.textContent=`${number(d[i].close)} THB · ${stamp(d[i].time)}`});c.addEventListener('mouseleave',()=>t.style.display='none');window.addEventListener('resize',drawHistory);document.querySelector('#refresh-chart').textContent='↻  ดึงราคาล่าสุด';$('#refresh-chart').addEventListener('click',getMarket);document.querySelector('#mover-list').innerHTML='<div class="mover-row"><span class="mover-rank">—</span><div><span class="mover-name">รอข้อมูล</span><span class="mover-company">Yahoo Finance</span></div><span class="mover-price">—</span></div>';document.querySelector('.movers-footer').textContent='ราคา Yahoo Finance ล่าช้าประมาณ 15 นาที';document.querySelector('.market-banner .banner-label').innerHTML='SET INDEX <span class="live-badge">DELAYED 15M</span>';noData('กำลังดึงราคาหุ้นไทยจาก Yahoo Finance (ข้อมูลล่าช้า 15 นาที)');getMarket();getNews();intervalId=setInterval(getMarket,60000);setInterval(getNews,300000)}
+const DEFAULT_WATCHLIST = [
+  { symbol: 'PTT', name: 'ปตท.' },
+  { symbol: 'AOT', name: 'ท่าอากาศยานไทย' },
+  { symbol: 'ADVANC', name: 'แอดวานซ์ อินโฟร์' },
+  { symbol: 'KBANK', name: 'ธนาคารกสิกรไทย' },
+  { symbol: 'CPALL', name: 'ซีพี ออลล์' }
+];
+const THAI_NAMES = Object.fromEntries(DEFAULT_WATCHLIST.map(x => [x.symbol, x.name]));
+const $ = selector => document.querySelector(selector);
+const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+  ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+let watchlist = loadWatchlist();
+let activeSymbol = watchlist[0]?.symbol || 'PTT';
+let latestMarket = null;
+let activeSource = 'all';
+let searchTimer;
+let searchSequence = 0;
+let currentRange = '1D';
+
+function loadWatchlist() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('setscope-watchlist') || 'null');
+    if (Array.isArray(saved)) {
+      return saved.filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(x.symbol || '')).slice(0, 12);
+    }
+  } catch (_) {}
+  return DEFAULT_WATCHLIST.map(x => ({ ...x }));
+}
+function saveWatchlist() { localStorage.setItem('setscope-watchlist', JSON.stringify(watchlist)); }
+function escapeHtml(value = '') {
+  return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+}
+function status(text, kind = 'wait') {
+  const el = $('.market-hours');
+  if (el) el.innerHTML = `<i class="${kind}"></i> ${escapeHtml(text)}`;
+}
+function stamp(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(+date) ? value : date.toLocaleString('th-TH', {
+    timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short'
+  });
+}
+function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
+function setNewsStatus(text) { const el = $('.news-foot span'); if (el) el.textContent = text; }
+function updateLiveBadge(text) { document.querySelectorAll('.live-badge').forEach(el => { el.textContent = text; }); }
+
+function renderWatchlist(rows = []) {
+  const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
+  const markup = watchlist.length ? watchlist.map(item => {
+    const quote = bySymbol[item.symbol];
+    const change = quote ? Number(quote.last) - Number(quote.prior) : null;
+    const percent = quote && Number(quote.prior) ? change / Number(quote.prior) * 100 : null;
+    return `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}">
+      <div class="watch-details"><span class="watch-symbol">${escapeHtml(item.symbol)}</span><span class="watch-name">${escapeHtml(item.name || item.symbol)}</span></div>
+      <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}</div>
+      <button class="watch-remove" type="button" data-remove="${escapeHtml(item.symbol)}" aria-label="ลบ ${escapeHtml(item.symbol)}" title="นำออกจากรายการ">×</button>
+    </div>`;
+  }).join('') : '<div class="watch-empty">ยังไม่มีหุ้นในรายการ · ค้นหาหุ้นแล้วกดเพิ่มได้เลย</div>';
+  $('#watchlist').innerHTML = markup;
+  $('#watchlist-mobile').innerHTML = markup;
+  setText('.nav-count', String(watchlist.length));
+  setText('#watch-metric', String(watchlist.length));
+}
+
+function updateTradingViewChart() {
+  const host = $('#tradingview-chart');
+  if (!host || !activeSymbol) return;
+  host.replaceChildren();
+  const container = document.createElement('div');
+  container.className = 'tradingview-widget-container';
+  container.style.cssText = 'height:100%;width:100%';
+  const widget = document.createElement('div');
+  widget.className = 'tradingview-widget-container__widget';
+  widget.style.cssText = 'height:calc(100% - 28px);width:100%';
+  container.append(widget);
+  const credit = document.createElement('div');
+  credit.className = 'tradingview-widget-copyright';
+  credit.innerHTML = `<a href="https://www.tradingview.com/symbols/SET-${encodeURIComponent(activeSymbol)}/" target="_blank" rel="noopener nofollow">${escapeHtml(activeSymbol)} · SET</a><span> by TradingView</span>`;
+  container.append(credit);
+  const script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.async = true;
+  script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+  const intervals = { '1D': '5', '1W': '15', '1M': 'D', '3M': 'D', '1Y': 'W' };
+  script.textContent = JSON.stringify({
+    autosize: true,
+    symbol: `SET:${activeSymbol}`,
+    interval: intervals[currentRange] || 'D',
+    timezone: 'Asia/Bangkok',
+    theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+    style: '1',
+    locale: 'th_TH',
+    withdateranges: true,
+    hide_side_toolbar: false,
+    allow_symbol_change: true,
+    save_image: false,
+    hide_volume: false,
+    hide_top_toolbar: false,
+    studies: ['MASimple@tv-basicstudies'],
+    support_host: 'https://www.tradingview.com'
+  });
+  container.append(script);
+  host.append(container);
+}
+
+function setTheme(theme) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('setscope-theme', next);
+  setText('#theme-icon', next === 'dark' ? '☀' : '☾');
+  setText('#theme-label', next === 'dark' ? 'โหมดสว่าง' : 'โหมดมืด');
+  $('#theme-toggle')?.setAttribute('aria-label', next === 'dark' ? 'เปลี่ยนเป็นโหมดสว่าง' : 'เปลี่ยนเป็นโหมดมืด');
+  updateTradingViewChart();
+}
+
+function showSuggestions(items, message = '') {
+  const box = $('#symbol-suggestions');
+  if (message) {
+    box.innerHTML = `<div class="suggestion-message">${escapeHtml(message)}</div>`;
+  } else if (!items.length) {
+    box.innerHTML = '<div class="suggestion-message">ไม่พบหุ้นที่ตรงกันในข้อมูล Yahoo Finance</div>';
+  } else {
+    box.innerHTML = items.map(item => `<button class="suggestion-item" type="button" role="option" data-symbol="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name)}">
+      <span class="suggestion-ticker">${escapeHtml(item.symbol)}</span><span class="suggestion-name">${escapeHtml(item.name)}</span><small>${escapeHtml(item.exchange)} · SET/mai</small>
+    </button>`).join('');
+  }
+  box.classList.add('visible');
+}
+function hideSuggestions() { $('#symbol-suggestions').classList.remove('visible'); }
+async function searchStocks(query) {
+  const sequence = ++searchSequence;
+  if (!query.trim()) { hideSuggestions(); return; }
+  showSuggestions([], 'กำลังค้นหาหุ้น…');
+  try {
+    const response = await fetch(`/api/search?q=${encodeURIComponent(query.trim())}`);
+    const data = await response.json();
+    if (sequence !== searchSequence) return;
+    if (!response.ok) throw new Error(data.error || 'ค้นหาหุ้นไม่สำเร็จ');
+    showSuggestions(data.items || []);
+  } catch (error) {
+    if (sequence === searchSequence) showSuggestions([], error.message || 'ค้นหาหุ้นไม่สำเร็จ');
+  }
+}
+async function addStock(symbol, name = symbol, select = true) {
+  symbol = String(symbol || '').trim().toUpperCase().replace(/\.BK$/, '');
+  if (!/^[A-Z0-9&.-]{1,20}$/.test(symbol)) { showSuggestions([], 'ชื่อย่อหุ้นไม่ถูกต้อง'); return; }
+  if (!watchlist.some(item => item.symbol === symbol) && watchlist.length >= 12) {
+    showSuggestions([], 'รายการติดตามเต็ม 12 หุ้นแล้ว กรุณานำหุ้นเดิมออกก่อน'); return;
+  }
+  if (!watchlist.some(item => item.symbol === symbol)) watchlist.push({ symbol, name: name || symbol });
+  else if (name && name !== symbol) watchlist = watchlist.map(item => item.symbol === symbol ? { ...item, name } : item);
+  saveWatchlist();
+  if (select) activeSymbol = symbol;
+  renderWatchlist(latestMarket?.stocks || []);
+  $('#stock-search').value = '';
+  hideSuggestions();
+  updateTradingViewChart();
+  await getMarket();
+}
+
+function computeEma(values, period) {
+  if (!values.length) return [];
+  const k = 2 / (period + 1);
+  return values.map((value, index) => index ? value * k + values[index - 1] * (1 - k) : value);
+}
+function drawSignals(values) {
+  if (values.length < 30) {
+    setText('#analysis-note', `ได้รับข้อมูล ${values.length} จุด ต้องมีข้อมูลเพิ่มเพื่อคำนวณสัญญาณได้ครบ`);
+    return;
+  }
+  let gains = 0, losses = 0;
+  for (let i = Math.max(1, values.length - 14); i < values.length; i++) {
+    const change = values[i] - values[i - 1];
+    if (change > 0) gains += change; else losses -= change;
+  }
+  const rsi = 100 - 100 / (1 + gains / Math.max(losses, 0.00001));
+  const sma20 = values.slice(-20).reduce((sum, value) => sum + value, 0) / 20;
+  const ema50 = computeEma(values, 50).at(-1);
+  const fast = computeEma(values, 12), slow = computeEma(values, 26);
+  const macd = fast.map((value, index) => value - slow[index]);
+  const signal = computeEma(macd, 9);
+  const latest = values.at(-1);
+  const signals = {
+    'rsi-signal': rsi < 30 ? 'ซื้อ' : rsi > 70 ? 'ขาย' : 'เป็นกลาง',
+    'sma-signal': latest > sma20 ? 'ซื้อ' : 'ขาย',
+    'ema-signal': latest > ema50 ? 'ซื้อ' : 'ขาย',
+    'macd-signal': macd.at(-1) > signal.at(-1) ? 'ซื้อ' : 'ขาย'
+  };
+  let buy = 0, sell = 0;
+  Object.entries(signals).forEach(([id, text]) => {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = `pill ${text === 'ซื้อ' ? 'buy-pill' : text === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
+    if (text === 'ซื้อ') buy++; else if (text === 'ขาย') sell++;
+  });
+  const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
+  setText('#buy-count', String(buy)); setText('#sell-count', String(sell)); setText('#neutral-count', String(4 - buy - sell));
+  setText('#overall-signal', overall); setText('.signal-score strong', overall); setText('.neutral-chip', overall);
+  setText('.signal-gauge>b', String(Math.round(50 + (buy - sell) * 12)));
+  $('.gauge-needle').style.transform = `rotate(${-90 + (50 + (buy - sell) * 12) * 1.8}deg)`;
+  setText('#rsi-value', rsi.toFixed(1));
+  $('.rsi-track i').style.left = `${rsi}%`;
+  setText('#analysis-note', `RSI ${rsi.toFixed(1)} · MACD · SMA 20 · EMA 50 คำนวณจาก ${values.length} จุดราคาจาก Yahoo Finance`);
+}
+function updateStockCards(rows) {
+  const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
+  renderWatchlist(rows);
+  const quote = bySymbol[activeSymbol];
+  if (!quote) {
+    setText('#chart-price', '—'); setText('#chart-change', `ไม่พบราคา ${activeSymbol} จาก Yahoo Finance`);
+    setText('#chart-name', THAI_NAMES[activeSymbol] || watchlist.find(item => item.symbol === activeSymbol)?.name || activeSymbol);
+    setText('#history-count', String(latestMarket?.history?.length || 0));
+    return;
+  }
+  const change = Number(quote.last) - Number(quote.prior);
+  const percent = Number(quote.prior) ? change / Number(quote.prior) * 100 : 0;
+  setText('#chart-price', number(quote.last));
+  setText('#chart-change', `${change >= 0 ? '+' : ''}${number(change)} (${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%)`);
+  $('#chart-change').className = change >= 0 ? 'up' : 'down';
+  setText('#chart-name', quote.fullName || quote.symbol);
+  setText('#history-count', String(latestMarket?.history?.length || 0));
+  drawSignals((latestMarket?.history || []).map(bar => Number(bar.close)).filter(Number.isFinite));
+}
+async function getMarket() {
+  if (!watchlist.length) { renderWatchlist(); return; }
+  try {
+    const params = new URLSearchParams({ symbols: watchlist.map(item => item.symbol).join(','), symbol: activeSymbol, range: currentRange });
+    const response = await fetch(`/api/market?${params}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');
+    latestMarket = data;
+    const stocks = data.stocks || [];
+    updateStockCards(stocks);
+    const index = (data.indices || []).find(item => item.symbol === 'SET');
+    if (index && Number(index.last) > 0) {
+      const change = Number(index.last) - Number(index.prior);
+      const pct = Number(index.prior) ? 100 * change / Number(index.prior) : 0;
+      $('#set-index').innerHTML = `${number(index.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
+      const stats = document.querySelectorAll('.banner-stats b');
+      if (stats[0]) stats[0].innerHTML = `${number(index.volume)} <em>หุ้น</em>`;
+      if (stats[2]) stats[2].textContent = `${number(index.high)} / ${number(index.low)}`;
+    }
+    setText('#market-connection', 'Yahoo · ล่าช้า 15 นาที');
+    setText('.date-button span', stamp(data.fetchedAt));
+    status('Yahoo · ล่าช้า 15 นาที');
+    updateLiveBadge('DELAYED 15M');
+    const selected = stocks.find(item => item.symbol === activeSymbol);
+    if (selected) $('.chart-meta').innerHTML = `TradingView · SET:${escapeHtml(activeSymbol)} <span>วิเคราะห์ด้วย Yahoo Finance · อัปเดต ${stamp(selected.time)}</span>`;
+  } catch (error) {
+    status('Yahoo Finance ไม่พร้อม', 'error'); updateLiveBadge('OFFLINE');
+    setText('#market-connection', latestMarket ? 'ข้อมูลล่าสุดอาจเก่า' : 'ยังไม่เชื่อมต่อ');
+    if (!latestMarket) setText('#analysis-note', error.message);
+  }
+}
+
+async function getNews() {
+  try {
+    const response = await fetch('/api/news'); const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    renderNews((data.items || []).filter(item => activeSource === 'all' || item.source === activeSource));
+    setNewsStatus(`ดึงฟีดล่าสุด · ${stamp(data.fetchedAt)}`);
+  } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · เปิดเว็บไซต์ต้นทางจากลิงก์ด้านบน'); }
+}
+function renderNews(items) {
+  $('#news-list').innerHTML = items.length ? items.map(item => `<a class="news-item" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none"><div><div class="news-title">${escapeHtml(item.title)}</div><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName)}</span><span class="demo-tag">ข่าวล่าสุด · ต้นทาง</span></div></div><span class="news-time">${escapeHtml(stamp(item.pubDate))} ↗</span></a>`).join('') : '<div class="news-item"><div class="news-title">ไม่มีข่าวจากตัวกรองนี้ในขณะนี้</div></div>';
+}
+
+function setup() {
+  setTheme(localStorage.getItem('setscope-theme') || 'light');
+  renderWatchlist();
+  const handleWatchlistClick = event => {
+    const remove = event.target.closest('[data-remove]');
+    if (remove) {
+      event.stopPropagation();
+      if (watchlist.length === 1) { showSuggestions([], 'ต้องเหลือหุ้นอย่างน้อยหนึ่งตัวในรายการ'); return; }
+      const symbol = remove.dataset.remove;
+      watchlist = watchlist.filter(item => item.symbol !== symbol);
+      if (activeSymbol === symbol) activeSymbol = watchlist[0].symbol;
+      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); return;
+    }
+    const row = event.target.closest('.watch-item');
+    if (row) { activeSymbol = row.dataset.sym; renderWatchlist(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); }
+  };
+  $('#watchlist').addEventListener('click', handleWatchlistClick);
+  $('#watchlist-mobile').addEventListener('click', handleWatchlistClick);
+  $('#add-watchlist').addEventListener('click', () => { $('#stock-search').focus(); $('#stock-search').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
+  $('#stock-search').addEventListener('input', event => {
+    clearTimeout(searchTimer);
+    const query = event.target.value.trim();
+    if (!query) { hideSuggestions(); return; }
+    searchTimer = setTimeout(() => searchStocks(query), 280);
+  });
+  $('#stock-search').addEventListener('keydown', event => {
+    if (event.key === 'Escape') hideSuggestions();
+    if (event.key === 'Enter') {
+      const first = $('.suggestion-item');
+      if (first) { event.preventDefault(); addStock(first.dataset.symbol, first.dataset.name); }
+      else if (/^[A-Z0-9&.-]{1,20}$/i.test(event.target.value.trim())) { event.preventDefault(); addStock(event.target.value.trim()); }
+    }
+  });
+  $('#search-add').addEventListener('click', () => {
+    const first = $('.suggestion-item');
+    if (first) addStock(first.dataset.symbol, first.dataset.name);
+    else if ($('#stock-search').value.trim()) addStock($('#stock-search').value.trim());
+  });
+  $('#symbol-suggestions').addEventListener('click', event => {
+    const result = event.target.closest('.suggestion-item');
+    if (result) addStock(result.dataset.symbol, result.dataset.name);
+  });
+  document.addEventListener('click', event => {
+    if (!event.target.closest('.stock-search-wrap')) hideSuggestions();
+  });
+  $('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+  document.querySelectorAll('.range-tabs button').forEach(button => button.addEventListener('click', () => {
+    document.querySelectorAll('.range-tabs button').forEach(item => item.classList.remove('selected'));
+    button.classList.add('selected'); currentRange = button.dataset.range; updateTradingViewChart(); getMarket();
+  }));
+  document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
+    document.querySelectorAll('.source-chip').forEach(item => item.classList.remove('active'));
+    button.classList.add('active'); activeSource = button.dataset.source; getNews();
+  }));
+  $('#refresh-chart').addEventListener('click', getMarket);
+  updateTradingViewChart(); getMarket(); getNews();
+  setInterval(getMarket, 60000); setInterval(getNews, 300000);
+}
 setup();
