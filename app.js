@@ -9,6 +9,7 @@ const MAX_WATCHLIST = 30;
 const MAX_WATCHLISTS = 5;
 const THAI_NAMES = Object.fromEntries(DEFAULT_WATCHLIST.map(x => [x.symbol, x.name]));
 const $ = selector => document.querySelector(selector);
+const apiFetch = (url, options) => window.setscopeAuth.authorizedFetch(url, options);
 const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
 let watchlists = loadWatchlists();
@@ -183,7 +184,7 @@ async function searchStocks(query) {
   if (!query.trim()) { hideSuggestions(); return; }
   showSuggestions([], 'กำลังค้นหาหุ้น…');
   try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query.trim())}`);
+    const response = await apiFetch(`/api/search?q=${encodeURIComponent(query.trim())}`);
     const data = await response.json();
     if (sequence !== searchSequence) return;
     if (!response.ok) throw new Error(data.error || 'ค้นหาหุ้นไม่สำเร็จ');
@@ -327,8 +328,7 @@ function drawSignals(bars) {
     });
     ['#buy-count', '#neutral-count', '#sell-count'].forEach(id => setText(id, '—'));
     ['#overall-signal', '.signal-score strong', '.neutral-chip'].forEach(id => setText(id, 'รอข้อมูล'));
-    setText('#rsi-value', '—'); setText('.signal-gauge>b', '—');
-    if ($('.gauge-needle')) $('.gauge-needle').style.transform = 'rotate(0deg)';
+    setText('#rsi-value', '—');
     if ($('.rsi-track i')) $('.rsi-track i').style.left = '50%';
     for (let i = 1; i <= 3; i++) { setText(`#support-${i}`, '—'); setText(`#resistance-${i}`, '—'); }
     return null;
@@ -344,8 +344,6 @@ function drawSignals(bars) {
   });
   setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(analysis.available - analysis.buy - analysis.sell));
   setText('#overall-signal', analysis.overall); setText('.signal-score strong', analysis.overall); setText('.neutral-chip', analysis.overall);
-  const gauge = Math.round(50 + (analysis.buy - analysis.sell) / analysis.available * 50);
-  setText('.signal-gauge>b', String(gauge)); $('.gauge-needle').style.transform = `rotate(${-90 + gauge * 1.8}deg)`;
   setText('#rsi-value', analysis.rsi.toFixed(1)); $('.rsi-track i').style.left = `${analysis.rsi}%`;
   const supportive = analysis.reasons.filter(reason => reason.signal === 'ซื้อ');
   const opposing = analysis.reasons.filter(reason => reason.signal === 'ขาย');
@@ -449,7 +447,7 @@ function updateStockCards(rows) {
 async function getMarket() {
   try {
     const params = new URLSearchParams({ symbols: watchlist.map(item => item.symbol).join(','), symbol: activeSymbol, range: currentRange });
-    const response = await fetch(`/api/market?${params}`);
+    const response = await apiFetch(`/api/market?${params}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');
     latestMarket = data;
@@ -477,7 +475,7 @@ async function getMarket() {
 
 async function getNews() {
   try {
-    const response = await fetch('/api/news'); const data = await response.json();
+    const response = await apiFetch('/api/news'); const data = await response.json();
     if (!response.ok) throw new Error(data.error);
     latestNews = data.items || [];
     renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
@@ -589,4 +587,4 @@ function setup() {
   updateTradingViewChart(); getMarket(); getNews();
   setInterval(getMarket, 60000); setInterval(getNews, 300000);
 }
-setup();
+window.addEventListener('setscope:authenticated', setup, { once: true });

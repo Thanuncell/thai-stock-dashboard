@@ -6,6 +6,12 @@ Thai stock dashboard. Run `start.bat` (Node.js 18 or newer is required), then op
 
 This app needs a small Node.js server to proxy Yahoo Finance and RSS requests. GitHub Pages only serves static files, so use Render's free web service instead. Push this repository to GitHub, sign in to [Render](https://render.com/), create a new Blueprint, and select the repository. Render reads `render.yaml`, builds the Node app, and gives it a public `onrender.com` URL. The free service may sleep after 15 minutes with no incoming traffic and take time to wake; see [Render free-instance limits](https://render.com/docs/free).
 
+## Authentication setup
+
+Email/password sign-up and sign-in use Supabase Auth; passwords are never stored by this app. Before the dashboard is available, create a Supabase project and set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in Render's Environment settings (use the anon/publishable key, never a service-role or secret key). In Supabase, allow the deployed site's URL as an Auth redirect URL and configure email confirmation. The dashboard data APIs validate each access token with Supabase before returning search, market, or news data. If the variables are missing, the site stays on the setup/login screen and the APIs refuse access.
+
+The sign-up page requires accepting the Terms and acknowledging the Privacy Notice. Review `terms.html` and `privacy.html`, fill in the real controller/support contact, and verify data retention and provider descriptions before public launch. Watchlists and alert preferences remain in browser storage; they are not synchronized to the user's account.
+
 ## Yahoo Finance market data
 
 The dashboard searches Yahoo Finance's Thai equity results (symbols ending in `.BK`) by company name or ticker, with up to five locally saved watchlists and 30 symbols in each list. The selected list drives the sidebar, watchlist movers, market requests, and alert settings. Watchlists are stored in the browser and the previous single-list data is migrated on first load. The Yahoo Finance search and chart endpoints are undocumented and may change; search coverage follows Yahoo's market-symbol index, so check the SET securities directory if a listed symbol is not returned. Quotes and analysis poll every minute. Yahoo labels Thai stock quotes as delayed; the dashboard discloses an approximately 15-minute delay.
