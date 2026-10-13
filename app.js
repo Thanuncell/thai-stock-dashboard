@@ -393,6 +393,7 @@ function drawSignals(bars, levelBars = bars) {
       ? `หลักฐานเอนลบ ${analysis.sell}/${analysis.available} ข้อ · หากหลุดแนวรับ 1 ${number(support1)} แรงกดดันอาจต่อเนื่อง; การกลับยืนเหนือแนวต้าน 1 ${number(resistance1)} จะทำให้มุมมองลบอ่อนลง`
       : `สัญญาณบวก ${analysis.buy} ข้อและลบ ${analysis.sell} ข้อ · รอราคาเลือกทิศทางเหนือแนวต้าน 1 ${number(resistance1)} หรือหลุดแนวรับ 1 ${number(support1)} ก่อนพิจารณา`;
   setText('#technical-plan', plan);
+  setText('#levels-basis', `*แนวรับ–แนวต้านคำนวณจากจุดกลับตัวในกราฟช่วง ${currentRange} (${analysis.levels ? (levelBars || bars || []).length : 0} แท่ง) · อาจมีไม่ครบ 3 ระดับ`);
   setText('#analysis-note', `${analysis.overall === 'ซื้อ' ? 'หลักฐานเอนบวก' : analysis.overall === 'ขาย' ? 'หลักฐานเอนลบ' : 'สัญญาณยังผสม'} · ซื้อ ${analysis.buy} / กลาง ${analysis.available - analysis.buy - analysis.sell} / ขาย ${analysis.sell} · มีข้อมูล ${analysis.available}/${analysis.total} indicators · ช่วง ${currentRange} (${analysis.values.length} แท่ง)`);
   return analysis;
 }

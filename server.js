@@ -40,14 +40,6 @@ async function getNews(){
  return{items,errors:settled.map((result,i)=>result.status==='rejected'?feeds[i][0]:null).filter(Boolean),fetchedAt:new Date().toISOString(),maxAgeDays:30};
 }
 const periods={ '1D':['1d','1m'],'1W':['5d','15m'],'1M':['1mo','1d'],'3M':['3mo','1d'],'1Y':['1y','1d'] };
-const levelsHistoryCache=new Map();
-async function getLevelsHistory(symbol){
- const cached=levelsHistoryCache.get(symbol);
- if(cached&&cached.expiresAt>Date.now())return cached.history;
- const history=shapeChart(await yahooChart(symbol+'.BK','1y','1d'),symbol).history;
- levelsHistoryCache.set(symbol,{history,expiresAt:Date.now()+5*60*1000});
- return history;
-}
 async function yahooChart(symbol,range,interval){const endpoint=new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);endpoint.searchParams.set('range',range);endpoint.searchParams.set('interval',interval);endpoint.searchParams.set('events','div,splits');const response=await fetch(endpoint,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36','accept':'application/json'}});if(!response.ok)throw Error(`Yahoo Finance ${symbol}: HTTP ${response.status}`);const body=await response.json(),result=body?.chart?.result?.[0];if(!result)throw Error(body?.chart?.error?.description||`ไม่มีข้อมูล ${symbol} จาก Yahoo Finance`);return result}
 async function yahooSearch(query){const endpoint=new URL('https://query1.finance.yahoo.com/v1/finance/search');endpoint.searchParams.set('q',query);endpoint.searchParams.set('quotesCount','20');endpoint.searchParams.set('newsCount','0');const response=await fetch(endpoint,{headers:{'user-agent':'Mozilla/5.0 SETscope stock search','accept':'application/json'},signal:AbortSignal.timeout(9000)});if(!response.ok)throw Error(`Yahoo Finance search HTTP ${response.status}`);const body=await response.json();return(body.quotes||[]).filter(q=>/\.BK$/i.test(q.symbol||'')&&q.quoteType==='EQUITY').slice(0,12).map(q=>({symbol:q.symbol.replace(/\.BK$/i,''),name:q.longname||q.shortname||q.symbol.replace(/\.BK$/i,''),exchange:q.exchange||'SET',type:q.quoteType}))}
 function shapeChart(result,symbol){const q=result.indicators?.quote?.[0]||{},timestamps=result.timestamp||[],bars=timestamps.map((time,i)=>({time:time*1000,open:q.open?.[i]??null,high:q.high?.[i]??null,low:q.low?.[i]??null,close:q.close?.[i]??null,volume:q.volume?.[i]??null})).filter(x=>x.close!==null);const meta=result.meta||{},last=meta.regularMarketPrice??bars.at(-1)?.close??null,prior=meta.chartPreviousClose??meta.previousClose??null;return{symbol,last,prior,time:(meta.regularMarketTime?meta.regularMarketTime*1000:bars.at(-1)?.time)||null,fullName:meta.longName||meta.shortName||symbol,currency:meta.currency||'THB',high:meta.regularMarketDayHigh??null,low:meta.regularMarketDayLow??null,volume:meta.regularMarketVolume??null,exchange:meta.fullExchangeName||'SET',marketState:meta.marketState||'UNKNOWN',history:bars}}
@@ -75,10 +67,8 @@ async function getMarket(symbols,active,range){
  if(index)index.turnoverMillionBaht=turnoverMillionBaht;
  let selected=stocks.find(x=>x.symbol===active);
  if(selected&&(rangeName!=='1d'||interval!=='5m')){try{const hist=shapeChart(await yahooChart(active+'.BK',rangeName,interval),active);selected={...selected,history:hist.history}}catch(e){errors.push(e.message)}}
- let levelsHistory=[];
- if(selected&&rangeName==='1y'&&interval==='1d')levelsHistory=selected.history;
- else if(selected){try{levelsHistory=await getLevelsHistory(active)}catch(e){errors.push(`แนวรับ/แนวต้าน: ${e.message}`)}}
- return{stocks,indices:index?[index]:[],history:selected?.history||[],levelsHistory,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
+ const history=selected?.history||[];
+ return{stocks,indices:index?[index]:[],history,levelsHistory:history,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
 }
 const server=http.createServer(async(req,res)=>{const url=new URL(req.url,'http://localhost');if(req.method!=='GET'){res.writeHead(405);return res.end('Method Not Allowed')}
  if(url.pathname==='/healthz'){return send(res,200,{ok:true,service:'setscope',time:new Date().toISOString()})}
