@@ -19,7 +19,26 @@ async function requireUser(req,res){
 function decodeXml(s=''){return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,'$1').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;|&apos;/g,"'").replace(/&#(\d+);/g,(_,n)=>String.fromCodePoint(Number(n))).replace(/&#x([\da-f]+);/gi,(_,n)=>String.fromCodePoint(parseInt(n,16))).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()}
 function xmlTag(block,name){return block.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`,'i'))?.[1]||''}
 const feeds=[['thunhoon','ทันหุ้น','site:thunhoon.com'],['kaohoon','ข่าวหุ้น','site:kaohoon.com'],['settrade','SETTRADE','site:settrade.com'],['settrade','SET','site:set.or.th']];
-async function getNews(){const settled=await Promise.allSettled(feeds.map(async([source,sourceName,q])=>{const u='https://news.google.com/rss/search?q='+encodeURIComponent(q)+'&hl=th&gl=TH&ceid=TH:th';const r=await fetch(u,{headers:{'user-agent':'SETscope/1.0 news reader (local prototype)','accept':'application/rss+xml, application/xml, text/xml'}});if(!r.ok)throw Error(`${sourceName} RSS HTTP ${r.status}`);const xml=await r.text();const channel=xml.match(/<channel(?:\s[^>]*)?>([\s\S]*?)<\/channel>/i)?.[1]||xml;const items=[...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].slice(0,8).map(m=>{const block=m[1],title=decodeXml(xmlTag(block,'title'));const url=decodeXml(xmlTag(block,'link'));const pubDate=decodeXml(xmlTag(block,'pubDate'));const outlet=xmlTag(block,'source').match(/>([\s\S]*?)<\/source>/i)?.[1];return{source,sourceName:outlet?decodeXml(outlet):sourceName,title,url,pubDate}}).filter(x=>x.title&&/^https:\/\//.test(x.url));return items}));const items=settled.flatMap(x=>x.status==='fulfilled'?x.value:[]).sort((a,b)=>(Date.parse(b.pubDate)||0)-(Date.parse(a.pubDate)||0));return{items,errors:settled.map((x,i)=>x.status==='rejected'?feeds[i][0]:null).filter(Boolean),fetchedAt:new Date().toISOString()}}
+async function getNews(){
+ const cutoff=Date.now()-30*24*60*60*1000;
+ const settled=await Promise.allSettled(feeds.map(async([source,sourceName,q])=>{
+  const u='https://news.google.com/rss/search?q='+encodeURIComponent(`${q} when:30d`)+'&hl=th&gl=TH&ceid=TH:th';
+  const r=await fetch(u,{headers:{'user-agent':'SETscope/1.0 news reader (local prototype)','accept':'application/rss+xml, application/xml, text/xml'}});
+  if(!r.ok)throw Error(`${sourceName} RSS HTTP ${r.status}`);
+  const xml=await r.text();
+  const channel=xml.match(/<channel(?:\s[^>]*)?>([\s\S]*?)<\/channel>/i)?.[1]||xml;
+  return [...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].map(m=>{
+   const block=m[1],title=decodeXml(xmlTag(block,'title')),url=decodeXml(xmlTag(block,'link')),pubDate=decodeXml(xmlTag(block,'pubDate'));
+   const outlet=xmlTag(block,'source').match(/>([\s\S]*?)<\/source>/i)?.[1];
+   return{source,sourceName:outlet?decodeXml(outlet):sourceName,title,url,pubDate};
+  }).filter(item=>{
+   const published=Date.parse(item.pubDate);
+   return item.title&&/^https:\/\//.test(item.url)&&Number.isFinite(published)&&published>=cutoff;
+  }).sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate)).slice(0,8);
+ }));
+ const items=settled.flatMap(result=>result.status==='fulfilled'?result.value:[]).sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate));
+ return{items,errors:settled.map((result,i)=>result.status==='rejected'?feeds[i][0]:null).filter(Boolean),fetchedAt:new Date().toISOString(),maxAgeDays:30};
+}
 const periods={ '1D':['1d','1m'],'1W':['5d','15m'],'1M':['1mo','1d'],'3M':['3mo','1d'],'1Y':['1y','1d'] };
 async function yahooChart(symbol,range,interval){const endpoint=new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);endpoint.searchParams.set('range',range);endpoint.searchParams.set('interval',interval);endpoint.searchParams.set('events','div,splits');const response=await fetch(endpoint,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36','accept':'application/json'}});if(!response.ok)throw Error(`Yahoo Finance ${symbol}: HTTP ${response.status}`);const body=await response.json(),result=body?.chart?.result?.[0];if(!result)throw Error(body?.chart?.error?.description||`ไม่มีข้อมูล ${symbol} จาก Yahoo Finance`);return result}
 async function yahooSearch(query){const endpoint=new URL('https://query1.finance.yahoo.com/v1/finance/search');endpoint.searchParams.set('q',query);endpoint.searchParams.set('quotesCount','20');endpoint.searchParams.set('newsCount','0');const response=await fetch(endpoint,{headers:{'user-agent':'Mozilla/5.0 SETscope stock search','accept':'application/json'},signal:AbortSignal.timeout(9000)});if(!response.ok)throw Error(`Yahoo Finance search HTTP ${response.status}`);const body=await response.json();return(body.quotes||[]).filter(q=>/\.BK$/i.test(q.symbol||'')&&q.quoteType==='EQUITY').slice(0,12).map(q=>({symbol:q.symbol.replace(/\.BK$/i,''),name:q.longname||q.shortname||q.symbol.replace(/\.BK$/i,''),exchange:q.exchange||'SET',type:q.quoteType}))}

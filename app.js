@@ -340,7 +340,7 @@ function drawSignals(bars) {
       if (el) { el.textContent = 'ข้อมูลไม่พอ'; el.className = 'pill neutral-pill'; }
     });
     ['#buy-count', '#neutral-count', '#sell-count'].forEach(id => setText(id, '—'));
-    ['#overall-signal', '.signal-score strong', '.neutral-chip'].forEach(id => setText(id, 'รอข้อมูล'));
+    ['#overall-signal', '.signal-score strong'].forEach(id => setText(id, 'รอข้อมูล'));
     updateSignalDonut(0, 0, 0, 0);
     setText('#rsi-value', '—');
     if ($('.rsi-track i')) $('.rsi-track i').style.left = '50%';
@@ -359,7 +359,7 @@ function drawSignals(bars) {
   const hold = analysis.available - analysis.buy - analysis.sell;
   setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(hold));
   updateSignalDonut(analysis.buy, hold, analysis.sell, analysis.available);
-  setText('#overall-signal', analysis.overall); setText('.signal-score strong', analysis.overall); setText('.neutral-chip', analysis.overall);
+  setText('#overall-signal', analysis.overall); setText('.signal-score strong', analysis.overall);
   setText('#rsi-value', analysis.rsi.toFixed(1)); $('.rsi-track i').style.left = `${analysis.rsi}%`;
   const supportive = analysis.reasons.filter(reason => reason.signal === 'ซื้อ');
   const opposing = analysis.reasons.filter(reason => reason.signal === 'ขาย');
@@ -495,8 +495,8 @@ async function getNews() {
     if (!response.ok) throw new Error(data.error);
     latestNews = data.items || [];
     renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
-    setNewsStatus(`ดึงฟีดล่าสุด · ${stamp(data.fetchedAt)}`);
-  } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · เปิดเว็บไซต์ต้นทางจากลิงก์ด้านบน'); }
+    setNewsStatus(`ย้อนหลัง 30 วัน · อัปเดต ${stamp(data.fetchedAt)}`);
+  } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน'); }
 }
 function renderNews(items) {
   const positive = /(กำไรเพิ่ม|กำไรพุ่ง|โตเด่น|เติบโต|บวก|รับอานิสงส์|ปรับขึ้น|เพิ่มขึ้น|ยอดขายโต|ซื้อคืน|ปันผลเพิ่ม|ผ่านจุดต่ำสุด|ฟื้นตัว|ชนะประมูล|คว้างาน|กำไรสุทธิ.*เพิ่ม)/i;
