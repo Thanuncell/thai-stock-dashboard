@@ -266,7 +266,8 @@ function emaAtPeriod(values, period) {
   return values.slice(period).reduce((ema, value) => value * k + ema * (1 - k), seed);
 }
 function findPriceLevels(bars, last) {
-  const recent = bars.slice(-200);
+  if (!Number.isFinite(Number(last)) || Number(last) <= 0) return { supports: [], resistances: [] };
+  const recent = (bars || []).filter(bar => Number.isFinite(Number(bar.low)) && Number(bar.low) > 0 && Number.isFinite(Number(bar.high)) && Number(bar.high) > 0).slice(-200);
   const supports = [], resistances = [];
   for (let i = 2; i < recent.length - 2; i++) {
     const low = Number(recent[i].low), high = Number(recent[i].high);
@@ -274,6 +275,8 @@ function findPriceLevels(bars, last) {
     if (Number.isFinite(low) && low < last && neighbors.every(bar => low <= Number(bar.low))) supports.push(low);
     if (Number.isFinite(high) && high > last && neighbors.every(bar => high >= Number(bar.high))) resistances.push(high);
   }
+  const softSupports = recent.map(bar => Number(bar.low)).filter(level => level < last);
+  const softResistances = recent.map(bar => Number(bar.high)).filter(level => level > last);
   const gap = Math.max(last * 0.005, 0.01);
   const nearest = (levels, ascending) => {
     const selected = [];
@@ -283,7 +286,10 @@ function findPriceLevels(bars, last) {
     }
     return selected;
   };
-  return { supports: nearest(supports, false), resistances: nearest(resistances, true) };
+  return {
+    supports: nearest(supports, false).length >= 3 ? nearest(supports, false) : nearest([...supports, ...softSupports], false),
+    resistances: nearest(resistances, true).length >= 3 ? nearest(resistances, true) : nearest([...resistances, ...softResistances], true)
+  };
 }
 function analyseTechnicals(bars, levelBars = bars) {
   const usable = (bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
@@ -344,9 +350,21 @@ function updateSignalDonut(buy, hold, sell, total) {
   donut.setAttribute('aria-label', safeTotal ? `สัดส่วนสัญญาณ ซื้อ ${counts[0]} ถือ ${counts[1]} ขาย ${counts[2]} จาก ${safeTotal} สัญญาณ` : 'ยังไม่มีข้อมูลพอสรุปสัญญาณ');
 }
 
+function renderPriceLevels(bars, last) {
+  const levels = findPriceLevels(bars || [], last);
+  for (let i = 0; i < 3; i++) {
+    setText(`#support-${i + 1}`, number(levels.supports[i]));
+    setText(`#resistance-${i + 1}`, number(levels.resistances[i]));
+  }
+  setText('#levels-basis', `*แนวรับ–แนวต้านคำนวณจากจุดกลับตัวในกราฟช่วง ${currentRange} (${(bars || []).length} แท่ง) · อาจมีไม่ครบ 3 ระดับ`);
+  return levels;
+}
+
 function drawSignals(bars, levelBars = bars) {
   const analysis = analyseTechnicals(bars, levelBars);
   if (!analysis) {
+    const priceBars = (levelBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
+    renderPriceLevels(levelBars || bars || [], Number(priceBars.at(-1)?.close));
     setText('#analysis-note', `ได้รับข้อมูล ${(bars || []).length} จุด ต้องมีอย่างน้อย 30 แท่งเพื่อสรุปสัญญาณ`);
     $('#technical-reasons').innerHTML = '<p class="reason-empty">ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยให้ครบ</p>';
     setText('#technical-plan', 'รอข้อมูลเพิ่มก่อนสรุปเงื่อนไขที่ควรจับตา');
@@ -359,7 +377,6 @@ function drawSignals(bars, levelBars = bars) {
     updateSignalDonut(0, 0, 0, 0);
     setText('#rsi-value', '—');
     if ($('.rsi-track i')) $('.rsi-track i').style.left = '50%';
-    for (let i = 1; i <= 3; i++) { setText(`#support-${i}`, '—'); setText(`#resistance-${i}`, '—'); }
     return null;
   }
   const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema20: 'ema20-signal', ema50: 'ema50-signal', ema100: 'ema100-signal', ema200: 'ema200-signal' };
@@ -381,10 +398,7 @@ function drawSignals(bars, levelBars = bars) {
   const neutral = analysis.reasons.filter(reason => reason.signal === 'เป็นกลาง');
   const group = (title, className, items) => `<div class="reason-group ${className}"><b>${title} (${items.length})</b>${items.length ? `<ul>${items.map(item => `<li><strong>${escapeHtml(item.key)} · ${escapeHtml(item.value)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join('')}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
   $('#technical-reasons').innerHTML = group('แรงหนุนฝั่งบวก', 'positive', supportive) + group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing) + (neutral.length ? group('ยังไม่ชี้ทิศทาง', 'neutral', neutral) : '');
-  for (let i = 0; i < 3; i++) {
-    setText(`#support-${i + 1}`, number(analysis.levels.supports[i]));
-    setText(`#resistance-${i + 1}`, number(analysis.levels.resistances[i]));
-  }
+  renderPriceLevels(levelBars || bars || [], analysis.last);
   const support1 = analysis.levels.supports[0], resistance1 = analysis.levels.resistances[0];
   const plan = analysis.overall === 'ซื้อ'
     ? `หลักฐานเอนบวก ${analysis.buy}/${analysis.available} ข้อ · รอการยืนเหนือแนวต้าน 1 ${number(resistance1)} เพื่อยืนยัน; หากปิดต่ำกว่าแนวรับ 1 ${number(support1)} มุมมองนี้อ่อนลง`
@@ -392,7 +406,6 @@ function drawSignals(bars, levelBars = bars) {
       ? `หลักฐานเอนลบ ${analysis.sell}/${analysis.available} ข้อ · หากหลุดแนวรับ 1 ${number(support1)} แรงกดดันอาจต่อเนื่อง; การกลับยืนเหนือแนวต้าน 1 ${number(resistance1)} จะทำให้มุมมองลบอ่อนลง`
       : `สัญญาณบวก ${analysis.buy} ข้อและลบ ${analysis.sell} ข้อ · รอราคาเลือกทิศทางเหนือแนวต้าน 1 ${number(resistance1)} หรือหลุดแนวรับ 1 ${number(support1)} ก่อนพิจารณา`;
   setText('#technical-plan', plan);
-  setText('#levels-basis', `*แนวรับ–แนวต้านคำนวณจากจุดกลับตัวในกราฟช่วง ${currentRange} (${analysis.levels ? (levelBars || bars || []).length : 0} แท่ง) · อาจมีไม่ครบ 3 ระดับ`);
   setText('#analysis-note', `${analysis.overall === 'ซื้อ' ? 'หลักฐานเอนบวก' : analysis.overall === 'ขาย' ? 'หลักฐานเอนลบ' : 'สัญญาณยังผสม'} · ซื้อ ${analysis.buy} / กลาง ${analysis.available - analysis.buy - analysis.sell} / ขาย ${analysis.sell} · มีข้อมูล ${analysis.available}/${analysis.total} indicators · ช่วง ${currentRange} (${analysis.values.length} แท่ง)`);
   return analysis;
 }
