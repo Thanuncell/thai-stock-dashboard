@@ -63,6 +63,7 @@ function switchWatchlist(id) {
   const chosen = watchlists.find(list => list.id === id); if (!chosen) return;
   activeWatchlistId = id; watchlist = chosen.items; localStorage.setItem('setscope-active-watchlist', id);
   if (watchlist.length && !watchlist.some(item => item.symbol === activeSymbol)) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; updateTradingViewChart(); }
+  syncTechnicalSearch();
   renderWatchlistPicker(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateWatchlistAddButton(); getMarket();
 }
 function escapeHtml(value = '') {
@@ -76,6 +77,7 @@ function stamp(value) {
   });
 }
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
+function syncTechnicalSearch() { const input = $('#stock-search'); if (input && activeSymbol) input.value = activeSymbol; }
 function setNewsStatus(text) { const el = $('.news-foot span'); if (el) el.textContent = text; }
 function updateWatchlistAddButton() {
   const button = $('#watchlist-add-active');
@@ -195,6 +197,7 @@ async function selectStock(symbol, name = symbol) {
   if (!/^[A-Z0-9&.-]{1,20}$/.test(symbol)) { showSuggestions([], 'ชื่อย่อหุ้นไม่ถูกต้อง'); return; }
   activeSymbol = symbol;
   activeName = name || symbol;
+  syncTechnicalSearch();
   setText('#chart-name', activeName);
   setText('#chart-meta', `SET:${activeSymbol} · ${activeName} · THB`);
   renderWatchlist(latestMarket?.stocks || []);
@@ -459,9 +462,10 @@ async function getMarket() {
       const change = Number(index.last) - Number(index.prior);
       const pct = Number(index.prior) ? 100 * change / Number(index.prior) : 0;
       $('#set-index').innerHTML = `${number(index.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
-      const stats = document.querySelectorAll('.banner-stats b');
-      if (stats[0]) stats[0].innerHTML = `${number(index.volume)} <em>หุ้น</em>`;
-      if (stats[1]) stats[1].textContent = `${number(index.high)} / ${number(index.low)}`;
+      setText('#set-volume', `${number(index.volume)} หุ้น`);
+      setText('#set-range', `${number(index.high)} / ${number(index.low)}`);
+      setText('#set-turnover', `${number(index.turnoverMillionBaht)} ล้านบาท`);
+      $('#set-turnover').title = index.turnoverMillionBaht == null ? 'ต้องตั้งค่า SET_API_KEY ใน Render เพื่อแสดงมูลค่าซื้อขายจากข้อมูลของ SET' : 'ข้อมูลมูลค่าซื้อขายจาก SET API · หน่วยล้านบาท';
     }
     const selected = stocks.find(item => item.symbol === activeSymbol);
     if (selected) setText('#chart-meta', `SET:${activeSymbol} · ${activeName || selected.fullName} · THB`);
@@ -491,6 +495,7 @@ function renderNews(items) {
 
 function setup() {
   setTheme(localStorage.getItem('setscope-theme') || 'light');
+  syncTechnicalSearch();
   renderWatchlist();
   renderAlertSettings(); renderAlertHistory(); updateNotificationStatus();
   const handleWatchlistClick = event => {
@@ -499,11 +504,11 @@ function setup() {
       event.stopPropagation();
       const symbol = remove.dataset.remove;
       watchlist = watchlist.filter(item => item.symbol !== symbol);
-      if (activeSymbol === symbol && watchlist.length) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; }
+      if (activeSymbol === symbol && watchlist.length) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; syncTechnicalSearch(); }
       saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); return;
     }
     const row = event.target.closest('.watch-item');
-    if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; renderWatchlist(latestMarket?.stocks || []); renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource)); updateTradingViewChart(); getMarket(); }
+    if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; syncTechnicalSearch(); renderWatchlist(latestMarket?.stocks || []); renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource)); updateTradingViewChart(); getMarket(); }
   };
   $('#watchlist').addEventListener('click', handleWatchlistClick);
   $('#watchlist-mobile').addEventListener('click', handleWatchlistClick);
