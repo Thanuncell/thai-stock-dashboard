@@ -1,0 +1,12 @@
+{
+  "name": "setscope",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Thai market news and delayed Yahoo Finance chart dashboard",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
