@@ -5,6 +5,7 @@ const DEFAULT_WATCHLIST = [
   { symbol: 'KBANK', name: 'ธนาคารกสิกรไทย' },
   { symbol: 'CPALL', name: 'ซีพี ออลล์' }
 ];
+const MAX_WATCHLIST = 30;
 const THAI_NAMES = Object.fromEntries(DEFAULT_WATCHLIST.map(x => [x.symbol, x.name]));
 const $ = selector => document.querySelector(selector);
 const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
@@ -29,7 +30,7 @@ function loadWatchlist() {
   try {
     const saved = JSON.parse(localStorage.getItem('setscope-watchlist') || 'null');
     if (Array.isArray(saved)) {
-      return saved.filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(x.symbol || '')).slice(0, 12);
+      return saved.filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(x.symbol || '')).slice(0, MAX_WATCHLIST);
     }
   } catch (_) {}
   return DEFAULT_WATCHLIST.map(x => ({ ...x }));
@@ -90,7 +91,7 @@ function updateTradingViewChart() {
   script.type = 'text/javascript';
   script.async = true;
   script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-  const intervals = { '1D': '5', '1W': '15', '1M': 'D', '3M': 'D', '1Y': 'W' };
+  const intervals = { '1D': '5', '1W': '15', '1M': 'D', '3M': 'D', '1Y': 'D' };
   script.textContent = JSON.stringify({
     autosize: true,
     symbol: `SET:${activeSymbol}`,
@@ -105,7 +106,12 @@ function updateTradingViewChart() {
     save_image: false,
     hide_volume: false,
     hide_top_toolbar: false,
-    studies: ['MASimple@tv-basicstudies'],
+    studies: [
+      { id: 'MASimple@tv-basicstudies', inputs: { length: 20 } },
+      { id: 'MAExp@tv-basicstudies', inputs: { length: 20 } },
+      { id: 'MAExp@tv-basicstudies', inputs: { length: 100 } },
+      { id: 'MAExp@tv-basicstudies', inputs: { length: 200 } }
+    ],
     support_host: 'https://www.tradingview.com'
   });
   container.append(script);
@@ -153,8 +159,8 @@ async function searchStocks(query) {
 async function addStock(symbol, name = symbol, select = true) {
   symbol = String(symbol || '').trim().toUpperCase().replace(/\.BK$/, '');
   if (!/^[A-Z0-9&.-]{1,20}$/.test(symbol)) { showSuggestions([], 'ชื่อย่อหุ้นไม่ถูกต้อง'); return; }
-  if (!watchlist.some(item => item.symbol === symbol) && watchlist.length >= 12) {
-    showSuggestions([], 'รายการติดตามเต็ม 12 หุ้นแล้ว กรุณานำหุ้นเดิมออกก่อน'); return;
+  if (!watchlist.some(item => item.symbol === symbol) && watchlist.length >= MAX_WATCHLIST) {
+    showSuggestions([], `รายการติดตามเต็ม ${MAX_WATCHLIST} หุ้นแล้ว กรุณานำหุ้นเดิมออกก่อน`); return;
   }
   if (!watchlist.some(item => item.symbol === symbol)) watchlist.push({ symbol, name: name || symbol });
   else if (name && name !== symbol) watchlist = watchlist.map(item => item.symbol === symbol ? { ...item, name } : item);
@@ -172,6 +178,32 @@ function computeEma(values, period) {
   if (!values.length) return [];
   const k = 2 / (period + 1);
   return values.map((value, index) => index ? value * k + values[index - 1] * (1 - k) : value);
+}
+function emaAtPeriod(values, period) {
+  if (values.length < period) return null;
+  const seed = values.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+  const k = 2 / (period + 1);
+  return values.slice(period).reduce((ema, value) => value * k + ema * (1 - k), seed);
+}
+function findPriceLevels(bars, last) {
+  const recent = bars.slice(-200);
+  const supports = [], resistances = [];
+  for (let i = 2; i < recent.length - 2; i++) {
+    const low = Number(recent[i].low), high = Number(recent[i].high);
+    const neighbors = [recent[i - 2], recent[i - 1], recent[i + 1], recent[i + 2]];
+    if (Number.isFinite(low) && low < last && neighbors.every(bar => low <= Number(bar.low))) supports.push(low);
+    if (Number.isFinite(high) && high > last && neighbors.every(bar => high >= Number(bar.high))) resistances.push(high);
+  }
+  const gap = Math.max(last * 0.005, 0.01);
+  const nearest = (levels, ascending) => {
+    const selected = [];
+    for (const level of [...new Set(levels)].sort((a, b) => ascending ? a - b : b - a)) {
+      if (selected.every(item => Math.abs(item - level) >= gap)) selected.push(level);
+      if (selected.length === 3) break;
+    }
+    return selected;
+  };
+  return { supports: nearest(supports, false), resistances: nearest(resistances, true) };
 }
 function analyseTechnicals(bars) {
   const usable = (bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
@@ -191,7 +223,7 @@ function analyseTechnicals(bars) {
   }
   const rsi = avgGain === 0 && avgLoss === 0 ? 50 : avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   const sma20 = values.slice(-20).reduce((sum, value) => sum + value, 0) / 20;
-  const ema50 = computeEma(values, 50).at(-1);
+  const emas = { ema20: emaAtPeriod(values, 20), ema100: emaAtPeriod(values, 100), ema200: emaAtPeriod(values, 200) };
   const fast = computeEma(values, 12), slow = computeEma(values, 26);
   const macd = fast.map((value, index) => value - slow[index]);
   const signalLine = computeEma(macd, 9);
@@ -200,22 +232,25 @@ function analyseTechnicals(bars) {
   const signals = {
     rsi: rsi < 30 ? 'ซื้อ' : rsi > 70 ? 'ขาย' : 'เป็นกลาง',
     macd: macdDiff > 0 ? 'ซื้อ' : 'ขาย',
-    sma: last >= sma20 ? 'ซื้อ' : 'ขาย',
-    ema: last >= ema50 ? 'ซื้อ' : 'ขาย'
+    sma: last >= sma20 ? 'ซื้อ' : 'ขาย'
   };
+  Object.entries(emas).forEach(([key, value]) => { if (value !== null) signals[key] = last > value ? 'ซื้อ' : last < value ? 'ขาย' : 'เป็นกลาง'; });
   const reasons = [
     { key: 'RSI (14)', signal: signals.rsi, value: `RSI ${rsi.toFixed(1)}`, detail: rsi < 30 ? 'ต่ำกว่า 30: แรงขายมาก อาจเกิดแรงรีบาวด์ แต่ยังไม่ยืนยันว่าราคากลับตัว' : rsi > 70 ? 'สูงกว่า 70: ภาวะซื้อมาก ราคาอาจย่อตัวได้ แต่ในขาขึ้น RSI อาจสูงต่อเนื่อง' : 'อยู่ระหว่าง 30–70: ยังไม่เข้าขอบเขตซื้อมาก/ขายมากตามเกณฑ์ทั่วไป' },
     { key: 'MACD (12, 26, 9)', signal: signals.macd, value: `MACD ${macd.at(-1).toFixed(3)} · Signal ${signalLine.at(-1).toFixed(3)}`, detail: macdDiff > 0 ? 'เส้น MACD อยู่เหนือเส้น Signal โมเมนตัมระยะสั้นเป็นบวก' : 'เส้น MACD อยู่ใต้เส้น Signal โมเมนตัมระยะสั้นเป็นลบ' },
     { key: 'SMA (20)', signal: signals.sma, value: `ราคา ${number(last)} · SMA ${number(sma20)}`, detail: last >= sma20 ? 'ราคาปิดอยู่เหนือค่าเฉลี่ย 20 แท่ง เป็นหลักฐานสนับสนุนแนวโน้มระยะสั้น' : 'ราคาปิดต่ำกว่าค่าเฉลี่ย 20 แท่ง แสดงว่าแนวโน้มระยะสั้นยังอ่อน' },
-    { key: 'EMA (50)', signal: signals.ema, value: `ราคา ${number(last)} · EMA ${number(ema50)}`, detail: last >= ema50 ? 'ราคาอยู่เหนือค่าเฉลี่ย EMA 50 แท่ง สนับสนุนโมเมนตัมในช่วงที่ยาวขึ้น' : 'ราคาอยู่ต่ำกว่า EMA 50 แท่ง เป็นสัญญาณว่าระยะกลางยังมีแรงกดดัน' }
+    { key: 'EMA (20)', signal: signals.ema20, value: `ราคา ${number(last)} · EMA ${number(emas.ema20)}`, detail: `ราคา${last >= emas.ema20 ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย 20 แท่ง ใช้ดูโมเมนตัมระยะสั้น${emas.ema20 === null ? ' · ต้องมีข้อมูลอย่างน้อย 20 แท่ง' : ''}` }
   ];
+  if (emas.ema20 === null) reasons.pop();
+  for (const [key, period, horizon] of [['ema100', 100, 'ระยะกลาง'], ['ema200', 200, 'ระยะยาว']]) {
+    if (emas[key] === null) continue;
+    reasons.push({ key: `EMA (${period})`, signal: signals[key], value: `ราคา ${number(last)} · EMA ${number(emas[key])}`, detail: `ราคา${last >= emas[key] ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย ${period} แท่ง เป็นหลักฐานแนวโน้ม${horizon}` });
+  }
   const buy = Object.values(signals).filter(value => value === 'ซื้อ').length;
   const sell = Object.values(signals).filter(value => value === 'ขาย').length;
   const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
-  const recent = usable.slice(-20);
-  const support = Math.min(...recent.map(bar => Number(bar.low) || Number(bar.close)));
-  const resistance = Math.max(...recent.map(bar => Number(bar.high) || Number(bar.close)));
-  return { values, rsi, sma20, ema50, macd: macd.at(-1), macdSignal: signalLine.at(-1), last, signals, reasons, buy, sell, overall, support, resistance };
+  const levels = findPriceLevels(usable, last);
+  return { values, rsi, sma20, emas, macd: macd.at(-1), macdSignal: signalLine.at(-1), last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 6 };
 }
 function drawSignals(bars) {
   const analysis = analyseTechnicals(bars);
@@ -223,17 +258,30 @@ function drawSignals(bars) {
     setText('#analysis-note', `ได้รับข้อมูล ${(bars || []).length} จุด ต้องมีอย่างน้อย 30 แท่งเพื่อสรุปสัญญาณ`);
     $('#technical-reasons').innerHTML = '<p class="reason-empty">ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยให้ครบ</p>';
     setText('#technical-plan', 'รอข้อมูลเพิ่มก่อนสรุปเงื่อนไขที่ควรจับตา');
+    ['rsi-signal', 'macd-signal', 'sma-signal', 'ema20-signal', 'ema100-signal', 'ema200-signal'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.textContent = 'ข้อมูลไม่พอ'; el.className = 'pill neutral-pill'; }
+    });
+    ['#buy-count', '#neutral-count', '#sell-count'].forEach(id => setText(id, '—'));
+    ['#overall-signal', '.signal-score strong', '.neutral-chip'].forEach(id => setText(id, 'รอข้อมูล'));
+    setText('#rsi-value', '—'); setText('.signal-gauge>b', '—');
+    if ($('.gauge-needle')) $('.gauge-needle').style.transform = 'rotate(0deg)';
+    if ($('.rsi-track i')) $('.rsi-track i').style.left = '50%';
+    for (let i = 1; i <= 3; i++) { setText(`#support-${i}`, '—'); setText(`#resistance-${i}`, '—'); }
     return null;
   }
-  const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema: 'ema-signal' };
-  Object.entries(analysis.signals).forEach(([key, value]) => {
-    const el = document.getElementById(ids[key]);
-    el.textContent = value;
+  const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema20: 'ema20-signal', ema100: 'ema100-signal', ema200: 'ema200-signal' };
+  Object.entries(ids).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const value = analysis.signals[key];
+    const requiredBars = { ema20: 20, ema100: 100, ema200: 200 }[key];
+    el.textContent = value || (requiredBars ? `ข้อมูลไม่ครบ (${analysis.values.length}/${requiredBars})` : 'รอข้อมูล');
     el.className = `pill ${value === 'ซื้อ' ? 'buy-pill' : value === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
   });
-  setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(4 - analysis.buy - analysis.sell));
+  setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(analysis.available - analysis.buy - analysis.sell));
   setText('#overall-signal', analysis.overall); setText('.signal-score strong', analysis.overall); setText('.neutral-chip', analysis.overall);
-  const gauge = Math.round(50 + (analysis.buy - analysis.sell) * 12);
+  const gauge = Math.round(50 + (analysis.buy - analysis.sell) / analysis.available * 50);
   setText('.signal-gauge>b', String(gauge)); $('.gauge-needle').style.transform = `rotate(${-90 + gauge * 1.8}deg)`;
   setText('#rsi-value', analysis.rsi.toFixed(1)); $('.rsi-track i').style.left = `${analysis.rsi}%`;
   const supportive = analysis.reasons.filter(reason => reason.signal === 'ซื้อ');
@@ -241,14 +289,18 @@ function drawSignals(bars) {
   const neutral = analysis.reasons.filter(reason => reason.signal === 'เป็นกลาง');
   const group = (title, className, items) => `<div class="reason-group ${className}"><b>${title} (${items.length})</b>${items.length ? `<ul>${items.map(item => `<li><strong>${escapeHtml(item.key)} · ${escapeHtml(item.value)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join('')}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
   $('#technical-reasons').innerHTML = group('แรงหนุนฝั่งบวก', 'positive', supportive) + group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing) + (neutral.length ? group('ยังไม่ชี้ทิศทาง', 'neutral', neutral) : '');
-  setText('#technical-support', number(analysis.support)); setText('#technical-resistance', number(analysis.resistance));
+  for (let i = 0; i < 3; i++) {
+    setText(`#support-${i + 1}`, number(analysis.levels.supports[i]));
+    setText(`#resistance-${i + 1}`, number(analysis.levels.resistances[i]));
+  }
+  const support1 = analysis.levels.supports[0], resistance1 = analysis.levels.resistances[0];
   const plan = analysis.overall === 'ซื้อ'
-    ? `หลักฐานเอนบวก ${analysis.buy}/4 ข้อ · จับตาว่าราคาจะยืนเหนือแนวต้าน ${number(analysis.resistance)} ได้หรือไม่; หากปิดต่ำกว่าแนวรับ ${number(analysis.support)} มุมมองนี้อ่อนลง`
+    ? `หลักฐานเอนบวก ${analysis.buy}/${analysis.available} ข้อ · รอการยืนเหนือแนวต้าน 1 ${number(resistance1)} เพื่อยืนยัน; หากปิดต่ำกว่าแนวรับ 1 ${number(support1)} มุมมองนี้อ่อนลง`
     : analysis.overall === 'ขาย'
-      ? `หลักฐานเอนลบ ${analysis.sell}/4 ข้อ · จับตาว่าราคาจะกลับยืนเหนือแนวรับ ${number(analysis.support)} ได้หรือไม่; หากหลุดระดับนี้แรงกดดันอาจต่อเนื่อง`
-      : `สัญญาณบวก ${analysis.buy} ข้อและลบ ${analysis.sell} ข้อขัดแย้งกัน · รอราคาเลือกทิศทางเทียบแนวรับ ${number(analysis.support)} และแนวต้าน ${number(analysis.resistance)}`;
+      ? `หลักฐานเอนลบ ${analysis.sell}/${analysis.available} ข้อ · หากหลุดแนวรับ 1 ${number(support1)} แรงกดดันอาจต่อเนื่อง; การกลับยืนเหนือแนวต้าน 1 ${number(resistance1)} จะทำให้มุมมองลบอ่อนลง`
+      : `สัญญาณบวก ${analysis.buy} ข้อและลบ ${analysis.sell} ข้อ · รอราคาเลือกทิศทางเหนือแนวต้าน 1 ${number(resistance1)} หรือหลุดแนวรับ 1 ${number(support1)} ก่อนพิจารณา`;
   setText('#technical-plan', plan);
-  setText('#analysis-note', `${analysis.overall === 'ซื้อ' ? 'หลักฐานเอนบวก' : analysis.overall === 'ขาย' ? 'หลักฐานเอนลบ' : 'สัญญาณยังผสม'} · ซื้อ ${analysis.buy} / กลาง ${4 - analysis.buy - analysis.sell} / ขาย ${analysis.sell} · กราฟช่วง ${currentRange} (${analysis.values.length} แท่ง)`);
+  setText('#analysis-note', `${analysis.overall === 'ซื้อ' ? 'หลักฐานเอนบวก' : analysis.overall === 'ขาย' ? 'หลักฐานเอนลบ' : 'สัญญาณยังผสม'} · ซื้อ ${analysis.buy} / กลาง ${analysis.available - analysis.buy - analysis.sell} / ขาย ${analysis.sell} · มีข้อมูล ${analysis.available}/${analysis.total} indicators · ช่วง ${currentRange} (${analysis.values.length} แท่ง)`);
   return analysis;
 }
 function getAlertPref(symbol) { return alertPrefs[symbol] || { technical: true, above: '', below: '' }; }
