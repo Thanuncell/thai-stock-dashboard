@@ -16,6 +16,14 @@ let activeSource = 'all';
 let searchTimer;
 let searchSequence = 0;
 let currentRange = '1D';
+let alertPrefs = readLocal('setscope-alert-prefs', {});
+let alertStates = readLocal('setscope-alert-states', {});
+let alertHistory = readLocal('setscope-alert-history', []);
+let unreadAlerts = 0;
+
+function readLocal(key, fallback) {
+  try { const value = JSON.parse(localStorage.getItem(key)); return value ?? fallback; } catch (_) { return fallback; }
+}
 
 function loadWatchlist() {
   try {
@@ -153,6 +161,7 @@ async function addStock(symbol, name = symbol, select = true) {
   saveWatchlist();
   if (select) activeSymbol = symbol;
   renderWatchlist(latestMarket?.stocks || []);
+  renderAlertSettings();
   $('#stock-search').value = '';
   hideSuggestions();
   updateTradingViewChart();
@@ -164,44 +173,138 @@ function computeEma(values, period) {
   const k = 2 / (period + 1);
   return values.map((value, index) => index ? value * k + values[index - 1] * (1 - k) : value);
 }
-function drawSignals(values) {
-  if (values.length < 30) {
-    setText('#analysis-note', `ได้รับข้อมูล ${values.length} จุด ต้องมีข้อมูลเพิ่มเพื่อคำนวณสัญญาณได้ครบ`);
-    return;
-  }
-  let gains = 0, losses = 0;
-  for (let i = Math.max(1, values.length - 14); i < values.length; i++) {
+function analyseTechnicals(bars) {
+  const usable = (bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
+  const values = usable.map(bar => Number(bar.close));
+  if (values.length < 30) return null;
+  const period = 14;
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
     const change = values[i] - values[i - 1];
-    if (change > 0) gains += change; else losses -= change;
+    if (change > 0) avgGain += change; else avgLoss -= change;
   }
-  const rsi = 100 - 100 / (1 + gains / Math.max(losses, 0.00001));
+  avgGain /= period; avgLoss /= period;
+  for (let i = period + 1; i < values.length; i++) {
+    const change = values[i] - values[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(change, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-change, 0)) / period;
+  }
+  const rsi = avgGain === 0 && avgLoss === 0 ? 50 : avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   const sma20 = values.slice(-20).reduce((sum, value) => sum + value, 0) / 20;
   const ema50 = computeEma(values, 50).at(-1);
   const fast = computeEma(values, 12), slow = computeEma(values, 26);
   const macd = fast.map((value, index) => value - slow[index]);
-  const signal = computeEma(macd, 9);
-  const latest = values.at(-1);
+  const signalLine = computeEma(macd, 9);
+  const last = values.at(-1);
+  const macdDiff = macd.at(-1) - signalLine.at(-1);
   const signals = {
-    'rsi-signal': rsi < 30 ? 'ซื้อ' : rsi > 70 ? 'ขาย' : 'เป็นกลาง',
-    'sma-signal': latest > sma20 ? 'ซื้อ' : 'ขาย',
-    'ema-signal': latest > ema50 ? 'ซื้อ' : 'ขาย',
-    'macd-signal': macd.at(-1) > signal.at(-1) ? 'ซื้อ' : 'ขาย'
+    rsi: rsi < 30 ? 'ซื้อ' : rsi > 70 ? 'ขาย' : 'เป็นกลาง',
+    macd: macdDiff > 0 ? 'ซื้อ' : 'ขาย',
+    sma: last >= sma20 ? 'ซื้อ' : 'ขาย',
+    ema: last >= ema50 ? 'ซื้อ' : 'ขาย'
   };
-  let buy = 0, sell = 0;
-  Object.entries(signals).forEach(([id, text]) => {
-    const el = document.getElementById(id);
-    el.textContent = text;
-    el.className = `pill ${text === 'ซื้อ' ? 'buy-pill' : text === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
-    if (text === 'ซื้อ') buy++; else if (text === 'ขาย') sell++;
-  });
+  const reasons = [
+    { key: 'RSI (14)', signal: signals.rsi, value: `RSI ${rsi.toFixed(1)}`, detail: rsi < 30 ? 'ต่ำกว่า 30: แรงขายมาก อาจเกิดแรงรีบาวด์ แต่ยังไม่ยืนยันว่าราคากลับตัว' : rsi > 70 ? 'สูงกว่า 70: ภาวะซื้อมาก ราคาอาจย่อตัวได้ แต่ในขาขึ้น RSI อาจสูงต่อเนื่อง' : 'อยู่ระหว่าง 30–70: ยังไม่เข้าขอบเขตซื้อมาก/ขายมากตามเกณฑ์ทั่วไป' },
+    { key: 'MACD (12, 26, 9)', signal: signals.macd, value: `MACD ${macd.at(-1).toFixed(3)} · Signal ${signalLine.at(-1).toFixed(3)}`, detail: macdDiff > 0 ? 'เส้น MACD อยู่เหนือเส้น Signal โมเมนตัมระยะสั้นเป็นบวก' : 'เส้น MACD อยู่ใต้เส้น Signal โมเมนตัมระยะสั้นเป็นลบ' },
+    { key: 'SMA (20)', signal: signals.sma, value: `ราคา ${number(last)} · SMA ${number(sma20)}`, detail: last >= sma20 ? 'ราคาปิดอยู่เหนือค่าเฉลี่ย 20 แท่ง เป็นหลักฐานสนับสนุนแนวโน้มระยะสั้น' : 'ราคาปิดต่ำกว่าค่าเฉลี่ย 20 แท่ง แสดงว่าแนวโน้มระยะสั้นยังอ่อน' },
+    { key: 'EMA (50)', signal: signals.ema, value: `ราคา ${number(last)} · EMA ${number(ema50)}`, detail: last >= ema50 ? 'ราคาอยู่เหนือค่าเฉลี่ย EMA 50 แท่ง สนับสนุนโมเมนตัมในช่วงที่ยาวขึ้น' : 'ราคาอยู่ต่ำกว่า EMA 50 แท่ง เป็นสัญญาณว่าระยะกลางยังมีแรงกดดัน' }
+  ];
+  const buy = Object.values(signals).filter(value => value === 'ซื้อ').length;
+  const sell = Object.values(signals).filter(value => value === 'ขาย').length;
   const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
-  setText('#buy-count', String(buy)); setText('#sell-count', String(sell)); setText('#neutral-count', String(4 - buy - sell));
-  setText('#overall-signal', overall); setText('.signal-score strong', overall); setText('.neutral-chip', overall);
-  setText('.signal-gauge>b', String(Math.round(50 + (buy - sell) * 12)));
-  $('.gauge-needle').style.transform = `rotate(${-90 + (50 + (buy - sell) * 12) * 1.8}deg)`;
-  setText('#rsi-value', rsi.toFixed(1));
-  $('.rsi-track i').style.left = `${rsi}%`;
-  setText('#analysis-note', `RSI ${rsi.toFixed(1)} · MACD · SMA 20 · EMA 50 คำนวณจาก ${values.length} จุดราคาจาก Yahoo Finance`);
+  const recent = usable.slice(-20);
+  const support = Math.min(...recent.map(bar => Number(bar.low) || Number(bar.close)));
+  const resistance = Math.max(...recent.map(bar => Number(bar.high) || Number(bar.close)));
+  return { values, rsi, sma20, ema50, macd: macd.at(-1), macdSignal: signalLine.at(-1), last, signals, reasons, buy, sell, overall, support, resistance };
+}
+function drawSignals(bars) {
+  const analysis = analyseTechnicals(bars);
+  if (!analysis) {
+    setText('#analysis-note', `ได้รับข้อมูล ${(bars || []).length} จุด ต้องมีอย่างน้อย 30 แท่งเพื่อสรุปสัญญาณ`);
+    $('#technical-reasons').innerHTML = '<p class="reason-empty">ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยให้ครบ</p>';
+    setText('#technical-plan', 'รอข้อมูลเพิ่มก่อนสรุปเงื่อนไขที่ควรจับตา');
+    return null;
+  }
+  const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema: 'ema-signal' };
+  Object.entries(analysis.signals).forEach(([key, value]) => {
+    const el = document.getElementById(ids[key]);
+    el.textContent = value;
+    el.className = `pill ${value === 'ซื้อ' ? 'buy-pill' : value === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
+  });
+  setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(4 - analysis.buy - analysis.sell));
+  setText('#overall-signal', analysis.overall); setText('.signal-score strong', analysis.overall); setText('.neutral-chip', analysis.overall);
+  const gauge = Math.round(50 + (analysis.buy - analysis.sell) * 12);
+  setText('.signal-gauge>b', String(gauge)); $('.gauge-needle').style.transform = `rotate(${-90 + gauge * 1.8}deg)`;
+  setText('#rsi-value', analysis.rsi.toFixed(1)); $('.rsi-track i').style.left = `${analysis.rsi}%`;
+  const supportive = analysis.reasons.filter(reason => reason.signal === 'ซื้อ');
+  const opposing = analysis.reasons.filter(reason => reason.signal === 'ขาย');
+  const neutral = analysis.reasons.filter(reason => reason.signal === 'เป็นกลาง');
+  const group = (title, className, items) => `<div class="reason-group ${className}"><b>${title} (${items.length})</b>${items.length ? `<ul>${items.map(item => `<li><strong>${escapeHtml(item.key)} · ${escapeHtml(item.value)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join('')}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
+  $('#technical-reasons').innerHTML = group('แรงหนุนฝั่งบวก', 'positive', supportive) + group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing) + (neutral.length ? group('ยังไม่ชี้ทิศทาง', 'neutral', neutral) : '');
+  setText('#technical-support', number(analysis.support)); setText('#technical-resistance', number(analysis.resistance));
+  const plan = analysis.overall === 'ซื้อ'
+    ? `หลักฐานเอนบวก ${analysis.buy}/4 ข้อ · จับตาว่าราคาจะยืนเหนือแนวต้าน ${number(analysis.resistance)} ได้หรือไม่; หากปิดต่ำกว่าแนวรับ ${number(analysis.support)} มุมมองนี้อ่อนลง`
+    : analysis.overall === 'ขาย'
+      ? `หลักฐานเอนลบ ${analysis.sell}/4 ข้อ · จับตาว่าราคาจะกลับยืนเหนือแนวรับ ${number(analysis.support)} ได้หรือไม่; หากหลุดระดับนี้แรงกดดันอาจต่อเนื่อง`
+      : `สัญญาณบวก ${analysis.buy} ข้อและลบ ${analysis.sell} ข้อขัดแย้งกัน · รอราคาเลือกทิศทางเทียบแนวรับ ${number(analysis.support)} และแนวต้าน ${number(analysis.resistance)}`;
+  setText('#technical-plan', plan);
+  setText('#analysis-note', `${analysis.overall === 'ซื้อ' ? 'หลักฐานเอนบวก' : analysis.overall === 'ขาย' ? 'หลักฐานเอนลบ' : 'สัญญาณยังผสม'} · ซื้อ ${analysis.buy} / กลาง ${4 - analysis.buy - analysis.sell} / ขาย ${analysis.sell} · กราฟช่วง ${currentRange} (${analysis.values.length} แท่ง)`);
+  return analysis;
+}
+function getAlertPref(symbol) { return alertPrefs[symbol] || { technical: true, above: '', below: '' }; }
+function renderAlertSettings() {
+  const root = $('#alerts-settings');
+  if (!watchlist.length) { root.innerHTML = '<p class="alert-empty">เพิ่มหุ้นเข้า Watchlist ก่อนตั้งการเตือน</p>'; return; }
+  root.innerHTML = watchlist.map(item => {
+    const pref = getAlertPref(item.symbol);
+    return `<article class="alert-stock-setting" data-alert-symbol="${escapeHtml(item.symbol)}"><header><b>${escapeHtml(item.symbol)}</b><span>${escapeHtml(item.name || item.symbol)}</span></header><label class="alert-check"><input type="checkbox" data-field="technical" ${pref.technical ? 'checked' : ''}> เตือนเมื่อสัญญาณเทคนิคเปลี่ยนเป็นซื้อ/ขาย</label><div class="alert-price-fields"><label>สูงกว่า<input type="number" min="0" step="0.01" data-field="above" value="${escapeHtml(pref.above)}" placeholder="ไม่ตั้ง"></label><label>ต่ำกว่า<input type="number" min="0" step="0.01" data-field="below" value="${escapeHtml(pref.below)}" placeholder="ไม่ตั้ง"></label></div></article>`;
+  }).join('');
+}
+function renderAlertHistory() {
+  const root = $('#alerts-history');
+  root.innerHTML = alertHistory.length ? alertHistory.slice(0, 8).map(item => `<div class="alert-history-item"><b>${escapeHtml(item.symbol)} · ${escapeHtml(item.title)}</b><span>${escapeHtml(item.body)}</span><time>${escapeHtml(stamp(item.time))}</time></div>`).join('') : '<p class="alert-empty">ยังไม่มีรายการแจ้งเตือน</p>';
+  const badge = $('#alert-badge');
+  badge.hidden = unreadAlerts === 0;
+  badge.textContent = String(unreadAlerts);
+}
+function updateNotificationStatus() {
+  const permission = 'Notification' in window ? Notification.permission : 'unsupported';
+  const text = permission === 'granted' ? 'อนุญาตแล้ว · แจ้งเมื่อเปิดเว็บค้างไว้' : permission === 'denied' ? 'ถูกปิดกั้นโดยเบราว์เซอร์ · ปรับได้จากการตั้งค่าเว็บไซต์' : permission === 'unsupported' ? 'เบราว์เซอร์นี้ไม่รองรับแจ้งเตือนนอกหน้าเว็บ' : 'ยังไม่ได้อนุญาต · รายการแจ้งเตือนในหน้านี้ยังใช้ได้';
+  setText('#notification-status', text);
+  setText('#notification-permission', permission === 'granted' ? 'เปิดรับแจ้งเตือนแล้ว' : 'อนุญาตการแจ้งเตือนบนเบราว์เซอร์');
+  $('#notification-permission').disabled = permission === 'granted' || permission === 'unsupported';
+}
+function recordAlert(symbol, title, body) {
+  const item = { symbol, title, body, time: new Date().toISOString() };
+  alertHistory.unshift(item); alertHistory = alertHistory.slice(0, 30);
+  localStorage.setItem('setscope-alert-history', JSON.stringify(alertHistory));
+  if ($('#alerts-panel').hidden) unreadAlerts++;
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification(`${symbol} · ${title}`, { body, tag: `setscope-${symbol}-${title}` }); } catch (_) {}
+  }
+  renderAlertHistory();
+}
+function evaluateWatchlistAlerts(rows) {
+  const current = new Set(watchlist.map(item => item.symbol));
+  const now = Date.now();
+  rows.filter(row => current.has(row.symbol)).forEach(row => {
+    const analysis = analyseTechnicals(row.history || []);
+    const price = Number(row.last);
+    const previous = alertStates[row.symbol];
+    const fresh = previous && now - Number(previous.updatedAt || 0) < 6 * 60 * 60 * 1000;
+    const pref = getAlertPref(row.symbol);
+    if (fresh && analysis && pref.technical && previous.technical && analysis.overall !== previous.technical && analysis.overall !== 'เป็นกลาง') {
+      const side = analysis.overall === 'ซื้อ' ? analysis.reasons.filter(item => item.signal === 'ซื้อ') : analysis.reasons.filter(item => item.signal === 'ขาย');
+      recordAlert(row.symbol, `สัญญาณเอน${analysis.overall}`, `${side.slice(0, 2).map(item => item.key).join(' และ ')} · ราคา ${number(price)} (Yahoo ล่าช้า)`);
+    }
+    const above = Number(pref.above), below = Number(pref.below);
+    if (fresh && Number.isFinite(price) && Number(previous.price) > 0) {
+      if (Number.isFinite(above) && above > 0 && previous.price < above && price >= above) recordAlert(row.symbol, 'ผ่านระดับราคาขาขึ้น', `ราคา ${number(price)} สูงกว่าระดับที่ตั้ง ${number(above)} (Yahoo ล่าช้า)`);
+      if (Number.isFinite(below) && below > 0 && previous.price > below && price <= below) recordAlert(row.symbol, 'ผ่านระดับราคาขาลง', `ราคา ${number(price)} ต่ำกว่าระดับที่ตั้ง ${number(below)} (Yahoo ล่าช้า)`);
+    }
+    alertStates[row.symbol] = { price, technical: analysis?.overall || previous?.technical || '', updatedAt: now };
+  });
+  localStorage.setItem('setscope-alert-states', JSON.stringify(alertStates));
 }
 function updateStockCards(rows) {
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
@@ -220,7 +323,7 @@ function updateStockCards(rows) {
   $('#chart-change').className = change >= 0 ? 'up' : 'down';
   setText('#chart-name', quote.fullName || quote.symbol);
   setText('#history-count', String(latestMarket?.history?.length || 0));
-  drawSignals((latestMarket?.history || []).map(bar => Number(bar.close)).filter(Number.isFinite));
+  drawSignals(latestMarket?.history || []);
 }
 async function getMarket() {
   if (!watchlist.length) { renderWatchlist(); return; }
@@ -231,6 +334,7 @@ async function getMarket() {
     if (!response.ok) throw new Error(data.error || 'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');
     latestMarket = data;
     const stocks = data.stocks || [];
+    evaluateWatchlistAlerts(stocks);
     updateStockCards(stocks);
     const index = (data.indices || []).find(item => item.symbol === 'SET');
     if (index && Number(index.last) > 0) {
@@ -269,6 +373,7 @@ function renderNews(items) {
 function setup() {
   setTheme(localStorage.getItem('setscope-theme') || 'light');
   renderWatchlist();
+  renderAlertSettings(); renderAlertHistory(); updateNotificationStatus();
   const handleWatchlistClick = event => {
     const remove = event.target.closest('[data-remove]');
     if (remove) {
@@ -277,13 +382,42 @@ function setup() {
       const symbol = remove.dataset.remove;
       watchlist = watchlist.filter(item => item.symbol !== symbol);
       if (activeSymbol === symbol) activeSymbol = watchlist[0].symbol;
-      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); return;
+      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); updateTradingViewChart(); getMarket(); return;
     }
     const row = event.target.closest('.watch-item');
     if (row) { activeSymbol = row.dataset.sym; renderWatchlist(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); }
   };
   $('#watchlist').addEventListener('click', handleWatchlistClick);
   $('#watchlist-mobile').addEventListener('click', handleWatchlistClick);
+  const alertsPanel = $('#alerts-panel');
+  $('#alerts-toggle').addEventListener('click', () => {
+    alertsPanel.hidden = !alertsPanel.hidden;
+    $('#alerts-toggle').setAttribute('aria-expanded', String(!alertsPanel.hidden));
+    if (!alertsPanel.hidden) { unreadAlerts = 0; renderAlertHistory(); renderAlertSettings(); }
+  });
+  $('#alerts-close').addEventListener('click', () => { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); });
+  $('#notification-permission').addEventListener('click', async () => {
+    if (!('Notification' in window)) { updateNotificationStatus(); return; }
+    try { await Notification.requestPermission(); } catch (_) {}
+    updateNotificationStatus();
+  });
+  $('#alerts-settings').addEventListener('change', event => {
+    const field = event.target.dataset.field, stock = event.target.closest('[data-alert-symbol]');
+    if (!field || !stock) return;
+    const symbol = stock.dataset.alertSymbol, pref = getAlertPref(symbol);
+    pref[field] = field === 'technical' ? event.target.checked : event.target.value;
+    alertPrefs[symbol] = pref; localStorage.setItem('setscope-alert-prefs', JSON.stringify(alertPrefs));
+  });
+  $('#alerts-settings').addEventListener('input', event => {
+    const field = event.target.dataset.field, stock = event.target.closest('[data-alert-symbol]');
+    if (!field || field === 'technical' || !stock) return;
+    const symbol = stock.dataset.alertSymbol, pref = getAlertPref(symbol);
+    pref[field] = event.target.value; alertPrefs[symbol] = pref;
+    localStorage.setItem('setscope-alert-prefs', JSON.stringify(alertPrefs));
+  });
+  document.addEventListener('click', event => {
+    if (!event.target.closest('.alerts-menu') && !alertsPanel.hidden) { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); }
+  });
   $('#add-watchlist').addEventListener('click', () => { $('#stock-search').focus(); $('#stock-search').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
   $('#stock-search').addEventListener('input', event => {
     clearTimeout(searchTimer);
