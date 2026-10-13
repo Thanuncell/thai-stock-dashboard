@@ -316,6 +316,19 @@ function analyseTechnicals(bars) {
   const levels = findPriceLevels(usable, last);
   return { values, rsi, sma20, emas, macd: macd.at(-1), macdSignal: signalLine.at(-1), last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 7 };
 }
+function updateSignalDonut(buy, hold, sell, total) {
+  const donut = $('#signal-donut');
+  if (!donut) return;
+  const safeTotal = Math.max(0, Number(total) || 0);
+  const counts = [Math.max(0, Number(buy) || 0), Math.max(0, Number(hold) || 0), Math.max(0, Number(sell) || 0)];
+  const angles = safeTotal ? counts.map(count => `${count / safeTotal * 360}deg`) : ['0deg', '0deg', '0deg'];
+  ['--donut-buy-angle', '--donut-hold-angle', '--donut-sell-angle'].forEach((name, index) => donut.style.setProperty(name, angles[index]));
+  donut.classList.toggle('no-data', safeTotal === 0);
+  const totalNode = $('#signal-total');
+  if (totalNode) totalNode.textContent = safeTotal ? String(safeTotal) : '—';
+  donut.setAttribute('aria-label', safeTotal ? `สัดส่วนสัญญาณ ซื้อ ${counts[0]} ถือ ${counts[1]} ขาย ${counts[2]} จาก ${safeTotal} สัญญาณ` : 'ยังไม่มีข้อมูลพอสรุปสัญญาณ');
+}
+
 function drawSignals(bars) {
   const analysis = analyseTechnicals(bars);
   if (!analysis) {
@@ -328,6 +341,7 @@ function drawSignals(bars) {
     });
     ['#buy-count', '#neutral-count', '#sell-count'].forEach(id => setText(id, '—'));
     ['#overall-signal', '.signal-score strong', '.neutral-chip'].forEach(id => setText(id, 'รอข้อมูล'));
+    updateSignalDonut(0, 0, 0, 0);
     setText('#rsi-value', '—');
     if ($('.rsi-track i')) $('.rsi-track i').style.left = '50%';
     for (let i = 1; i <= 3; i++) { setText(`#support-${i}`, '—'); setText(`#resistance-${i}`, '—'); }
@@ -342,7 +356,9 @@ function drawSignals(bars) {
     el.textContent = value || (requiredBars ? `ข้อมูลไม่ครบ (${analysis.values.length}/${requiredBars})` : 'รอข้อมูล');
     el.className = `pill ${value === 'ซื้อ' ? 'buy-pill' : value === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
   });
-  setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(analysis.available - analysis.buy - analysis.sell));
+  const hold = analysis.available - analysis.buy - analysis.sell;
+  setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(hold));
+  updateSignalDonut(analysis.buy, hold, analysis.sell, analysis.available);
   setText('#overall-signal', analysis.overall); setText('.signal-score strong', analysis.overall); setText('.neutral-chip', analysis.overall);
   setText('#rsi-value', analysis.rsi.toFixed(1)); $('.rsi-track i').style.left = `${analysis.rsi}%`;
   const supportive = analysis.reasons.filter(reason => reason.signal === 'ซื้อ');
