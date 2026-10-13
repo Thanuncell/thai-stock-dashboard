@@ -12,6 +12,7 @@ const number = value => value !== null && value !== undefined && value !== '' &&
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
 let watchlist = loadWatchlist();
 let activeSymbol = watchlist[0]?.symbol || 'PTT';
+let activeName = watchlist[0]?.name || 'ปตท.';
 let latestMarket = null;
 let activeSource = 'all';
 let searchTimer;
@@ -39,10 +40,6 @@ function saveWatchlist() { localStorage.setItem('setscope-watchlist', JSON.strin
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
-function status(text, kind = 'wait') {
-  const el = $('.market-hours');
-  if (el) el.innerHTML = `<i class="${kind}"></i> ${escapeHtml(text)}`;
-}
 function stamp(value) {
   if (!value) return '—';
   const date = new Date(value);
@@ -52,7 +49,15 @@ function stamp(value) {
 }
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
 function setNewsStatus(text) { const el = $('.news-foot span'); if (el) el.textContent = text; }
-function updateLiveBadge(text) { document.querySelectorAll('.live-badge').forEach(el => { el.textContent = text; }); }
+function updateWatchlistAddButton() {
+  const button = $('#watchlist-add-active');
+  if (!button) return;
+  const saved = watchlist.some(item => item.symbol === activeSymbol);
+  button.disabled = saved;
+  button.textContent = saved ? '✓ อยู่ใน Watchlist' : '＋ เพิ่มเข้า Watchlist';
+  const sidebarButton = $('#add-watchlist');
+  if (sidebarButton) sidebarButton.disabled = saved;
+}
 
 function renderWatchlist(rows = []) {
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
@@ -60,16 +65,17 @@ function renderWatchlist(rows = []) {
     const quote = bySymbol[item.symbol];
     const change = quote ? Number(quote.last) - Number(quote.prior) : null;
     const percent = quote && Number(quote.prior) ? change / Number(quote.prior) * 100 : null;
-    return `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}">
+    return `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name || item.symbol)}">
       <div class="watch-details"><span class="watch-symbol">${escapeHtml(item.symbol)}</span><span class="watch-name">${escapeHtml(item.name || item.symbol)}</span></div>
       <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}</div>
       <button class="watch-remove" type="button" data-remove="${escapeHtml(item.symbol)}" aria-label="ลบ ${escapeHtml(item.symbol)}" title="นำออกจากรายการ">×</button>
     </div>`;
-  }).join('') : '<div class="watch-empty">ยังไม่มีหุ้นในรายการ · ค้นหาหุ้นแล้วกดเพิ่มได้เลย</div>';
+  }).join('') : '<div class="watch-empty">ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist</div>';
   $('#watchlist').innerHTML = markup;
   $('#watchlist-mobile').innerHTML = markup;
   setText('.nav-count', String(watchlist.length));
   setText('#watch-metric', String(watchlist.length));
+  updateWatchlistAddButton();
 }
 
 function updateTradingViewChart() {
@@ -109,6 +115,7 @@ function updateTradingViewChart() {
     studies: [
       { id: 'MASimple@tv-basicstudies', inputs: { length: 20 } },
       { id: 'MAExp@tv-basicstudies', inputs: { length: 20 } },
+      { id: 'MAExp@tv-basicstudies', inputs: { length: 50 } },
       { id: 'MAExp@tv-basicstudies', inputs: { length: 100 } },
       { id: 'MAExp@tv-basicstudies', inputs: { length: 200 } }
     ],
@@ -136,7 +143,7 @@ function showSuggestions(items, message = '') {
     box.innerHTML = '<div class="suggestion-message">ไม่พบหุ้นที่ตรงกันในข้อมูล Yahoo Finance</div>';
   } else {
     box.innerHTML = items.map(item => `<button class="suggestion-item" type="button" role="option" data-symbol="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name)}">
-      <span class="suggestion-ticker">${escapeHtml(item.symbol)}</span><span class="suggestion-name">${escapeHtml(item.name)}</span><small>${escapeHtml(item.exchange)} · SET/mai</small>
+      <span class="suggestion-ticker">${escapeHtml(item.symbol)}</span><span class="suggestion-name">${escapeHtml(item.name)}</span><small>${escapeHtml(item.exchange)} · เลือกเพื่อดูกราฟ</small>
     </button>`).join('');
   }
   box.classList.add('visible');
@@ -156,21 +163,29 @@ async function searchStocks(query) {
     if (sequence === searchSequence) showSuggestions([], error.message || 'ค้นหาหุ้นไม่สำเร็จ');
   }
 }
-async function addStock(symbol, name = symbol, select = true) {
+async function selectStock(symbol, name = symbol) {
   symbol = String(symbol || '').trim().toUpperCase().replace(/\.BK$/, '');
   if (!/^[A-Z0-9&.-]{1,20}$/.test(symbol)) { showSuggestions([], 'ชื่อย่อหุ้นไม่ถูกต้อง'); return; }
-  if (!watchlist.some(item => item.symbol === symbol) && watchlist.length >= MAX_WATCHLIST) {
-    showSuggestions([], `รายการติดตามเต็ม ${MAX_WATCHLIST} หุ้นแล้ว กรุณานำหุ้นเดิมออกก่อน`); return;
-  }
-  if (!watchlist.some(item => item.symbol === symbol)) watchlist.push({ symbol, name: name || symbol });
-  else if (name && name !== symbol) watchlist = watchlist.map(item => item.symbol === symbol ? { ...item, name } : item);
-  saveWatchlist();
-  if (select) activeSymbol = symbol;
+  activeSymbol = symbol;
+  activeName = name || symbol;
+  setText('#chart-name', activeName);
+  setText('#chart-meta', `SET:${activeSymbol} · ${activeName} · THB`);
   renderWatchlist(latestMarket?.stocks || []);
-  renderAlertSettings();
   $('#stock-search').value = '';
   hideSuggestions();
   updateTradingViewChart();
+  await getMarket();
+}
+async function addActiveToWatchlist() {
+  const symbol = activeSymbol;
+  if (watchlist.some(item => item.symbol === symbol)) return;
+  if (!watchlist.some(item => item.symbol === symbol) && watchlist.length >= MAX_WATCHLIST) {
+    showSuggestions([], `รายการติดตามเต็ม ${MAX_WATCHLIST} หุ้นแล้ว กรุณานำหุ้นเดิมออกก่อน`); return;
+  }
+  if (!watchlist.some(item => item.symbol === symbol)) watchlist.push({ symbol, name: activeName || symbol });
+  saveWatchlist();
+  renderWatchlist(latestMarket?.stocks || []);
+  renderAlertSettings();
   await getMarket();
 }
 
@@ -223,7 +238,7 @@ function analyseTechnicals(bars) {
   }
   const rsi = avgGain === 0 && avgLoss === 0 ? 50 : avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   const sma20 = values.slice(-20).reduce((sum, value) => sum + value, 0) / 20;
-  const emas = { ema20: emaAtPeriod(values, 20), ema100: emaAtPeriod(values, 100), ema200: emaAtPeriod(values, 200) };
+  const emas = { ema20: emaAtPeriod(values, 20), ema50: emaAtPeriod(values, 50), ema100: emaAtPeriod(values, 100), ema200: emaAtPeriod(values, 200) };
   const fast = computeEma(values, 12), slow = computeEma(values, 26);
   const macd = fast.map((value, index) => value - slow[index]);
   const signalLine = computeEma(macd, 9);
@@ -239,10 +254,9 @@ function analyseTechnicals(bars) {
     { key: 'RSI (14)', signal: signals.rsi, value: `RSI ${rsi.toFixed(1)}`, detail: rsi < 30 ? 'ต่ำกว่า 30: แรงขายมาก อาจเกิดแรงรีบาวด์ แต่ยังไม่ยืนยันว่าราคากลับตัว' : rsi > 70 ? 'สูงกว่า 70: ภาวะซื้อมาก ราคาอาจย่อตัวได้ แต่ในขาขึ้น RSI อาจสูงต่อเนื่อง' : 'อยู่ระหว่าง 30–70: ยังไม่เข้าขอบเขตซื้อมาก/ขายมากตามเกณฑ์ทั่วไป' },
     { key: 'MACD (12, 26, 9)', signal: signals.macd, value: `MACD ${macd.at(-1).toFixed(3)} · Signal ${signalLine.at(-1).toFixed(3)}`, detail: macdDiff > 0 ? 'เส้น MACD อยู่เหนือเส้น Signal โมเมนตัมระยะสั้นเป็นบวก' : 'เส้น MACD อยู่ใต้เส้น Signal โมเมนตัมระยะสั้นเป็นลบ' },
     { key: 'SMA (20)', signal: signals.sma, value: `ราคา ${number(last)} · SMA ${number(sma20)}`, detail: last >= sma20 ? 'ราคาปิดอยู่เหนือค่าเฉลี่ย 20 แท่ง เป็นหลักฐานสนับสนุนแนวโน้มระยะสั้น' : 'ราคาปิดต่ำกว่าค่าเฉลี่ย 20 แท่ง แสดงว่าแนวโน้มระยะสั้นยังอ่อน' },
-    { key: 'EMA (20)', signal: signals.ema20, value: `ราคา ${number(last)} · EMA ${number(emas.ema20)}`, detail: `ราคา${last >= emas.ema20 ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย 20 แท่ง ใช้ดูโมเมนตัมระยะสั้น${emas.ema20 === null ? ' · ต้องมีข้อมูลอย่างน้อย 20 แท่ง' : ''}` }
+    { key: 'EMA (20)', signal: signals.ema20, value: `ราคา ${number(last)} · EMA ${number(emas.ema20)}`, detail: `ราคา${last >= emas.ema20 ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย 20 แท่ง ใช้ดูโมเมนตัมระยะสั้น` }
   ];
-  if (emas.ema20 === null) reasons.pop();
-  for (const [key, period, horizon] of [['ema100', 100, 'ระยะกลาง'], ['ema200', 200, 'ระยะยาว']]) {
+  for (const [key, period, horizon] of [['ema50', 50, 'ระยะสั้นถึงกลาง'], ['ema100', 100, 'ระยะกลาง'], ['ema200', 200, 'ระยะยาว']]) {
     if (emas[key] === null) continue;
     reasons.push({ key: `EMA (${period})`, signal: signals[key], value: `ราคา ${number(last)} · EMA ${number(emas[key])}`, detail: `ราคา${last >= emas[key] ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย ${period} แท่ง เป็นหลักฐานแนวโน้ม${horizon}` });
   }
@@ -250,7 +264,7 @@ function analyseTechnicals(bars) {
   const sell = Object.values(signals).filter(value => value === 'ขาย').length;
   const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
   const levels = findPriceLevels(usable, last);
-  return { values, rsi, sma20, emas, macd: macd.at(-1), macdSignal: signalLine.at(-1), last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 6 };
+  return { values, rsi, sma20, emas, macd: macd.at(-1), macdSignal: signalLine.at(-1), last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 7 };
 }
 function drawSignals(bars) {
   const analysis = analyseTechnicals(bars);
@@ -258,7 +272,7 @@ function drawSignals(bars) {
     setText('#analysis-note', `ได้รับข้อมูล ${(bars || []).length} จุด ต้องมีอย่างน้อย 30 แท่งเพื่อสรุปสัญญาณ`);
     $('#technical-reasons').innerHTML = '<p class="reason-empty">ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยให้ครบ</p>';
     setText('#technical-plan', 'รอข้อมูลเพิ่มก่อนสรุปเงื่อนไขที่ควรจับตา');
-    ['rsi-signal', 'macd-signal', 'sma-signal', 'ema20-signal', 'ema100-signal', 'ema200-signal'].forEach(id => {
+    ['rsi-signal', 'macd-signal', 'sma-signal', 'ema20-signal', 'ema50-signal', 'ema100-signal', 'ema200-signal'].forEach(id => {
       const el = document.getElementById(id);
       if (el) { el.textContent = 'ข้อมูลไม่พอ'; el.className = 'pill neutral-pill'; }
     });
@@ -270,12 +284,12 @@ function drawSignals(bars) {
     for (let i = 1; i <= 3; i++) { setText(`#support-${i}`, '—'); setText(`#resistance-${i}`, '—'); }
     return null;
   }
-  const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema20: 'ema20-signal', ema100: 'ema100-signal', ema200: 'ema200-signal' };
+  const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema20: 'ema20-signal', ema50: 'ema50-signal', ema100: 'ema100-signal', ema200: 'ema200-signal' };
   Object.entries(ids).forEach(([key, id]) => {
     const el = document.getElementById(id);
     if (!el) return;
     const value = analysis.signals[key];
-    const requiredBars = { ema20: 20, ema100: 100, ema200: 200 }[key];
+    const requiredBars = { ema20: 20, ema50: 50, ema100: 100, ema200: 200 }[key];
     el.textContent = value || (requiredBars ? `ข้อมูลไม่ครบ (${analysis.values.length}/${requiredBars})` : 'รอข้อมูล');
     el.className = `pill ${value === 'ซื้อ' ? 'buy-pill' : value === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
   });
@@ -347,12 +361,12 @@ function evaluateWatchlistAlerts(rows) {
     const pref = getAlertPref(row.symbol);
     if (fresh && analysis && pref.technical && previous.technical && analysis.overall !== previous.technical && analysis.overall !== 'เป็นกลาง') {
       const side = analysis.overall === 'ซื้อ' ? analysis.reasons.filter(item => item.signal === 'ซื้อ') : analysis.reasons.filter(item => item.signal === 'ขาย');
-      recordAlert(row.symbol, `สัญญาณเอน${analysis.overall}`, `${side.slice(0, 2).map(item => item.key).join(' และ ')} · ราคา ${number(price)} (Yahoo ล่าช้า)`);
+      recordAlert(row.symbol, `สัญญาณเอน${analysis.overall}`, `${side.slice(0, 2).map(item => item.key).join(' และ ')} · ราคา ${number(price)}`);
     }
     const above = Number(pref.above), below = Number(pref.below);
     if (fresh && Number.isFinite(price) && Number(previous.price) > 0) {
-      if (Number.isFinite(above) && above > 0 && previous.price < above && price >= above) recordAlert(row.symbol, 'ผ่านระดับราคาขาขึ้น', `ราคา ${number(price)} สูงกว่าระดับที่ตั้ง ${number(above)} (Yahoo ล่าช้า)`);
-      if (Number.isFinite(below) && below > 0 && previous.price > below && price <= below) recordAlert(row.symbol, 'ผ่านระดับราคาขาลง', `ราคา ${number(price)} ต่ำกว่าระดับที่ตั้ง ${number(below)} (Yahoo ล่าช้า)`);
+      if (Number.isFinite(above) && above > 0 && previous.price < above && price >= above) recordAlert(row.symbol, 'ผ่านระดับราคาขาขึ้น', `ราคา ${number(price)} สูงกว่าระดับที่ตั้ง ${number(above)}`);
+      if (Number.isFinite(below) && below > 0 && previous.price > below && price <= below) recordAlert(row.symbol, 'ผ่านระดับราคาขาลง', `ราคา ${number(price)} ต่ำกว่าระดับที่ตั้ง ${number(below)}`);
     }
     alertStates[row.symbol] = { price, technical: analysis?.overall || previous?.technical || '', updatedAt: now };
   });
@@ -364,7 +378,9 @@ function updateStockCards(rows) {
   const quote = bySymbol[activeSymbol];
   if (!quote) {
     setText('#chart-price', '—'); setText('#chart-change', `ไม่พบราคา ${activeSymbol} จาก Yahoo Finance`);
-    setText('#chart-name', THAI_NAMES[activeSymbol] || watchlist.find(item => item.symbol === activeSymbol)?.name || activeSymbol);
+    setText('#chart-name', activeName || THAI_NAMES[activeSymbol] || activeSymbol);
+    setText('#chart-meta', `SET:${activeSymbol} · ${activeName || activeSymbol} · THB`);
+    updateWatchlistAddButton();
     setText('#history-count', String(latestMarket?.history?.length || 0));
     return;
   }
@@ -373,12 +389,14 @@ function updateStockCards(rows) {
   setText('#chart-price', number(quote.last));
   setText('#chart-change', `${change >= 0 ? '+' : ''}${number(change)} (${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%)`);
   $('#chart-change').className = change >= 0 ? 'up' : 'down';
-  setText('#chart-name', quote.fullName || quote.symbol);
+  if (!activeName || activeName === activeSymbol) activeName = quote.fullName || activeSymbol;
+  setText('#chart-name', activeName);
+  setText('#chart-meta', `SET:${activeSymbol} · ${activeName} · THB`);
+  updateWatchlistAddButton();
   setText('#history-count', String(latestMarket?.history?.length || 0));
   drawSignals(latestMarket?.history || []);
 }
 async function getMarket() {
-  if (!watchlist.length) { renderWatchlist(); return; }
   try {
     const params = new URLSearchParams({ symbols: watchlist.map(item => item.symbol).join(','), symbol: activeSymbol, range: currentRange });
     const response = await fetch(`/api/market?${params}`);
@@ -395,17 +413,12 @@ async function getMarket() {
       $('#set-index').innerHTML = `${number(index.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
       const stats = document.querySelectorAll('.banner-stats b');
       if (stats[0]) stats[0].innerHTML = `${number(index.volume)} <em>หุ้น</em>`;
-      if (stats[2]) stats[2].textContent = `${number(index.high)} / ${number(index.low)}`;
+      if (stats[1]) stats[1].textContent = `${number(index.high)} / ${number(index.low)}`;
     }
-    setText('#market-connection', 'Yahoo · ล่าช้า 15 นาที');
-    setText('.date-button span', stamp(data.fetchedAt));
-    status('Yahoo · ล่าช้า 15 นาที');
-    updateLiveBadge('DELAYED 15M');
     const selected = stocks.find(item => item.symbol === activeSymbol);
-    if (selected) $('.chart-meta').innerHTML = `TradingView · SET:${escapeHtml(activeSymbol)} <span>วิเคราะห์ด้วย Yahoo Finance · อัปเดต ${stamp(selected.time)}</span>`;
+    if (selected) setText('#chart-meta', `SET:${activeSymbol} · ${activeName || selected.fullName} · THB`);
   } catch (error) {
-    status('Yahoo Finance ไม่พร้อม', 'error'); updateLiveBadge('OFFLINE');
-    setText('#market-connection', latestMarket ? 'ข้อมูลล่าสุดอาจเก่า' : 'ยังไม่เชื่อมต่อ');
+    console.warn('Market data refresh failed', error);
     if (!latestMarket) setText('#analysis-note', error.message);
   }
 }
@@ -433,11 +446,11 @@ function setup() {
       if (watchlist.length === 1) { showSuggestions([], 'ต้องเหลือหุ้นอย่างน้อยหนึ่งตัวในรายการ'); return; }
       const symbol = remove.dataset.remove;
       watchlist = watchlist.filter(item => item.symbol !== symbol);
-      if (activeSymbol === symbol) activeSymbol = watchlist[0].symbol;
+      if (activeSymbol === symbol) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; }
       saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); updateTradingViewChart(); getMarket(); return;
     }
     const row = event.target.closest('.watch-item');
-    if (row) { activeSymbol = row.dataset.sym; renderWatchlist(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); }
+    if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; renderWatchlist(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); }
   };
   $('#watchlist').addEventListener('click', handleWatchlistClick);
   $('#watchlist-mobile').addEventListener('click', handleWatchlistClick);
@@ -470,7 +483,13 @@ function setup() {
   document.addEventListener('click', event => {
     if (!event.target.closest('.alerts-menu') && !alertsPanel.hidden) { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); }
   });
-  $('#add-watchlist').addEventListener('click', () => { $('#stock-search').focus(); $('#stock-search').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
+  $('#add-watchlist').addEventListener('click', addActiveToWatchlist);
+  $('#watchlist-add-active').addEventListener('click', addActiveToWatchlist);
+  $('#view-stock').addEventListener('click', () => {
+    const first = $('.suggestion-item');
+    if (first) selectStock(first.dataset.symbol, first.dataset.name);
+    else if ($('#stock-search').value.trim()) selectStock($('#stock-search').value.trim());
+  });
   $('#stock-search').addEventListener('input', event => {
     clearTimeout(searchTimer);
     const query = event.target.value.trim();
@@ -481,18 +500,13 @@ function setup() {
     if (event.key === 'Escape') hideSuggestions();
     if (event.key === 'Enter') {
       const first = $('.suggestion-item');
-      if (first) { event.preventDefault(); addStock(first.dataset.symbol, first.dataset.name); }
-      else if (/^[A-Z0-9&.-]{1,20}$/i.test(event.target.value.trim())) { event.preventDefault(); addStock(event.target.value.trim()); }
+      if (first) { event.preventDefault(); selectStock(first.dataset.symbol, first.dataset.name); }
+      else if (/^[A-Z0-9&.-]{1,20}$/i.test(event.target.value.trim())) { event.preventDefault(); selectStock(event.target.value.trim()); }
     }
-  });
-  $('#search-add').addEventListener('click', () => {
-    const first = $('.suggestion-item');
-    if (first) addStock(first.dataset.symbol, first.dataset.name);
-    else if ($('#stock-search').value.trim()) addStock($('#stock-search').value.trim());
   });
   $('#symbol-suggestions').addEventListener('click', event => {
     const result = event.target.closest('.suggestion-item');
-    if (result) addStock(result.dataset.symbol, result.dataset.name);
+    if (result) selectStock(result.dataset.symbol, result.dataset.name);
   });
   document.addEventListener('click', event => {
     if (!event.target.closest('.stock-search-wrap')) hideSuggestions();
