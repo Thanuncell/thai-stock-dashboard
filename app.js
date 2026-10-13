@@ -490,6 +490,10 @@ async function getMarket() {
 }
 
 async function getNews() {
+  const refreshButton = $('#refresh-news');
+  if (refreshButton?.disabled) return;
+  if (refreshButton) { refreshButton.disabled = true; refreshButton.classList.add('is-loading'); refreshButton.textContent = 'กำลังอัปเดตข่าว…'; }
+  setNewsStatus('กำลังดึงข่าวล่าสุด…');
   try {
     const response = await apiFetch('/api/news'); const data = await response.json();
     if (!response.ok) throw new Error(data.error);
@@ -497,6 +501,9 @@ async function getNews() {
     renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
     setNewsStatus(`ย้อนหลัง 30 วัน · อัปเดต ${stamp(data.fetchedAt)}`);
   } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน'); }
+  finally {
+    if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }
+  }
 }
 function renderNews(items) {
   const positive = /(กำไรเพิ่ม|กำไรพุ่ง|โตเด่น|เติบโต|บวก|รับอานิสงส์|ปรับขึ้น|เพิ่มขึ้น|ยอดขายโต|ซื้อคืน|ปันผลเพิ่ม|ผ่านจุดต่ำสุด|ฟื้นตัว|ชนะประมูล|คว้างาน|กำไรสุทธิ.*เพิ่ม)/i;
@@ -599,6 +606,7 @@ function setup() {
     document.querySelectorAll('.source-chip').forEach(item => item.classList.remove('active'));
     button.classList.add('active'); activeSource = button.dataset.source; getNews();
   }));
+  $('#refresh-news').addEventListener('click', getNews);
   $('#refresh-chart').addEventListener('click', getMarket);
   updateTradingViewChart(); getMarket(); getNews();
   setInterval(getMarket, 60000); setInterval(getNews, 300000);
