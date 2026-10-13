@@ -19,6 +19,86 @@ async function requireUser(req,res){
 function readJson(req){return new Promise((resolve,reject)=>{let body='';req.on('data',chunk=>{body+=chunk;if(body.length>64000){reject(Error('ข้อมูลมีขนาดใหญ่เกินไป'));req.destroy()}});req.on('end',()=>{try{resolve(JSON.parse(body||'{}'))}catch(_){reject(Error('รูปแบบข้อมูลไม่ถูกต้อง'))}});req.on('error',reject)})}
 function decodeXml(s=''){return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,'$1').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;|&apos;/g,"'").replace(/&#(\d+);/g,(_,n)=>String.fromCodePoint(Number(n))).replace(/&#x([\da-f]+);/gi,(_,n)=>String.fromCodePoint(parseInt(n,16))).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()}
 function xmlTag(block,name){return block.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`,'i'))?.[1]||''}
+function marketHtmlText(value=''){
+ return decodeXml(String(value).replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]*>/g,' ').replace(/\s+/g,' '));
+}
+function marketRowsFromTable(table=''){
+ return [...table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>[...match[1].matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map(cell=>marketHtmlText(cell[1])).filter(Boolean)).filter(row=>row.length);
+}
+function marketNumber(value){const n=Number(String(value||'').replace(/,/g,'').match(/[-+]?\d+(?:\.\d+)?/)?.[0]);return Number.isFinite(n)?n:null}
+function parseSettradeMarket(html){
+ const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
+ const indexTable=tables.find(table=>table.includes('index=SET')&&table.includes('index=mai'))||'';
+ const indices=[...indexTable.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>{
+  const row=[...match[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(cell=>marketHtmlText(cell[1]));
+  const href=match[1].match(/index=(SET|mai)(?:&|[\x22'])/i)?.[1];
+  if(!href||row.length<7)return null;
+  const change=row[2]?.match(/([-+]?\d[\d,.]*)\s*\(([-+]?\d[\d,.]*)%\)/);
+  const range=(row[4]||"").match(/([-+]?\d[\d,.]*)\s+([-+]?\d[\d,.]*)/);
+  return{symbol:href.toUpperCase()==="MAI"?"mai":"SET",last:marketNumber(row[1]),change:change?marketNumber(change[1]):null,changePercent:change?marketNumber(change[2]):null,open:marketNumber(row[3]),low:range?marketNumber(range[1]):null,high:range?marketNumber(range[2]):null,volumeThousand:marketNumber(row[5]),turnoverMillion:marketNumber(row[6])};
+ }).filter(Boolean);
+ const breadth=[];
+ let breadthMarketIndex=0;
+ for(let i=0;i<tables.length;i++){
+  const rows=marketRowsFromTable(tables[i]);
+  if(rows.some(row=>/Gainers|Unchanges|Losers/i.test(row[0]||''))){
+   const market=['SET','mai'][breadthMarketIndex++]||'SET';
+   breadth.push({market,items:rows.filter(row=>/Gainers|Unchanges|Losers/i.test(row[0]||'')).map(row=>({label:row[0],count:marketNumber(row[1]),volumeThousand:marketNumber(row[2])}))});
+  }
+ }
+ const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
+ const closeStart=text.indexOf('หลังตลาดปิด');
+ const closeSummary=closeStart>=0?text.slice(closeStart).replace(/^หลังตลาดปิด\s*:?\s*/,'').split(/ดูเพิ่มเติม|ติดต่อเรา/)[0].trim().slice(0,1200):'';
+ return{indices,breadth,closeSummary};
+}
+function parseSettradeForeign(html){
+ const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
+ const table=tables.find(value=>value.includes('นักลงทุนต่างประเทศ')&&value.includes('มูลค่าซื้อ'))||'';
+ const row=marketRowsFromTable(table).find(items=>items[0]?.includes('นักลงทุนต่างประเทศ'));
+ const page=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
+ const date=page.match(/ข้อมูล ณ วันที่\s*(\d{1,2}\s+[^\s]+\s+\d{4}|[\d/.-]{8,10})/)?.[1]?.trim()||'';
+ return row?{date,name:row[0],buyMillion:marketNumber(row[1]),sellMillion:marketNumber(row[3]),netMillion:marketNumber(row[5])}:{date,name:'นักลงทุนต่างประเทศ',buyMillion:null,sellMillion:null,netMillion:null};
+}
+function parseSettradeNvdr(html){
+ const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
+ const market=text.match(/มูลค่าการซื้อขายของ SET และ mai \(ล้านบาท\)\s*([\d,.]+)/);
+ const nvdr=text.match(/มูลค่าการซื้อขายของ NVDR \(ล้านบาท\)\s*([\d,.]+)/);
+ const ratio=text.match(/สัดส่วนของ NVDR เทียบกับ SET และ mai \(%\)\s*([\d,.]+)/);
+ return{marketMillion:market?marketNumber(market[1]):null,nvdrMillion:nvdr?marketNumber(nvdr[1]):null,ratioPercent:ratio?marketNumber(ratio[1]):null};
+}
+let settradeOverviewCache={data:null,expiresAt:0,pending:null};
+async function fetchSettradePage(pathname){
+ const response=await fetch(`https://www.settrade.com${pathname}`,{headers:{'user-agent':'Mozilla/5.0 (compatible; SETscope/1.0; public market overview)','accept':'text/html'},signal:AbortSignal.timeout(10000)});
+ if(!response.ok)throw Error(`SETTRADE HTTP ${response.status}`);
+ return response.text();
+}
+async function getSettradeOverview(force=false){
+ if(!force&&settradeOverviewCache.data&&Date.now()<settradeOverviewCache.expiresAt)return{...settradeOverviewCache.data,cached:true};
+ if(settradeOverviewCache.pending)return settradeOverviewCache.pending;
+ settradeOverviewCache.pending=(async()=>{
+  const paths=['/th/equities/market-summary/overview?market=SET','/th/equities/market-data/nvdr/value','/th/equities/market-data/historical-report/investor-type','/th/derivatives/overview','/th/equities/market-summary/top-ranking/most-active-value'];
+  const pages=await Promise.allSettled(paths.map(fetchSettradePage));
+  const htmlAt=i=>pages[i]?.status==='fulfilled'?pages[i].value:'';
+  const overview=parseSettradeMarket(htmlAt(0));
+  const nvdr=parseSettradeNvdr(htmlAt(1));
+  const foreign=parseSettradeForeign(htmlAt(2));
+  const tfexText=marketHtmlText(htmlAt(3).slice(0,htmlAt(3).indexOf('window.__NUXT__')>0?htmlAt(3).indexOf('window.__NUXT__'):undefined));
+  const activeHtml=htmlAt(4);
+  const data={...overview,nvdr,foreign,tfex:{available:/Total Market\s*[^-]*\d/i.test(tfexText),delayMinutes:15},activeValue:[],source:'SETTRADE',fetchedAt:new Date().toISOString(),marketDate:foreign.date||null,errors:pages.map((page,i)=>page.status==='rejected'?paths[i]:null).filter(Boolean),links:{overview:'https://www.settrade.com/th/equities/market-summary/overview?market=SET',activeValue:'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value',nvdr:'https://www.settrade.com/th/equities/market-data/nvdr/value',investorType:'https://www.settrade.com/th/equities/market-data/historical-report/investor-type',tfex:'https://www.settrade.com/th/derivatives/overview'},activeValueStatus:activeHtml&&activeHtml.includes('table-placeholder')?'SETTRADE โหลดรายการผ่านตารางแบบโต้ตอบ โปรดเปิดดูต้นทาง':'ไม่สามารถอ่านตารางจัดอันดับจากต้นทางได้'};
+  if(settradeOverviewCache.data){
+   for(const key of ['indices','breadth','closeSummary','nvdr','foreign']){
+    const empty=key==='closeSummary'?!data[key]:key==='nvdr'?Object.values(data[key]||{}).every(value=>value==null):key==='foreign'?(data[key].netMillion==null):!data[key]?.length;
+    if(empty)data[key]=settradeOverviewCache.data[key];
+   }
+  }
+  settradeOverviewCache.data=data;settradeOverviewCache.expiresAt=Date.now()+60000;
+  return data;
+ })().catch(error=>{
+  if(settradeOverviewCache.data)return{...settradeOverviewCache.data,cached:true,stale:true,errors:[error.message]};
+  throw error;
+ }).finally(()=>{settradeOverviewCache.pending=null});
+ return settradeOverviewCache.pending;
+}
 const feeds=[['thunhoon','ทันหุ้น','site:thunhoon.com'],['kaohoon','ข่าวหุ้น','site:kaohoon.com'],['settrade','SETTRADE','site:settrade.com'],['settrade','SET','site:set.or.th']];
 async function getNews(){
  const cutoff=Date.now()-30*24*60*60*1000;
@@ -87,6 +167,7 @@ const server=http.createServer(async(req,res)=>{const url=new URL(req.url,'http:
  }
  if(req.method!=='GET'){res.writeHead(405);return res.end('Method Not Allowed')}
  if(url.pathname==='/api/search'){const q=(url.searchParams.get('q')||'').trim().slice(0,80);if(q.length<1)return send(res,200,{items:[]});try{send(res,200,{items:await yahooSearch(q),provider:'Yahoo Finance'})}catch(e){send(res,502,{error:e.message,items:[]})}return}
+ if(url.pathname==='/api/settrade-overview'){try{send(res,200,await getSettradeOverview(url.searchParams.get('refresh')==='1'))}catch(e){send(res,502,{error:'ดึงข้อมูล SETTRADE ไม่สำเร็จ',detail:e.message})}return}
  if(url.pathname==='/api/market'){try{const symbols=(url.searchParams.has('symbols')?url.searchParams.get('symbols'):'PTT,AOT,ADVANC,KBANK,CPALL').split(',').map(s=>s.trim().toUpperCase()).filter(s=>/^[A-Z0-9&.-]{1,20}$/.test(s)).slice(0,30);const active=(url.searchParams.get('symbol')||symbols[0]||'PTT').toUpperCase();if(!/^[A-Z0-9&.-]{1,20}$/.test(active))return send(res,400,{error:'ชื่อย่อหุ้นไม่ถูกต้อง'});if(!symbols.includes(active))symbols.push(active);const range=url.searchParams.get('range')||'1D';send(res,200,await getMarket(symbols,active,range))}catch(e){send(res,502,{error:e.message})}return}
  if(url.pathname==='/api/news'){try{const d=await getNews();send(res,200,d)}catch(e){send(res,502,{error:e.message})}return}
  let pathname=decodeURIComponent(url.pathname);if(pathname==='/')pathname='/index.html';const file=path.resolve(ROOT,'.'+pathname);if(!file.startsWith(ROOT+path.sep)){res.writeHead(403);return res.end('Forbidden')}fs.readFile(file,(e,data)=>{if(e){res.writeHead(404,{'content-type':'text/plain; charset=utf-8'});return res.end('Not found')}res.writeHead(200,{'content-type':TYPES[path.extname(file)]||'application/octet-stream','cache-control':'no-cache'});res.end(data)})

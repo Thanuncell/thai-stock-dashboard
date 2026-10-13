@@ -41,7 +41,7 @@ function setWatchlistSyncStatus(text, state = '') {
   });
 }
 const workspaceRoutes = {
-  overview: { nodes: ['#market-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย' },
+  overview: { nodes: ['#market-overview', '#market-data-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย' },
   chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ' },
   news: { nodes: ['#activity-section', '#news-section'], title: 'ข่าวและ<span>บทวิเคราะห์</span>', description: 'ติดตามข่าวหุ้นไทยจากแหล่งข่าวที่เลือกได้' },
   watchlist: { nodes: ['#watchlist-page', '#activity-section', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูความเคลื่อนไหวของรายการ' }
@@ -57,7 +57,7 @@ function pageFromHash(hash = location.hash) {
 function setWorkspacePage(page, updateHash = true) {
   if (!workspaceRoutes[page]) page = 'overview';
   const visible = new Set(workspaceRoutes[page].nodes);
-  ['#market-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page'].forEach(selector => {
+  ['#market-overview', '#market-data-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page'].forEach(selector => {
     const node = $(selector); if (node) node.classList.toggle('workspace-hidden', !visible.has(selector));
   });
   $('#activity-section')?.classList.toggle('workspace-single', page === 'news' || page === 'watchlist');
@@ -194,6 +194,66 @@ function stamp(value) {
   });
 }
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
+function renderSettradeOverview(data) {
+  const indices = data.indices || [];
+  $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => {
+    if (symbol === 'TFEX') return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ดูต้นทาง</strong><small>ข้อมูลล่าช้า 15 นาที · <a href="${escapeHtml(data.links?.tfex || 'https://www.settrade.com/th/derivatives/overview')}" target="_blank" rel="noopener noreferrer">เปิด SETTRADE ↗</a></small></article>`;
+    const item = indices.find(row => row.symbol === symbol);
+    if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
+    const trend = Number(item.change) > 0 ? 'up' : Number(item.change) < 0 ? 'down' : 'neutral';
+    const arrow = Number(item.change) > 0 ? '▲' : Number(item.change) < 0 ? '▼' : '•';
+    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${arrow} ${number(Math.abs(Number(item.change || 0)))} (${number(item.changePercent)}%) · มูลค่า ${number(item.turnoverMillion)} ลบ.</small></article>`;
+  }).join('');
+  const setIndex = indices.find(row => row.symbol === 'SET');
+  if (setIndex) {
+    const change = Number(setIndex.change || 0), pct = Number(setIndex.changePercent || 0);
+    $('#set-index').innerHTML = `${number(setIndex.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
+    setText('#set-volume', `${number(Number(setIndex.volumeThousand || 0) * 1000)} หุ้น`);
+    setText('#set-range', `${number(setIndex.high)} / ${number(setIndex.low)}`);
+    setText('#set-turnover', `${number(setIndex.turnoverMillion)} ล้านบาท`);
+    $('#set-turnover').title = 'มูลค่าซื้อขายจากหน้า SETTRADE · หน่วยล้านบาท';
+  }
+  const breadthLabels = { Gainers: 'ปรับขึ้น', Unchanges: 'ไม่เปลี่ยนแปลง', Losers: 'ปรับลง' };
+  const breadth = data.breadth || [];
+  const breadthTotals = breadth.flatMap(group => group.items || []).reduce((totals, item) => {
+    if (/gainers/i.test(item.label || '')) totals.up += Number(item.count || 0);
+    if (/losers/i.test(item.label || '')) totals.down += Number(item.count || 0);
+    return totals;
+  }, { up: 0, down: 0 });
+  const condition = breadth.length ? breadthTotals.up > breadthTotals.down ? 'หุ้นปรับขึ้นมากกว่าปรับลง' : breadthTotals.up < breadthTotals.down ? 'หุ้นปรับลงมากกว่าปรับขึ้น' : 'หุ้นปรับขึ้นและลงใกล้เคียงกัน' : 'ยังไม่มีข้อมูล breadth';
+  const conditionNode = $('#market-condition');
+  if (conditionNode) { conditionNode.textContent = `ภาวะตลาด: ${condition}`; conditionNode.className = `market-condition ${breadthTotals.up > breadthTotals.down ? 'up' : breadthTotals.up < breadthTotals.down ? 'down' : ''}`; }
+  $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<div class="market-breadth-group"><b>${escapeHtml(group.market)}</b>${(group.items || []).map(item => {
+    const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
+    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${number(item.volumeThousand)} พันหุ้น</small></div>`;
+  }).join('')}</div>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
+  setText('#market-close-summary', data.closeSummary || 'SETTRADE ยังไม่เผยแพร่สรุปซื้อขายสิ้นวันรอบนี้');
+  const nvdr = data.nvdr || {};
+  $('#nvdr-metrics').innerHTML = `<div><small>มูลค่าตลาด SET + mai</small><strong>${number(nvdr.marketMillion)}</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>${number(nvdr.nvdrMillion)}</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>${number(nvdr.ratioPercent)}</strong><em>%</em></div>`;
+  const foreign = data.foreign || {};
+  const net = Number(foreign.netMillion);
+  $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(foreign.netMillion)}</strong><small>ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}</small>`;
+  setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
+  setText('#settrade-updated', data.stale ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${stamp(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${stamp(data.fetchedAt)}`);
+  setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${data.marketDate}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
+}
+async function getSettradeOverview(force = false) {
+  const button = $('#refresh-market-data');
+  if (button?.disabled) return;
+  if (button) { button.disabled = true; button.classList.add('is-loading'); button.textContent = 'กำลังอัปเดต…'; }
+  setText('#settrade-updated', 'กำลังดึงข้อมูลจาก SETTRADE…');
+  try {
+    const response = await apiFetch(`/api/settrade-overview${force ? '?refresh=1' : ''}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'ดึงข้อมูลจาก SETTRADE ไม่สำเร็จ');
+    renderSettradeOverview(data);
+  } catch (error) {
+    console.warn('SETTRADE overview refresh failed', error);
+    setText('#settrade-updated', 'ดึงข้อมูลไม่สำเร็จ · ตรวจสอบข้อมูลโดยตรงที่ SETTRADE');
+  } finally {
+    if (button) { button.disabled = false; button.classList.remove('is-loading'); button.textContent = '↻ อัปเดตข้อมูลตลาด'; }
+  }
+}
 function syncTechnicalSearch() { const input = $('#stock-search'); if (input && activeSymbol) input.value = activeSymbol; }
 function setNewsStatus(text) { const el = $('.news-foot span'); if (el) el.textContent = text; }
 function updateWatchlistAddButton() {
@@ -764,7 +824,8 @@ async function setup() {
   }));
   $('#refresh-news').addEventListener('click', getNews);
   $('#refresh-chart').addEventListener('click', getMarket);
-  updateTradingViewChart(); getMarket(); getNews();
-  setInterval(getMarket, 60000); setInterval(getNews, 300000);
+  $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
+  updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews();
+  setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(getNews, 300000);
 }
 window.addEventListener('setscope:authenticated', setup, { once: true });
