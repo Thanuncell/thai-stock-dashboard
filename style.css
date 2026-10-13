@@ -72,3 +72,29 @@ body:not(.authenticated) .app-shell{display:none}body.authenticated .app-shell{d
 @keyframes news-refresh-pulse{to{opacity:.55}}
 html[data-theme="dark"] .news-refresh-btn{border-color:#35584d;background:#1d302f;color:#9ad6c1}
 html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433d}
+/* SETscope-owned OHLC chart (market data supplied by Yahoo Finance). */
+.chart-indicators{gap:7px;flex-wrap:wrap;min-height:26px}
+.chart-source-note{color:var(--muted);margin-right:auto}
+.indicator-toggle{display:inline-flex;align-items:center;gap:5px;border:1px solid transparent;border-radius:5px;padding:4px 6px;background:transparent;color:#98a2ab;font:500 9px var(--font);cursor:pointer}
+.indicator-toggle.active{border-color:var(--line);background:var(--paper);color:var(--ink)}
+.indicator-toggle i{width:11px;height:2px;border-radius:2px;background:#9aa4ac}
+.indicator-toggle .sma-line{background:#8b76c5}.indicator-toggle .ema20-line{background:#188b82}.indicator-toggle .ema50-line{background:#d5943c}.indicator-toggle .ema100-line{background:#5285c3}.indicator-toggle .ema200-line{background:#c56f82}
+.own-chart-wrap{height:380px;overflow:hidden;margin-top:6px;border:1px solid var(--line);border-radius:7px;background:var(--paper)}
+#stock-price-chart,.chart-svg-scroll{width:100%;height:100%}
+.chart-svg-scroll{overflow-x:auto;overflow-y:hidden}
+.price-chart-svg{display:block;width:100%;min-width:660px;height:100%;font-family:var(--latin),var(--font)}
+.chart-grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}
+.chart-axis-text,.chart-label{fill:var(--muted);font-size:10px}
+.chart-label{font-size:10px;font-weight:600}
+.chart-volume-separator{stroke:var(--line);stroke-width:1}
+.price-candle>line,.price-candle>rect:not(.volume-bar):not(.candle-hit){stroke:#188b70;fill:#188b70}
+.price-candle.falling>line,.price-candle.falling>rect:not(.volume-bar):not(.candle-hit){stroke:#d66569;fill:#d66569}
+.price-candle .volume-bar{opacity:.22;fill:#188b70}
+.price-candle.falling .volume-bar{fill:#d66569}
+.price-candle .candle-hit{fill:transparent;stroke:none;pointer-events:none}
+.sma20-chart-line,.ema20-chart-line,.ema50-chart-line,.ema100-chart-line,.ema200-chart-line{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke}
+.sma20-chart-line{stroke:#8b76c5}.ema20-chart-line{stroke:#188b82}.ema50-chart-line{stroke:#d5943c}.ema100-chart-line{stroke:#5285c3}.ema200-chart-line{stroke:#c56f82}
+.chart-empty{height:100%;display:grid;place-items:center;color:var(--muted);font-size:11px}
+html[data-theme="dark"] .own-chart-wrap{background:#111a23}
+html[data-theme="dark"] .indicator-toggle.active{background:#172532}
+@media(max-width:790px){.own-chart-wrap{height:330px}.chart-source-note{width:100%;margin-bottom:2px}}

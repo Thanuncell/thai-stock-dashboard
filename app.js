@@ -19,11 +19,14 @@ let watchlist = currentWatchlist().items;
 let activeSymbol = watchlist[0]?.symbol || 'PTT';
 let activeName = watchlist[0]?.name || 'ปตท.';
 let latestMarket = null;
+let latestMarketSymbol = '';
+let latestMarketRange = '';
 let activeSource = 'all';
 let latestNews = [];
 let searchTimer;
 let searchSequence = 0;
 let currentRange = '1D';
+const chartIndicators = new Set(['sma20', 'ema20', 'ema50']);
 let alertPrefs = readLocal('setscope-alert-prefs', {});
 let alertStates = readLocal('setscope-alert-states', {});
 let alertHistory = readLocal('setscope-alert-history', []);
@@ -109,50 +112,63 @@ function renderWatchlist(rows = []) {
 }
 
 function updateTradingViewChart() {
-  const host = $('#tradingview-chart');
-  if (!host || !activeSymbol) return;
-  host.replaceChildren();
-  const container = document.createElement('div');
-  container.className = 'tradingview-widget-container';
-  container.style.cssText = 'height:100%;width:100%';
-  const widget = document.createElement('div');
-  widget.className = 'tradingview-widget-container__widget';
-  widget.style.cssText = 'height:calc(100% - 28px);width:100%';
-  container.append(widget);
-  const credit = document.createElement('div');
-  credit.className = 'tradingview-widget-copyright';
-  credit.innerHTML = `<a href="https://www.tradingview.com/symbols/SET-${encodeURIComponent(activeSymbol)}/" target="_blank" rel="noopener nofollow">${escapeHtml(activeSymbol)} · SET</a><span> by TradingView</span>`;
-  container.append(credit);
-  const script = document.createElement('script');
-  script.type = 'text/javascript';
-  script.async = true;
-  script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-  const intervals = { '1D': '5', '1W': '15', '1M': 'D', '3M': 'D', '1Y': 'D' };
-  script.textContent = JSON.stringify({
-    autosize: true,
-    symbol: `SET:${activeSymbol}`,
-    interval: intervals[currentRange] || 'D',
-    timezone: 'Asia/Bangkok',
-    theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
-    style: '1',
-    locale: 'th_TH',
-    withdateranges: true,
-    hide_side_toolbar: false,
-    allow_symbol_change: true,
-    save_image: false,
-    hide_volume: false,
-    hide_top_toolbar: false,
-    studies: [
-      { id: 'MASimple@tv-basicstudies', inputs: { length: 20 } },
-      { id: 'MAExp@tv-basicstudies', inputs: { length: 20 } },
-      { id: 'MAExp@tv-basicstudies', inputs: { length: 50 } },
-      { id: 'MAExp@tv-basicstudies', inputs: { length: 100 } },
-      { id: 'MAExp@tv-basicstudies', inputs: { length: 200 } }
-    ],
-    support_host: 'https://www.tradingview.com'
-  });
-  container.append(script);
-  host.append(container);
+  if (latestMarketSymbol !== activeSymbol || latestMarketRange !== currentRange) {
+    renderPriceChart([]);
+    return;
+  }
+  renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt);
+}
+
+function renderPriceChart(bars = [], fetchedAt = '') {
+  const host = $('#stock-price-chart');
+  if (!host) return;
+  const rows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
+  if (!rows.length) {
+    host.innerHTML = '<div class="chart-empty">กำลังโหลดข้อมูลกราฟจาก Yahoo Finance…</div>';
+    return;
+  }
+  const width = 960, height = 370, left = 70, right = 16, top = 18, priceBottom = 278, volumeBottom = 335;
+  const plotWidth = width - left - right;
+  const lows = rows.map(row => Number(row.low)), highs = rows.map(row => Number(row.high));
+  const minPrice = Math.min(...lows), maxPrice = Math.max(...highs);
+  const pad = Math.max((maxPrice - minPrice) * .08, maxPrice * .003, .01);
+  const min = minPrice - pad, max = maxPrice + pad, span = max - min || 1;
+  const y = value => top + (max - value) / span * (priceBottom - top);
+  const step = plotWidth / rows.length, candleWidth = Math.max(2, Math.min(12, step * .62));
+  const x = index => left + step * index + step / 2;
+  const volumeMax = Math.max(...rows.map(row => Number(row.volume) || 0), 1);
+  const grid = Array.from({ length: 5 }, (_, index) => {
+    const value = max - span * index / 4, py = y(value);
+    return `<line class="chart-grid" x1="${left}" y1="${py}" x2="${width - right}" y2="${py}"/><text class="chart-axis-text" x="${left - 9}" y="${py + 3}" text-anchor="end">${number(value)}</text>`;
+  }).join('');
+  const candles = rows.map((bar, index) => {
+    const open = Number(bar.open), close = Number(bar.close), high = Number(bar.high), low = Number(bar.low);
+    const rising = close >= open, cx = x(index), bodyTop = Math.min(y(open), y(close)), bodyHeight = Math.max(1.4, Math.abs(y(open) - y(close)));
+    const volume = Math.max(0, Number(bar.volume) || 0), volumeHeight = volume / volumeMax * (volumeBottom - priceBottom - 6);
+    const date = new Date(bar.time);
+    const dateText = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: currentRange === '1D' || currentRange === '1W' ? '2-digit' : undefined, minute: currentRange === '1D' || currentRange === '1W' ? '2-digit' : undefined });
+    const detail = `${dateText} · O ${number(open)} · H ${number(high)} · L ${number(low)} · C ${number(close)} · Vol ${number(volume)}`;
+    return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/><rect class="volume-bar" x="${cx - candleWidth / 2}" y="${volumeBottom - volumeHeight}" width="${candleWidth}" height="${volumeHeight}"/><rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
+  }).join('');
+  const smaValues = rows.map((_, index) => index < 19 ? null : rows.slice(index - 19, index + 1).reduce((sum, row) => sum + Number(row.close), 0) / 20);
+  const indicators = [
+    ['sma20', smaValues, 'sma20-chart-line'],
+    ['ema20', computeEma(rows.map(row => Number(row.close)), 20), 'ema20-chart-line'],
+    ['ema50', computeEma(rows.map(row => Number(row.close)), 50), 'ema50-chart-line'],
+    ['ema100', computeEma(rows.map(row => Number(row.close)), 100), 'ema100-chart-line'],
+    ['ema200', computeEma(rows.map(row => Number(row.close)), 200), 'ema200-chart-line']
+  ].filter(([key]) => chartIndicators.has(key)).map(([, values, className]) => {
+    const points = values.map((value, index) => value == null ? '' : `${x(index)},${y(value)}`).filter(Boolean).join(' ');
+    return points ? `<polyline class="${className}" points="${points}"/>` : '';
+  }).join('');
+  const labelIndices = [...new Set([0, Math.floor((rows.length - 1) / 3), Math.floor((rows.length - 1) * 2 / 3), rows.length - 1])];
+  const dateLabels = labelIndices.map(index => {
+    const date = new Date(rows[index].time);
+    const label = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', ...(currentRange === '1D' ? { hour: '2-digit', minute: '2-digit' } : {}) });
+    return `<text class="chart-axis-text" x="${x(index)}" y="357" text-anchor="middle">${escapeHtml(label)}</text>`;
+  }).join('');
+  const updated = fetchedAt ? new Date(fetchedAt).toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit' }) : '—';
+  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="12">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)} · อัปเดต ${escapeHtml(updated)} (เวลาไทย)</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${dateLabels}</svg></div>`;
 }
 
 function setTheme(theme) {
@@ -437,6 +453,7 @@ function evaluateWatchlistAlerts(rows) {
   localStorage.setItem('setscope-alert-states', JSON.stringify(alertStates));
 }
 function updateStockCards(rows) {
+  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt);
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   renderWatchlist(rows);
   const quote = bySymbol[activeSymbol];
@@ -467,6 +484,8 @@ async function getMarket() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');
     latestMarket = data;
+    latestMarketSymbol = activeSymbol;
+    latestMarketRange = currentRange;
     const stocks = data.stocks || [];
     evaluateWatchlistAlerts(stocks);
     updateStockCards(stocks);
@@ -602,6 +621,14 @@ function setup() {
     document.querySelectorAll('.range-tabs button').forEach(item => item.classList.remove('selected'));
     button.classList.add('selected'); currentRange = button.dataset.range; updateTradingViewChart(); getMarket();
   }));
+  $('#chart-indicators').addEventListener('click', event => {
+    const button = event.target.closest('[data-indicator]');
+    if (!button) return;
+    const key = button.dataset.indicator;
+    if (chartIndicators.has(key)) chartIndicators.delete(key); else chartIndicators.add(key);
+    button.classList.toggle('active', chartIndicators.has(key));
+    updateTradingViewChart();
+  });
   document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.source-chip').forEach(item => item.classList.remove('active'));
     button.classList.add('active'); activeSource = button.dataset.source; getNews();
