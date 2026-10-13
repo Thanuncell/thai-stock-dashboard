@@ -753,17 +753,17 @@ function newsKey(item) { return `${item.source || ''}|${item.title || ''}`; }
 async function analyzeNewsBriefs(items) {
   if (newsAnalysisPending || !items.length) return;
   const fresh = [...new Map(items.map(item => [newsKey(item), item])).values()]
-    .filter(item => !newsAnalyses.has(newsKey(item))).slice(0, 24);
+    .filter(item => !newsAnalyses.has(newsKey(item))).slice(0, 8);
   if (!fresh.length) return;
   newsAnalysisPending = true;
-  const targets = fresh.map(item => ({ source: item.sourceName || item.source || '', title: String(item.title || '').slice(0, 300) }));
+  const targets = fresh.map(item => ({ source: item.sourceName || item.source || '', title: String(item.title || '').slice(0, 300), url: item.url, snippet: String(item.snippet || '').slice(0, 1200) }));
   try {
     const response = await apiFetch('/api/news-analysis', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: targets }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'วิเคราะห์ข่าวไม่สำเร็จ');
     (data.items || []).forEach((result, index) => {
       const item = fresh[index];
-      if (item && result?.summary) newsAnalyses.set(newsKey(item), { summary: result.summary, mode: result.mode || data.mode || 'rules' });
+      if (item && result?.summary) newsAnalyses.set(newsKey(item), { summary: result.summary, mode: result.mode || data.mode || 'rules', basis: result.basis || 'headline' });
     });
   } catch (_) {
     fresh.forEach(item => newsAnalyses.set(newsKey(item), { summary: 'อ่านรายละเอียดข่าวและตัวเลขในข่าวต้นฉบับเพิ่มเติมก่อนประเมินผลกระทบต่อหุ้น', mode: 'rules' }));
@@ -779,8 +779,8 @@ function renderNewsItem(item, options = {}) {
   const relatedSymbols = item.matchedSymbols || [];
   const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
   const analysis = newsAnalyses.get(newsKey(item));
-  const summary = analysis?.summary || 'กำลังสรุปประเด็นจากพาดหัว…';
-  const mode = analysis?.mode === 'ai' ? 'วิเคราะห์โดย AI' : 'สรุปอัตโนมัติ';
+  const summary = analysis?.summary || 'กำลังอ่านและสรุปเนื้อหาข่าว…';
+  const mode = analysis?.mode === 'ai' ? `วิเคราะห์โดย AI · ${analysis.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis.basis === 'snippet' ? 'อ่าน snippet' : 'อ่านพาดหัว'}` : `สรุปอัตโนมัติ · ${analysis?.basis === 'snippet' ? 'snippet' : 'พาดหัว'}`;
   const symbolTag = relatedSymbols.length ? `<span class="news-relevance">${escapeHtml(relatedSymbols.join(', '))}</span>` : '';
   return `<article class="news-item"><div><a class="news-title news-title-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName || item.source || 'ข่าว')}</span><span class="news-impact ${cls}" title="ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม">${mood}</span>${symbolTag}</div><div class="news-ai-summary"><b>${mode}</b><span>${escapeHtml(summary)}</span></div></div><a class="news-time" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(stamp(item.pubDate))} ↗</a></article>`;
 }
