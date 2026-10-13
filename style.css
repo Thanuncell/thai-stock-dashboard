@@ -272,3 +272,22 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 html[data-theme="dark"] .own-chart-wrap{background:#111a23}
 html[data-theme="dark"] .indicator-toggle.active{background:#172532}
 @media(max-width:790px){.own-chart-wrap{height:330px}.chart-source-note{width:100%;margin-bottom:2px}}
+/* News summaries and Watchlist-specific news */
+.news-item{align-items:start}
+.news-title-link{display:inline-block;text-decoration:none}
+.news-title-link:hover{color:#167e68;text-decoration:underline}
+.news-ai-summary{display:grid;gap:2px;margin-top:7px;padding:7px 9px;border-left:2px solid #72bca4;background:#f6faf8;border-radius:0 5px 5px 0;color:#6f7d86;font-size:9px;line-height:1.55}
+.news-ai-summary b{font-size:8px;color:#43806e;font-weight:600}
+.watchlist-news-panel{margin-top:14px}
+.watchlist-news-panel .panel-heading p{margin:4px 0 0;color:#929da5;font-size:9px}
+.watchlist-news-panel .news-list{margin-top:11px}
+.market-data-foot{align-items:flex-end;flex-wrap:wrap}
+.market-data-foot>span{font-size:8px}
+.market-sources{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap}
+.market-sources b{color:var(--ink);font-size:9px}
+.market-sources a{color:#588c7e;text-decoration:none;font-size:9px}
+.market-sources a:hover{text-decoration:underline}
+html[data-theme="dark"] .news-ai-summary{background:#172b2a;border-left-color:#61b99b;color:#c0cbc9}
+html[data-theme="dark"] .news-ai-summary b{color:#8ed2b9}
+html[data-theme="dark"] .news-title-link:hover{color:#8ed2b9}
+@media(max-width:600px){.market-sources{gap:6px 9px}.market-sources a{font-size:8px}.news-ai-summary{font-size:9px}}

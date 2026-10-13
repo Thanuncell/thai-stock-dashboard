@@ -23,6 +23,10 @@ let latestMarketSymbol = '';
 let latestMarketRange = '';
 let activeSource = 'all';
 let latestNews = [];
+let latestWatchlistNews = [];
+const newsAnalyses = new Map();
+let newsAnalysisPending = false;
+let watchlistNewsRequestId = 0;
 let searchTimer;
 let searchSequence = 0;
 let currentRange = '1D';
@@ -44,7 +48,7 @@ const workspaceRoutes = {
   overview: { nodes: ['#market-overview', '#market-data-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย' },
   chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ' },
   news: { nodes: ['#activity-section', '#news-section'], title: 'ข่าวและ<span>บทวิเคราะห์</span>', description: 'ติดตามข่าวหุ้นไทยจากแหล่งข่าวที่เลือกได้' },
-  watchlist: { nodes: ['#watchlist-page', '#activity-section', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูความเคลื่อนไหวของรายการ' }
+  watchlist: { nodes: ['#watchlist-page', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูข่าวของหุ้นในรายการที่เลือก' }
 };
 function pageFromHash(hash = location.hash) {
   const key = String(hash || '').replace(/^#/, '');
@@ -181,7 +185,7 @@ function switchWatchlist(id) {
   activeWatchlistId = id; watchlist = chosen.items; scheduleWatchlistCloudSync();
   if (watchlist.length && !watchlist.some(item => item.symbol === activeSymbol)) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; updateTradingViewChart(); }
   syncTechnicalSearch();
-  renderWatchlistPicker(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateWatchlistAddButton(); getMarket();
+  renderWatchlistPicker(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateWatchlistAddButton(); getMarket(); getWatchlistNews();
 }
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -197,7 +201,7 @@ function setText(selector, value) { const el = $(selector); if (el) el.textConte
 function renderSettradeOverview(data) {
   const indices = data.indices || [];
   $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => {
-    if (symbol === 'TFEX') return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ดูต้นทาง</strong><small>ข้อมูลล่าช้า 15 นาที · <a href="${escapeHtml(data.links?.tfex || 'https://www.settrade.com/th/derivatives/overview')}" target="_blank" rel="noopener noreferrer">เปิด SETTRADE ↗</a></small></article>`;
+    if (symbol === 'TFEX') return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ดูข้อมูลต้นทาง</strong><small>ข้อมูลล่าช้า 15 นาที · อ้างอิงแหล่งข้อมูลด้านล่าง</small></article>`;
     const item = indices.find(row => row.symbol === symbol);
     if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
     const trend = Number(item.change) > 0 ? 'up' : Number(item.change) < 0 ? 'down' : 'neutral';
@@ -407,6 +411,7 @@ async function addActiveToWatchlist() {
   renderWatchlist(latestMarket?.stocks || []);
   renderMovers(latestMarket?.stocks || []);
   renderAlertSettings();
+  getWatchlistNews();
   await getMarket();
 }
 
@@ -414,7 +419,7 @@ function createWatchlist() {
   if (watchlists.length >= MAX_WATCHLISTS) return;
   const id = `list-${Date.now()}`, name = `Watchlist ${watchlists.length + 1}`;
   watchlists.push({ id, name, items: [] }); activeWatchlistId = id; watchlist = currentWatchlist().items;
-  saveWatchlist(); renderWatchlistPicker(); renderWatchlist(); renderAlertSettings(); renderMovers([]); getMarket();
+  saveWatchlist(); renderWatchlistPicker(); renderWatchlist(); renderAlertSettings(); renderMovers([]); getMarket(); getWatchlistNews();
 }
 
 let moverMode = 'up';
@@ -704,19 +709,94 @@ async function getNews() {
     if (!response.ok) throw new Error(data.error);
     latestNews = data.items || [];
     renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
+    analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
     setNewsStatus(`ย้อนหลัง 30 วัน · อัปเดต ${stamp(data.fetchedAt)}`);
   } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน'); }
   finally {
     if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }
   }
 }
-function renderNews(items) {
-  const positive = /(กำไรเพิ่ม|กำไรพุ่ง|โตเด่น|เติบโต|บวก|รับอานิสงส์|ปรับขึ้น|เพิ่มขึ้น|ยอดขายโต|ซื้อคืน|ปันผลเพิ่ม|ผ่านจุดต่ำสุด|ฟื้นตัว|ชนะประมูล|คว้างาน|กำไรสุทธิ.*เพิ่ม)/i;
+async function getWatchlistNews() {
+  const requestId = ++watchlistNewsRequestId;
+  const root = $('#watchlist-news-list');
+  const symbols = watchlist.map(item => item.symbol).filter(Boolean);
+  if (!symbols.length) {
+    latestWatchlistNews = [];
+    const refresh = $('#refresh-watchlist-news');
+    if (refresh) { refresh.disabled = false; refresh.classList.remove('is-loading'); }
+    setText('#watchlist-news-status', `${currentWatchlist().name} ยังไม่มีหุ้นให้ค้นหาข่าว`);
+    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">เพิ่มหุ้นใน Watchlist เพื่อดูข่าวที่เกี่ยวข้อง</div></div>';
+    return;
+  }
+  const button = $('#refresh-watchlist-news');
+  if (button) { button.disabled = true; button.classList.add('is-loading'); }
+  setText('#watchlist-news-status', `กำลังค้นข่าวของ ${currentWatchlist().name}…`);
+  try {
+    const stockQuery = encodeURIComponent(JSON.stringify(watchlist.map(item => ({ symbol: item.symbol, name: item.name || item.symbol }))));
+    const response = await apiFetch(`/api/watchlist-news?stocks=${stockQuery}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
+    if (requestId !== watchlistNewsRequestId) return;
+    latestWatchlistNews = data.items || [];
+    renderWatchlistNews();
+    setText('#watchlist-news-status', `${currentWatchlist().name} · ${latestWatchlistNews.length} ข่าว · อัปเดต ${stamp(data.fetchedAt)}`);
+    analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
+  } catch (_) {
+    if (requestId !== watchlistNewsRequestId) return;
+    setText('#watchlist-news-status', 'โหลดข่าวไม่สำเร็จ · ลองอัปเดตอีกครั้ง');
+    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">ยังดึงข่าวที่ตรงกับหุ้นในรายการนี้ไม่ได้</div></div>';
+  } finally {
+    if (requestId === watchlistNewsRequestId && button) { button.disabled = false; button.classList.remove('is-loading'); }
+  }
+}
+function newsKey(item) { return `${item.source || ''}|${item.title || ''}`; }
+async function analyzeNewsBriefs(items) {
+  if (newsAnalysisPending || !items.length) return;
+  const fresh = [...new Map(items.map(item => [newsKey(item), item])).values()]
+    .filter(item => !newsAnalyses.has(newsKey(item))).slice(0, 24);
+  if (!fresh.length) return;
+  newsAnalysisPending = true;
+  const targets = fresh.map(item => ({ source: item.sourceName || item.source || '', title: String(item.title || '').slice(0, 300) }));
+  try {
+    const response = await apiFetch('/api/news-analysis', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: targets }) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'วิเคราะห์ข่าวไม่สำเร็จ');
+    (data.items || []).forEach((result, index) => {
+      const item = fresh[index];
+      if (item && result?.summary) newsAnalyses.set(newsKey(item), { summary: result.summary, mode: result.mode || data.mode || 'rules' });
+    });
+  } catch (_) {
+    fresh.forEach(item => newsAnalyses.set(newsKey(item), { summary: 'อ่านรายละเอียดข่าวและตัวเลขในข่าวต้นฉบับเพิ่มเติมก่อนประเมินผลกระทบต่อหุ้น', mode: 'rules' }));
+  } finally {
+    newsAnalysisPending = false;
+    renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
+    renderWatchlistNews();
+    if ([...latestNews, ...latestWatchlistNews].some(item => !newsAnalyses.has(newsKey(item)))) queueMicrotask(() => analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]));
+  }
+}
+function renderNewsItem(item, options = {}) {
+  const mood = options.mood || sentimentHeadline(item.title || '');
+  const relatedSymbols = item.matchedSymbols || [];
+  const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
+  const analysis = newsAnalyses.get(newsKey(item));
+  const summary = analysis?.summary || 'กำลังสรุปประเด็นจากพาดหัว…';
+  const mode = analysis?.mode === 'ai' ? 'วิเคราะห์โดย AI' : 'สรุปอัตโนมัติ';
+  const symbolTag = relatedSymbols.length ? `<span class="news-relevance">${escapeHtml(relatedSymbols.join(', '))}</span>` : '';
+  return `<article class="news-item"><div><a class="news-title news-title-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName || item.source || 'ข่าว')}</span><span class="news-impact ${cls}" title="ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม">${mood}</span>${symbolTag}</div><div class="news-ai-summary"><b>${mode}</b><span>${escapeHtml(summary)}</span></div></div><a class="news-time" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(stamp(item.pubDate))} ↗</a></article>`;
+}
+function sentimentHeadline(headline) {
+  const text = String(headline || '');
+  const positive = /(กำไรเพิ่ม|กำไรพุ่ง|โตเด่น|เติบโต|บวก|รับอานิสงส์|ปรับขึ้น|เพิ่มขึ้น|ยอดขายโต|ซื้อคืน|ปันผลเพิ่ม|ผ่านจุดต่ำสุด|ฟื้นตัว|ชนะประมูล|คว้างาน)/i;
   const negative = /(ขาดทุน|กำไรลด|กำไรวูบ|ร่วง|ลดลง|หดตัว|ปิดลบ|ผิดนัด|ถูกฟ้อง|คดี|เพิ่มทุน|ลดเป้า|เลื่อนโครงการ|ผลกระทบ|คว่ำบาตร|ภัยแล้ง|ต้นทุนพุ่ง)/i;
-  const title = item => String(item.title || '');
-  const sentiment = item => positive.test(title(item)) && !negative.test(title(item)) ? 'บวก' : negative.test(title(item)) && !positive.test(title(item)) ? 'ลบ' : 'เป็นกลาง';
-  const relevance = item => { const text = title(item).toLocaleUpperCase('th-TH'); const symbol = activeSymbol.toLocaleUpperCase('th-TH'); const name = String(activeName || '').trim(); return text.includes(symbol) || (name.length > 3 && title(item).includes(name)); };
-  $('#news-list').innerHTML = items.length ? items.map(item => { const mood = sentiment(item), related = relevance(item), cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral'; const badge = related ? `${mood}ต่อ ${activeSymbol}` : `ข่าวตลาด · ${mood}`; return `<a class="news-item" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none"><div><div class="news-title">${escapeHtml(item.title)}</div><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName)}</span><span class="news-impact ${cls}" title="ประเมินจากคำในพาดหัว ไม่ใช่การวิเคราะห์เนื้อหาฉบับเต็ม">${badge}</span>${related ? '' : '<span class="news-relevance">ไม่ได้ระบุหุ้นที่กำลังดู</span>'}</div></div><span class="news-time">${escapeHtml(stamp(item.pubDate))} ↗</span></a>`; }).join('') : '<div class="news-item"><div class="news-title">ไม่มีข่าวจากตัวกรองนี้ในขณะนี้</div></div>';
+  return positive.test(text) && !negative.test(text) ? 'บวก' : negative.test(text) && !positive.test(text) ? 'ลบ' : 'เป็นกลาง';
+}
+function renderWatchlistNews() {
+  const root = $('#watchlist-news-list');
+  if (!root) return;
+  root.innerHTML = latestWatchlistNews.length ? latestWatchlistNews.map(item => renderNewsItem(item)).join('') : '<div class="news-item"><div class="news-title">ไม่พบข่าวที่พาดพิงหุ้นใน Watchlist นี้ใน 30 วันที่ผ่านมา</div></div>';
+}
+function renderNews(items) {
+  $('#news-list').innerHTML = items.length ? items.map(item => renderNewsItem(item)).join('') : '<div class="news-item"><div class="news-title">ไม่มีข่าวจากตัวกรองนี้ในขณะนี้</div></div>';
 }
 
 async function setup() {
@@ -734,7 +814,7 @@ async function setup() {
       const symbol = remove.dataset.remove;
       watchlist = watchlist.filter(item => item.symbol !== symbol);
       if (activeSymbol === symbol && watchlist.length) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; syncTechnicalSearch(); }
-      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); return;
+      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); getWatchlistNews(); return;
     }
     const row = event.target.closest('.watch-item');
     if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; syncTechnicalSearch(); renderWatchlist(latestMarket?.stocks || []); renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource)); updateTradingViewChart(); getMarket(); }
@@ -823,9 +903,10 @@ async function setup() {
     button.classList.add('active'); activeSource = button.dataset.source; getNews();
   }));
   $('#refresh-news').addEventListener('click', getNews);
+  $('#refresh-watchlist-news').addEventListener('click', getWatchlistNews);
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
-  updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews();
-  setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(getNews, 300000);
+  updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews(); getWatchlistNews();
+  setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(getNews, 300000); setInterval(getWatchlistNews, 300000);
 }
 window.addEventListener('setscope:authenticated', setup, { once: true });
