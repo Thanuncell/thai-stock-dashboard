@@ -218,7 +218,6 @@ async function selectStock(symbol, name = symbol) {
   setText('#chart-name', activeName);
   setText('#chart-meta', `SET:${activeSymbol} · ${activeName} · THB`);
   renderWatchlist(latestMarket?.stocks || []);
-  $('#stock-search').value = '';
   hideSuggestions();
   renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
   updateTradingViewChart();
