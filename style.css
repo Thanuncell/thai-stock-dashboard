@@ -159,6 +159,27 @@ html[data-theme="dark"] .watchlist-label select,html[data-theme="dark"] .mobile-
   .mover-row small { max-width: min(54vw, 230px); }
 }
 
+/* Workspace navigation now opens focused, independent dashboard pages. */
+.workspace-hidden { display: none !important; }
+.bottom-grid.workspace-single { grid-template-columns: minmax(0, 1fr); }
+.workspace-page-intro { margin: 0 0 13px; }
+.workspace-page-intro h2 { margin: 0 0 3px; font-size: 15px; font-weight: 600; }
+.workspace-page-intro p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.watchlist-workspace .mobile-watchlist-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 0 0 12px; }
+.watchlist-workspace .mobile-watchlist-picker select { flex: 0 1 220px; max-width: 240px; min-height: 40px; font-size: 11px; }
+.watchlist-workspace .mobile-watchlist-picker button { min-height: 40px; font-size: 11px; }
+.watchlist-workspace .mobile-watchlist-picker .watchlist-sync-status { width: auto; margin-left: 0; text-align: left; }
+.watchlist-workspace .watch-list-mobile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: min(56vh, 520px); overflow: auto; padding: 2px 3px 8px 0; overscroll-behavior: contain; }
+.watchlist-workspace .watch-list-mobile .watch-item { min-width: 0; min-height: 68px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.watchlist-workspace .watch-list-mobile .watch-symbol, .watchlist-workspace .watch-list-mobile .watch-price { font-size: 12px; }
+.watchlist-workspace .watch-list-mobile .watch-name { font-size: 10px; }
+@media (max-width:790px) {
+  .watchlist-workspace .mobile-watchlist-picker { margin: 0 0 10px; }
+  .watchlist-workspace .mobile-watchlist-picker .watchlist-sync-status { width: auto; margin: 0 0 0 auto; }
+  .watchlist-workspace .watch-list-mobile { grid-template-columns: minmax(0, 1fr); max-height: min(62vh, 560px); margin: 0; }
+  .watchlist-workspace .watch-list-mobile .watch-item { min-height: 64px; }
+}
+
 /* Improve legibility of technical-analysis values and the wider market summary. */
 .market-banner{min-height:124px}.banner-stats{gap:clamp(14px,2.4vw,34px)}.banner-stats>div{min-width:95px}.banner-stats small{font-size:10px}.banner-stats b{font-size:13px}.banner-stats b em{font-size:10px}
 .analysis-panel{font-size:12px}.analysis-panel .signal-summary{gap:15px;margin:17px 0 9px}.analysis-panel .signal-gauge{transform:scale(1.08);transform-origin:left center;margin-right:7px}.analysis-panel .signal-gauge>b{font-size:22px;color:var(--ink)}.analysis-panel .signal-score{gap:6px}.analysis-panel .signal-score small{font-size:11px}.analysis-panel .signal-score strong{font-size:15px}.analysis-panel .neutral-chip{font-size:10px;padding:4px 8px}.analysis-panel .signal-counts{padding:11px 5px;margin:12px 0}.analysis-panel .signal-counts strong{font-size:15px}.analysis-panel .signal-counts span{font-size:11px}.analysis-panel .signal-row{height:38px;font-size:12px}.analysis-panel .pill{font-size:10px;padding:3px 8px}.analysis-panel .analysis-note p{font-size:11px;line-height:1.7}.analysis-panel .technical-reasons h3{font-size:12px}.analysis-panel .reason-group{padding:10px}.analysis-panel .reason-group>b{font-size:10px}.analysis-panel .reason-group li strong{font-size:10px}.analysis-panel .reason-group li span,.analysis-panel .reason-group>p{font-size:10px;line-height:1.65}.analysis-panel .technical-levels>div{padding:9px}.analysis-panel .technical-levels span{font-size:10px}.analysis-panel .technical-levels b{font-size:12px}.analysis-panel .technical-plan{font-size:10px;line-height:1.7}.analysis-panel .technical-reasons>small,.analysis-panel .disclaimer{font-size:9px;line-height:1.65}

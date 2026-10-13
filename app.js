@@ -40,6 +40,47 @@ function setWatchlistSyncStatus(text, state = '') {
     const el = $(selector); if (el) { el.textContent = text; el.dataset.state = state; }
   });
 }
+const workspaceRoutes = {
+  overview: { nodes: ['#market-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย' },
+  chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ' },
+  news: { nodes: ['#activity-section', '#news-section'], title: 'ข่าวและ<span>บทวิเคราะห์</span>', description: 'ติดตามข่าวหุ้นไทยจากแหล่งข่าวที่เลือกได้' },
+  watchlist: { nodes: ['#watchlist-page', '#activity-section', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูความเคลื่อนไหวของรายการ' }
+};
+function pageFromHash(hash = location.hash) {
+  const key = String(hash || '').replace(/^#/, '');
+  if (workspaceRoutes[key]) return key;
+  if (key === 'chart-section') return 'chart';
+  if (key === 'news-section') return 'news';
+  if (key === 'top' || key === 'watchlist') return key === 'watchlist' ? 'watchlist' : 'overview';
+  return 'overview';
+}
+function setWorkspacePage(page, updateHash = true) {
+  if (!workspaceRoutes[page]) page = 'overview';
+  const visible = new Set(workspaceRoutes[page].nodes);
+  ['#market-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page'].forEach(selector => {
+    const node = $(selector); if (node) node.classList.toggle('workspace-hidden', !visible.has(selector));
+  });
+  $('#activity-section')?.classList.toggle('workspace-single', page === 'news' || page === 'watchlist');
+  document.body.dataset.workspacePage = page;
+  document.querySelectorAll('.nav-item[data-workspace-route]').forEach(link => {
+    const active = link.dataset.workspaceRoute === page;
+    link.classList.toggle('active', active);
+    if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+  });
+  const heading = workspaceRoutes[page];
+  $('#workspace-title').innerHTML = heading.title;
+  $('#workspace-description').textContent = heading.description;
+  if (updateHash && location.hash !== `#${page}`) history.pushState(null, '', `#${page}`);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function setupWorkspaceNavigation() {
+  document.querySelectorAll('.nav-item[data-workspace-route]').forEach(link => link.addEventListener('click', event => {
+    event.preventDefault(); setWorkspacePage(link.dataset.workspaceRoute);
+  }));
+  window.addEventListener('hashchange', () => setWorkspacePage(pageFromHash(), false));
+  window.addEventListener('popstate', () => setWorkspacePage(pageFromHash(), false));
+  setWorkspacePage(pageFromHash(), false);
+}
 function persistWatchlistsLocal() {
   currentWatchlist().items = watchlist;
   localStorage.setItem('setscope-watchlists', JSON.stringify(watchlists));
@@ -132,6 +173,8 @@ function renderWatchlistPicker() {
   create.title = watchlists.length >= MAX_WATCHLISTS ? 'สร้างได้สูงสุด 5 Watchlist' : 'สร้าง Watchlist ใหม่';
   const mobileCreate = $('#watchlist-create-mobile');
   if (mobileCreate) { mobileCreate.disabled = create.disabled; mobileCreate.title = create.title; }
+  const count = document.querySelector('.nav-item[data-workspace-route="watchlist"] .nav-count');
+  if (count) count.textContent = String(watchlist.length);
 }
 function switchWatchlist(id) {
   const chosen = watchlists.find(list => list.id === id); if (!chosen) return;
@@ -618,6 +661,7 @@ function renderNews(items) {
 
 async function setup() {
   await initializeWatchlistCloudSync();
+  setupWorkspaceNavigation();
   renderWatchlistPicker();
   setTheme(localStorage.getItem('setscope-theme') || 'light');
   syncTechnicalSearch();
