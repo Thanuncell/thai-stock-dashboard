@@ -799,9 +799,68 @@ function renderNewsItem(item, options = {}) {
   const mode = analysis?.mode === 'ai'
     ? `โดย AI · ${analysis.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
     : 'สรุปจากคำสำคัญ';
-  const promo = item.source === 'broker' ? '<span class="promo-tag">จากผู้ให้บริการ อาจมีเนื้อหาส่งเสริมการขาย</span>' : '';
-  const symbolTag = relatedSymbols.length ? `<span class="news-relevance">${escapeHtml(relatedSymbols.join(', '))}</span>` : '';
-  return `<article class="news-item"><div><a class="news-title news-title-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName || item.source || 'ข่าว')}</span><span class="news-impact ${cls}" title="ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม">${mood}</span>${promo}${symbolTag}</div><div class="news-ai-summary"><b>${mode}</b><span>${escapeHtml(summary)}</span></div></div><a class="news-time" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(stamp(item.pubDate))} ↗</a></article>`;
+  const article = document.createElement('article');
+  article.className = 'news-item';
+  const content = document.createElement('div');
+  const title = document.createElement('a');
+  title.className = 'news-title news-title-link';
+  title.href = /^https:\/\//i.test(String(item.url || '')) ? item.url : '#';
+  title.target = '_blank';
+  title.rel = 'noopener noreferrer';
+  title.textContent = item.title || 'ข่าว';
+  const tags = document.createElement('div');
+  tags.className = 'news-tags';
+  const source = document.createElement('span');
+  source.className = 'source-tag';
+  source.textContent = item.sourceName || item.source || 'ข่าว';
+  const impact = document.createElement('span');
+  impact.className = `news-impact ${cls}`;
+  impact.title = 'ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม';
+  impact.textContent = mood;
+  tags.append(source, impact);
+  if (item.source === 'broker') {
+    const promo = document.createElement('span');
+    promo.className = 'promo-tag';
+    promo.textContent = 'จากผู้ให้บริการ อาจมีเนื้อหาส่งเสริมการขาย';
+    tags.append(promo);
+  }
+  if (relatedSymbols.length) {
+    const symbols = document.createElement('span');
+    symbols.className = 'news-relevance';
+    symbols.textContent = relatedSymbols.join(', ');
+    tags.append(symbols);
+  }
+  const brief = document.createElement('div');
+  brief.className = 'news-ai-summary';
+  const briefMode = document.createElement('b');
+  briefMode.textContent = mode;
+  const briefText = document.createElement('span');
+  briefText.textContent = summary;
+  brief.append(briefMode, briefText);
+  content.append(title, tags, brief);
+  const time = document.createElement('a');
+  time.className = 'news-time';
+  time.href = title.href;
+  time.target = '_blank';
+  time.rel = 'noopener noreferrer';
+  time.textContent = `${stamp(item.pubDate)} ↗`;
+  article.append(content, time);
+  return article;
+}
+function renderNewsItemsInto(root, items, emptyText) {
+  if (!root) return;
+  root.replaceChildren();
+  if (items.length) {
+    root.append(...items.map(item => renderNewsItem(item)));
+    return;
+  }
+  const message = document.createElement('div');
+  message.className = 'news-item';
+  const title = document.createElement('div');
+  title.className = 'news-title';
+  title.textContent = emptyText;
+  message.append(title);
+  root.append(message);
 }
 function sentimentHeadline(headline) {
   const text = String(headline || '');
@@ -818,7 +877,7 @@ function renderWatchlistNews() {
   const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
   watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
-  root.innerHTML = items.length ? items.map(item => renderNewsItem(item)).join('') : `<div class="news-item"><div class="news-title">${escapeHtml(watchlistEmptyText())}</div></div>`;
+  renderNewsItemsInto(root, items, watchlistEmptyText());
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => { watchNewsPage = page; renderWatchlistNews(); });
 }
 function matchesNewsQuery(item, query) {
@@ -867,7 +926,7 @@ function renderNews() {
   const rest = all.filter(item => !featuredKeys.has(newsKey(item)));
   const featuredBox = $('#featured-news');
   if (featuredBox) {
-    featuredBox.innerHTML = featured.map(item => renderNewsItem(item)).join('');
+    featuredBox.replaceChildren(...featured.map(item => renderNewsItem(item)));
     const section = featuredBox.closest('.featured-news');
     if (section) section.hidden = !featured.length;
   }
@@ -875,7 +934,7 @@ function renderNews() {
   newsPage = Math.max(1, Math.min(newsPage, total));
   const items = rest.slice((newsPage - 1) * PAGE_SIZE, newsPage * PAGE_SIZE);
   const emptyText = query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่พบข่าวในช่วง 30 วันที่ผ่านมา ลองรีเฟรชอีกครั้ง';
-  $('#news-list').innerHTML = items.length ? items.map(item => renderNewsItem(item)).join('') : `<div class="news-item"><div class="news-title">${escapeHtml(emptyText)}</div></div>`;
+  renderNewsItemsInto($('#news-list'), items, emptyText);
   renderPagerInto($('#news-pager'), newsPage, total, rest.length, page => { newsPage = page; renderNews(); });
   const counter = $('#news-count');
   if (counter) counter.textContent = query ? `พบ ${all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
