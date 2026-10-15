@@ -119,7 +119,16 @@ async function getSettradeOverview(force=false){
  }).finally(()=>{settradeOverviewCache.pending=null});
  return settradeOverviewCache.pending;
 }
-const feeds=[['thunhoon','ทันหุ้น','site:thunhoon.com'],['kaohoon','ข่าวหุ้น','site:kaohoon.com'],['settrade','SETTRADE','site:settrade.com'],['settrade','SET','site:set.or.th']];
+const feeds=[
+ ['thunhoon','ทันหุ้น','site:thunhoon.com'],
+ ['kaohoon','ข่าวหุ้น','site:kaohoon.com'],
+ ['settrade','SETTRADE','site:settrade.com'],
+ ['settrade','SET','site:set.or.th'],
+ ['official','ธนาคารแห่งประเทศไทย','site:bot.or.th'],
+ ['infoquest','Infoquest','"Infoquest"'],
+ ['efinance','efinance','site:efinancethai.com'],
+ ['broker','บลจ. (บริษัทหลักทรัพย์ 7 แห่ง)','"หลักทรัพย์ กสิกรไทย" OR "หลักทรัพย์ อินโนเวสท์" OR "หลักทรัพย์ บัวหลวง" OR "หลักทรัพย์ ลิเบอเรเตอร์" OR "หลักทรัพย์ เอสบีไอ" OR "หลักทรัพย์ หยวนต้า" OR "หลักทรัพย์ พาย"']
+];
 async function getNews(){
  const cutoff=Date.now()-30*24*60*60*1000;
  const settled=await Promise.allSettled(feeds.map(async([source,sourceName,q])=>{
@@ -148,7 +157,7 @@ function fallbackNewsSummary(title=''){
  if(/(ขาดทุน|กำไรลด|ร่วง|หดตัว|ผิดนัด|ถูกฟ้อง|เพิ่มทุน|ลดเป้า|เลื่อนโครงการ|ต้นทุนพุ่ง)/i.test(text))return'พาดหัวมีความเสี่ยงเชิงลบ ควรดูผลกระทบต่อกำไร กระแสเงินสด และกำหนดเวลาที่ระบุในข่าว';
  return'พาดหัวยังไม่ชี้ผลบวกหรือลบชัดเจน ควรอ่านรายละเอียด ตัวเลข และเงื่อนไขก่อนประเมินผลต่อหุ้น';
 }
-const allowedNewsHosts=['news.google.com','thunhoon.com','kaohoon.com','settrade.com','set.or.th'];
+const allowedNewsHosts=['news.google.com','thunhoon.com','kaohoon.com','settrade.com','set.or.th','bot.or.th','efinancethai.com'];
 function allowedNewsUrl(value){try{const url=new URL(value);return url.protocol==='https:'&&allowedNewsHosts.some(host=>url.hostname===host||url.hostname.endsWith(`.${host}`))?url:null}catch(_){return null}}
 async function extractNewsArticle(item){
  let target=allowedNewsUrl(item.url);if(!target)return'';
@@ -196,6 +205,16 @@ async function getNewsAnalysis(items=[]){
  while(newsAnalysisCache.size>500)newsAnalysisCache.delete(newsAnalysisCache.keys().next().value);
  return{items:result,mode:result.some(item=>item.mode==='ai')?'ai':'rules',aiConfigured:Boolean(process.env.OPENAI_API_KEY)};
 }
+const OUTLET_SOURCE=[
+ [/ทันหุ้น|thunhoon/i,'thunhoon'],
+ [/ข่าวหุ้น|kaohoon/i,'kaohoon'],
+ [/SETTRADE|ตลาดหลักทรัพย์/i,'settrade'],
+ [/ธนาคารแห่งประเทศไทย|bot\.or\.th/i,'official'],
+ [/Infoquest/i,'infoquest'],
+ [/efinance/i,'efinance'],
+ [/หลักทรัพย์|Securities/i,'broker']
+];
+function sourceFromOutlet(name=''){return(OUTLET_SOURCE.find(([pattern])=>pattern.test(name))||[null,'other'])[1]}
 async function getWatchlistNews(rawStocks=''){
  let stocks=[];try{stocks=JSON.parse(rawStocks)}catch(_){stocks=String(rawStocks).split(',').map(symbol=>({symbol}))}
  const requested=(Array.isArray(stocks)?stocks:[]).slice(0,30).map(item=>({symbol:String(item.symbol||'').trim().toUpperCase(),name:String(item.name||'').trim().slice(0,80)})).filter(item=>/^[A-Z0-9&.-]{1,20}$/.test(item.symbol));
