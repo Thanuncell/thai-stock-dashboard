@@ -251,7 +251,7 @@ async function getMarket(symbols,active,range){
 async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_HEADERS))res.setHeader(name,value);const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/healthz'){return send(res,200,{ok:true,service:'setscope',uptimeSec:Math.round(process.uptime()),cacheEntries:cache.size,time:new Date().toISOString()})}
  if(req.method==='OPTIONS'){res.writeHead(204,{'access-control-allow-methods':'GET, POST, PUT, OPTIONS','access-control-allow-headers':'authorization, content-type'});return res.end()}
- const ip=process.env.TRUST_PROXY==='1'?(String(req.headers['x-forwarded-for']||'').split(',')[0].trim()||req.socket.remoteAddress):req.socket.remoteAddress||'unknown';
+ const ip=process.env.TRUST_PROXY==='1'?(String(req.headers['x-forwarded-for']||'').split(',').pop().trim()||req.socket.remoteAddress):req.socket.remoteAddress||'unknown';
  if(url.pathname.startsWith('/api/')&&limited('ip:'+ip,300))return send(res,429,{error:'คำขอถี่เกินไป กรุณารอสักครู่'});
  if(url.pathname==='/api/auth-config'){return send(res,200,{configured:authConfigured,url:authConfigured?process.env.SUPABASE_URL.replace(/\/$/,''):null,anonKey:authConfigured?process.env.SUPABASE_ANON_KEY:null})}
  const user=url.pathname.startsWith('/api/')?await requireUser(req,res):null;if(url.pathname.startsWith('/api/')&&!user)return;
