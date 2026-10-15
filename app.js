@@ -24,6 +24,12 @@ let latestMarketRange = '';
 let activeSource = 'all';
 let latestNews = [];
 let latestWatchlistNews = [];
+const PAGE_SIZE = 10;
+const FEATURED_COUNT = 5;
+const SOURCE_TIER = { official: 4, settrade: 3, infoquest: 2, efinance: 2, thunhoon: 2, kaohoon: 2, broker: 1 };
+let newsPage = 1;
+let newsQuery = '';
+let watchNewsPage = 1;
 const newsAnalyses = new Map();
 let newsAnalysisPending = false;
 let watchlistNewsRequestId = 0;
@@ -391,7 +397,7 @@ async function selectStock(symbol, name = symbol) {
   setText('#chart-meta', `SET:${activeSymbol} · ${activeName} · THB`);
   renderWatchlist(latestMarket?.stocks || []);
   hideSuggestions();
-  renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
+  renderNews();
   updateTradingViewChart();
   await getMarket();
 }
@@ -415,6 +421,16 @@ function createWatchlist() {
   const id = `list-${Date.now()}`, name = `Watchlist ${watchlists.length + 1}`;
   watchlists.push({ id, name, items: [] }); activeWatchlistId = id; watchlist = currentWatchlist().items;
   saveWatchlist(); renderWatchlistPicker(); renderWatchlist(); renderAlertSettings(); renderMovers([]); getMarket(); getWatchlistNews();
+}
+function renameActiveWatchlist() {
+  const current = currentWatchlist();
+  const next = (window.prompt('ชื่อใหม่ของรายการ', current.name) || '').trim().slice(0, 40);
+  if (!next || next === current.name) return;
+  current.name = next;
+  saveWatchlist();
+  renderWatchlistPicker();
+  renderAlertSettings();
+  setText('#watchlist-news-status', `${current.name} · ${latestWatchlistNews.length} ข่าว`);
 }
 
 let moverMode = 'up';
@@ -705,7 +721,7 @@ async function getNews() {
     const response = await apiFetch('/api/news'); const data = await response.json();
     if (!response.ok) throw new Error(data.error);
     latestNews = data.items || [];
-    renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
+    renderNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
     setNewsStatus(`ย้อนหลัง 30 วัน · อัปเดต ${stamp(data.fetchedAt)}`);
   } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน'); }
@@ -722,7 +738,7 @@ async function getWatchlistNews() {
     const refresh = $('#refresh-watchlist-news');
     if (refresh) { refresh.disabled = false; refresh.classList.remove('is-loading'); }
     setText('#watchlist-news-status', `${currentWatchlist().name} ยังไม่มีหุ้นให้ค้นหาข่าว`);
-    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">เพิ่มหุ้นใน Watchlist เพื่อดูข่าวที่เกี่ยวข้อง</div></div>';
+    renderWatchlistNews();
     return;
   }
   const button = $('#refresh-watchlist-news');
@@ -735,13 +751,16 @@ async function getWatchlistNews() {
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
     if (requestId !== watchlistNewsRequestId) return;
     latestWatchlistNews = data.items || [];
+    watchNewsPage = 1;
     renderWatchlistNews();
     setText('#watchlist-news-status', `${currentWatchlist().name} · ${latestWatchlistNews.length} ข่าว · อัปเดต ${stamp(data.fetchedAt)}`);
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
   } catch (_) {
     if (requestId !== watchlistNewsRequestId) return;
     setText('#watchlist-news-status', 'โหลดข่าวไม่สำเร็จ · ลองอัปเดตอีกครั้ง');
-    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">ยังดึงข่าวที่ตรงกับหุ้นในรายการนี้ไม่ได้</div></div>';
+    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">โหลดข่าวไม่สำเร็จ ระบบจะลองใหม่อัตโนมัติ หรือกดปุ่มด้านบนเพื่อลองอีกครั้ง</div></div>';
+    const pager = $('#watchlist-news-pager');
+    if (pager) pager.hidden = true;
   } finally {
     if (requestId === watchlistNewsRequestId && button) { button.disabled = false; button.classList.remove('is-loading'); }
   }
@@ -766,7 +785,7 @@ async function analyzeNewsBriefs(items) {
     fresh.forEach(item => newsAnalyses.set(newsKey(item), { summary: 'อ่านรายละเอียดข่าวและตัวเลขในข่าวต้นฉบับเพิ่มเติมก่อนประเมินผลกระทบต่อหุ้น', mode: 'rules' }));
   } finally {
     newsAnalysisPending = false;
-    renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource));
+    renderNews();
     renderWatchlistNews();
     if ([...latestNews, ...latestWatchlistNews].some(item => !newsAnalyses.has(newsKey(item)))) queueMicrotask(() => analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]));
   }
@@ -777,9 +796,71 @@ function renderNewsItem(item, options = {}) {
   const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
   const analysis = newsAnalyses.get(newsKey(item));
   const summary = analysis?.summary || 'กำลังอ่านและสรุปเนื้อหาข่าว…';
-  const mode = analysis?.mode === 'ai' ? `วิเคราะห์โดย AI · ${analysis.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis.basis === 'snippet' ? 'อ่าน snippet' : 'อ่านพาดหัว'}` : `สรุปอัตโนมัติ · ${analysis?.basis === 'snippet' ? 'snippet' : 'พาดหัว'}`;
-  const symbolTag = relatedSymbols.length ? `<span class="news-relevance">${escapeHtml(relatedSymbols.join(', '))}</span>` : '';
-  return `<article class="news-item"><div><a class="news-title news-title-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName || item.source || 'ข่าว')}</span><span class="news-impact ${cls}" title="ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม">${mood}</span>${symbolTag}</div><div class="news-ai-summary"><b>${mode}</b><span>${escapeHtml(summary)}</span></div></div><a class="news-time" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(stamp(item.pubDate))} ↗</a></article>`;
+  const mode = analysis?.mode === 'ai'
+    ? `โดย AI · ${analysis.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
+    : 'สรุปจากคำสำคัญ';
+  const article = document.createElement('article');
+  article.className = 'news-item';
+  const content = document.createElement('div');
+  const title = document.createElement('a');
+  title.className = 'news-title news-title-link';
+  title.href = /^https:\/\//i.test(String(item.url || '')) ? item.url : '#';
+  title.target = '_blank';
+  title.rel = 'noopener noreferrer';
+  title.textContent = item.title || 'ข่าว';
+  const tags = document.createElement('div');
+  tags.className = 'news-tags';
+  const source = document.createElement('span');
+  source.className = 'source-tag';
+  source.textContent = item.sourceName || item.source || 'ข่าว';
+  const impact = document.createElement('span');
+  impact.className = `news-impact ${cls}`;
+  impact.title = 'ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม';
+  impact.textContent = mood;
+  tags.append(source, impact);
+  if (item.source === 'broker') {
+    const promo = document.createElement('span');
+    promo.className = 'promo-tag';
+    promo.textContent = 'จากผู้ให้บริการ อาจมีเนื้อหาส่งเสริมการขาย';
+    tags.append(promo);
+  }
+  if (relatedSymbols.length) {
+    const symbols = document.createElement('span');
+    symbols.className = 'news-relevance';
+    symbols.textContent = relatedSymbols.join(', ');
+    tags.append(symbols);
+  }
+  const brief = document.createElement('div');
+  brief.className = 'news-ai-summary';
+  const briefMode = document.createElement('b');
+  briefMode.textContent = mode;
+  const briefText = document.createElement('span');
+  briefText.textContent = summary;
+  brief.append(briefMode, briefText);
+  content.append(title, tags, brief);
+  const time = document.createElement('a');
+  time.className = 'news-time';
+  time.href = title.href;
+  time.target = '_blank';
+  time.rel = 'noopener noreferrer';
+  time.textContent = `${stamp(item.pubDate)} ↗`;
+  article.append(content, time);
+  return article;
+}
+function renderNewsItemsInto(root, items, emptyText) {
+  if (!root) return;
+  root.replaceChildren();
+  if (items.length) {
+    root.append(...items.map(item => renderNewsItem(item)));
+    return;
+  }
+  const message = document.createElement('div');
+  message.className = 'news-item';
+  const title = document.createElement('div');
+  title.className = 'news-title';
+  title.textContent = emptyText;
+  message.append(title);
+  root.append(message);
 }
 function sentimentHeadline(headline) {
   const text = String(headline || '');
@@ -787,13 +868,76 @@ function sentimentHeadline(headline) {
   const negative = /(ขาดทุน|กำไรลด|กำไรวูบ|ร่วง|ลดลง|หดตัว|ปิดลบ|ผิดนัด|ถูกฟ้อง|คดี|เพิ่มทุน|ลดเป้า|เลื่อนโครงการ|ผลกระทบ|คว่ำบาตร|ภัยแล้ง|ต้นทุนพุ่ง)/i;
   return positive.test(text) && !negative.test(text) ? 'บวก' : negative.test(text) && !positive.test(text) ? 'ลบ' : 'เป็นกลาง';
 }
+function watchlistEmptyText() {
+  return watchlist.length ? 'ยังไม่พบข่าวของหุ้นในรายการติดตามในช่วง 30 วันที่ผ่านมา' : 'ยังไม่มีหุ้นในรายการติดตาม';
+}
 function renderWatchlistNews() {
   const root = $('#watchlist-news-list');
   if (!root) return;
-  root.innerHTML = latestWatchlistNews.length ? latestWatchlistNews.map(item => renderNewsItem(item)).join('') : '<div class="news-item"><div class="news-title">ไม่พบข่าวที่พาดพิงหุ้นใน Watchlist นี้ใน 30 วันที่ผ่านมา</div></div>';
+  const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
+  watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
+  const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
+  renderNewsItemsInto(root, items, watchlistEmptyText());
+  renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => { watchNewsPage = page; renderWatchlistNews(); });
 }
-function renderNews(items) {
-  $('#news-list').innerHTML = items.length ? items.map(item => renderNewsItem(item)).join('') : '<div class="news-item"><div class="news-title">ไม่มีข่าวจากตัวกรองนี้ในขณะนี้</div></div>';
+function matchesNewsQuery(item, query) {
+  if (!query) return true;
+  const fields = [item.title, item.sourceName, item.snippet, newsAnalyses.get(newsKey(item))?.summary];
+  return fields.some(value => String(value || '').toLocaleLowerCase('th').includes(query));
+}
+function pageList(current, total) {
+  const keep = new Set([1, 2, total - 1, total, current - 1, current, current + 1].filter(page => page >= 1 && page <= total));
+  const sorted = [...keep].sort((a, b) => a - b);
+  const pages = [];
+  sorted.forEach((page, index) => { if (index && page - sorted[index - 1] > 1) pages.push('…'); pages.push(page); });
+  return pages;
+}
+function renderPagerInto(bar, current, total, count, onPick) {
+  if (!bar) return;
+  bar.replaceChildren();
+  bar.hidden = count <= PAGE_SIZE;
+  if (count <= PAGE_SIZE) return;
+  const makeButton = (label, page, options = {}) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.className = options.active ? 'page-btn active' : 'page-btn';
+    button.disabled = Boolean(options.disabled);
+    button.addEventListener('click', () => onPick(page));
+    return button;
+  };
+  bar.append(makeButton('ก่อนหน้า', current - 1, { disabled: current === 1 }));
+  pageList(current, total).forEach(page => {
+    if (page === '…') { const separator = document.createElement('span'); separator.textContent = '…'; bar.append(separator); }
+    else bar.append(makeButton(String(page), page, { active: page === current }));
+  });
+  bar.append(makeButton('ถัดไป', current + 1, { disabled: current === total }));
+}
+function renderNews() {
+  const query = newsQuery.trim().toLocaleLowerCase('th');
+  const all = latestNews.filter(item => (activeSource === 'all' || item.source === activeSource) && matchesNewsQuery(item, query));
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const featured = activeSource === 'all'
+    ? all.filter(item => Date.parse(item.pubDate) >= cutoff)
+      .sort((a, b) => (SOURCE_TIER[b.source] || 0) - (SOURCE_TIER[a.source] || 0) || Date.parse(b.pubDate) - Date.parse(a.pubDate))
+      .slice(0, FEATURED_COUNT)
+    : [];
+  const featuredKeys = new Set(featured.map(newsKey));
+  const rest = all.filter(item => !featuredKeys.has(newsKey(item)));
+  const featuredBox = $('#featured-news');
+  if (featuredBox) {
+    featuredBox.replaceChildren(...featured.map(item => renderNewsItem(item)));
+    const section = featuredBox.closest('.featured-news');
+    if (section) section.hidden = !featured.length;
+  }
+  const total = Math.max(1, Math.ceil(rest.length / PAGE_SIZE));
+  newsPage = Math.max(1, Math.min(newsPage, total));
+  const items = rest.slice((newsPage - 1) * PAGE_SIZE, newsPage * PAGE_SIZE);
+  const emptyText = query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่พบข่าวในช่วง 30 วันที่ผ่านมา ลองรีเฟรชอีกครั้ง';
+  renderNewsItemsInto($('#news-list'), items, emptyText);
+  renderPagerInto($('#news-pager'), newsPage, total, rest.length, page => { newsPage = page; renderNews(); });
+  const counter = $('#news-count');
+  if (counter) counter.textContent = query ? `พบ ${all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
 }
 
 async function setup() {
@@ -814,7 +958,7 @@ async function setup() {
       saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); getWatchlistNews(); return;
     }
     const row = event.target.closest('.watch-item');
-    if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; syncTechnicalSearch(); renderWatchlist(latestMarket?.stocks || []); renderNews(latestNews.filter(item => activeSource === 'all' || item.source === activeSource)); updateTradingViewChart(); getMarket(); }
+    if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; syncTechnicalSearch(); renderWatchlist(latestMarket?.stocks || []); renderNews(); updateTradingViewChart(); getMarket(); }
   };
   $('#watchlist').addEventListener('click', handleWatchlistClick);
   $('#watchlist-mobile').addEventListener('click', handleWatchlistClick);
@@ -851,6 +995,7 @@ async function setup() {
   ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => $(selector)?.addEventListener('change', event => switchWatchlist(event.target.value)));
   $('#watchlist-create')?.addEventListener('click', createWatchlist);
   $('#watchlist-create-mobile')?.addEventListener('click', createWatchlist);
+  ['#watchlist-rename', '#watchlist-rename-mobile'].forEach(selector => $(selector)?.addEventListener('click', renameActiveWatchlist));
   $('#mover-list').addEventListener('click', event => { const row = event.target.closest('[data-mover-symbol]'); if (row) selectStock(row.dataset.moverSymbol, row.dataset.moverName); });
   document.querySelectorAll('.movers-tabs button').forEach((button, index) => button.addEventListener('click', () => {
     document.querySelectorAll('.movers-tabs button').forEach(item => item.classList.remove('selected'));
@@ -897,8 +1042,9 @@ async function setup() {
   });
   document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.source-chip').forEach(item => item.classList.remove('active'));
-    button.classList.add('active'); activeSource = button.dataset.source; getNews();
+    button.classList.add('active'); activeSource = button.dataset.source; newsPage = 1; getNews();
   }));
+  $('#news-search').addEventListener('input', event => { newsQuery = event.target.value; newsPage = 1; renderNews(); });
   $('#refresh-news').addEventListener('click', getNews);
   $('#refresh-watchlist-news').addEventListener('click', getWatchlistNews);
   $('#refresh-chart').addEventListener('click', getMarket);
