@@ -139,11 +139,11 @@ async function getNews(){
   const channel=xml.match(/<channel(?:\s[^>]*)?>([\s\S]*?)<\/channel>/i)?.[1]||xml;
   return [...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].map(m=>{
    const block=m[1],title=decodeXml(xmlTag(block,'title')),url=decodeXml(xmlTag(block,'link')),pubDate=decodeXml(xmlTag(block,'pubDate')),snippet=decodeXml(xmlTag(block,'description')).slice(0,1200);
-   const outlet=xmlTag(block,'source').match(/>([\s\S]*?)<\/source>/i)?.[1];
-   return{source,sourceName:outlet?decodeXml(outlet):sourceName,title,url,pubDate,snippet};
+   const outlet=xmlTag(block,'source').match(/>([\s\S]*?)<\/source>/i)?.[1],outletName=outlet?decodeXml(outlet):sourceName;
+   return{source:source==='broker'?sourceFromOutlet(outletName):source,sourceName:outletName,title,url,pubDate,snippet};
   }).filter(item=>{
    const published=Date.parse(item.pubDate);
-   return item.title&&/^https:\/\//.test(item.url)&&Number.isFinite(published)&&published>=cutoff;
+   return item.title&&item.source!=='other'&&/^https:\/\//.test(item.url)&&Number.isFinite(published)&&published>=cutoff;
   }).sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate)).slice(0,8);
  }));
  const items=settled.flatMap(result=>result.status==='fulfilled'?result.value:[]).sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate));
@@ -210,14 +210,23 @@ const OUTLET_SOURCE=[
  [/ข่าวหุ้น|kaohoon/i,'kaohoon'],
  [/SETTRADE|ตลาดหลักทรัพย์/i,'settrade'],
  [/ธนาคารแห่งประเทศไทย|bot\.or\.th/i,'official'],
- [/Infoquest/i,'infoquest'],
- [/efinance/i,'efinance'],
- [/หลักทรัพย์|Securities/i,'broker']
+ [/Infoquest|อินโฟเควสท์/i,'infoquest'],
+ [/efinance|อีไฟแนนซ์/i,'efinance'],
+ [/(หลักทรัพย์\s*กสิกรไทย|KSecurities|K Securities|อินโนเวสท์|InnovestX|หลักทรัพย์\s*บัวหลวง|Bualuang|ลิเบอเรเตอร์|Liberator|เอสบีไอ|SBI Thai Online|SBITO|หยวนต้า|Yuanta|หลักทรัพย์\s*พาย|Pi Securities)/i,'broker']
 ];
 function sourceFromOutlet(name=''){return(OUTLET_SOURCE.find(([pattern])=>pattern.test(name))||[null,'other'])[1]}
+function normalizeWatchlistNewsStocks(rawStocks=''){
+ let stocks=[];try{stocks=Array.isArray(rawStocks)?rawStocks:JSON.parse(rawStocks)}catch(_){stocks=String(rawStocks).split(',').map(symbol=>({symbol}))}
+ const unique=new Map();
+ for(const item of Array.isArray(stocks)?stocks:[]){
+  const symbol=String(item.symbol||'').trim().toUpperCase(),name=String(item.name||'').trim().slice(0,80);
+  if(/^[A-Z0-9&.-]{1,20}$/.test(symbol)&&!unique.has(symbol))unique.set(symbol,{symbol,name});
+  if(unique.size>=30)break;
+ }
+ return[...unique.values()].sort((a,b)=>a.symbol.localeCompare(b.symbol));
+}
 async function getWatchlistNews(rawStocks=''){
- let stocks=[];try{stocks=JSON.parse(rawStocks)}catch(_){stocks=String(rawStocks).split(',').map(symbol=>({symbol}))}
- const requested=(Array.isArray(stocks)?stocks:[]).slice(0,30).map(item=>({symbol:String(item.symbol||'').trim().toUpperCase(),name:String(item.name||'').trim().slice(0,80)})).filter(item=>/^[A-Z0-9&.-]{1,20}$/.test(item.symbol));
+ const requested=normalizeWatchlistNewsStocks(rawStocks);
  if(!requested.length)return{items:[],fetchedAt:new Date().toISOString(),maxAgeDays:30};
  const terms=requested.flatMap(item=>[`"${item.symbol}"`,...(item.name.length>3?[`"${item.name}"`]:[])]).join(' OR ');
  const url='https://news.google.com/rss/search?q='+encodeURIComponent(`(${terms}) when:30d`)+'&hl=th&gl=TH&ceid=TH:th';
@@ -227,12 +236,14 @@ async function getWatchlistNews(rawStocks=''){
  const items=[...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].map(match=>{
   const block=match[1],title=decodeXml(xmlTag(block,'title')),url=decodeXml(xmlTag(block,'link')),pubDate=decodeXml(xmlTag(block,'pubDate')),snippet=decodeXml(xmlTag(block,'description')).slice(0,1200);
   const outlet=xmlTag(block,'source').match(/>([\s\S]*?)<\/source>/i)?.[1];
+  const haystack=title+' '+snippet;
   const matchedSymbols=requested.filter(stock=>{
    const escaped=stock.symbol.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-   return(stock.symbol.length>=3&&new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`,'i').test(title))||(stock.name.length>3&&title.toLocaleLowerCase('th').includes(stock.name.toLocaleLowerCase('th')));
+   return(stock.symbol.length>=3&&new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`,'i').test(haystack))||(stock.name.length>3&&haystack.toLocaleLowerCase('th').includes(stock.name.toLocaleLowerCase('th')));
   }).map(stock=>stock.symbol);
-  return{source:'watchlist',sourceName:outlet?decodeXml(outlet):'ข่าวหุ้นไทย',title,url,pubDate,snippet,matchedSymbols};
- }).filter(item=>item.title&&/^https:\/\//.test(item.url)&&Number.isFinite(Date.parse(item.pubDate))&&Date.parse(item.pubDate)>=cutoff&&item.matchedSymbols.length)
+  const outletName=outlet?decodeXml(outlet):'';
+  return{source:sourceFromOutlet(outletName),sourceName:outletName||'ข่าวหุ้นไทย',title,url,pubDate,snippet,matchedSymbols};
+ }).filter(item=>item.title&&/^https:\/\//.test(item.url)&&Number.isFinite(Date.parse(item.pubDate))&&Date.parse(item.pubDate)>=cutoff&&item.matchedSymbols.length&&item.source!=='other')
   .sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate)).slice(0,30);
  return{items,fetchedAt:new Date().toISOString(),maxAgeDays:30};
 }
@@ -295,7 +306,7 @@ async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_H
  if(url.pathname==='/api/settrade-overview'){try{const force=url.searchParams.get('refresh')==='1'&&!limited('refresh:'+user.id,3);send(res,200,await getSettradeOverview(force))}catch(e){send(res,502,{error:'ดึงข้อมูล SETTRADE ไม่สำเร็จ',detail:e.message})}return}
  if(url.pathname==='/api/market'){try{const symbols=(url.searchParams.has('symbols')?url.searchParams.get('symbols'):'PTT,AOT,ADVANC,KBANK,CPALL').split(',').map(s=>s.trim().toUpperCase()).filter(s=>/^[A-Z0-9&.-]{1,20}$/.test(s)).slice(0,30);const active=(url.searchParams.get('symbol')||symbols[0]||'PTT').toUpperCase();if(!/^[A-Z0-9&.-]{1,20}$/.test(active))return send(res,400,{error:'ชื่อย่อหุ้นไม่ถูกต้อง'});if(!symbols.includes(active))symbols.push(active);const range=url.searchParams.get('range')||'1D';send(res,200,await cached(`market:${symbols.join(',')}|${active}|${range}`,30000,()=>getMarket(symbols,active,range)))}catch(e){send(res,502,{error:e.message})}return}
  if(url.pathname==='/api/news'){try{const d=await cached('news',300000,getNews);send(res,200,d)}catch(e){send(res,502,{error:e.message})}return}
- if(url.pathname==='/api/watchlist-news'){try{const raw=url.searchParams.get('stocks')||url.searchParams.get('symbols')||'';const d=await cached('wn:'+raw,300000,()=>getWatchlistNews(raw));send(res,200,d)}catch(e){send(res,502,{error:'ดึงข่าว Watchlist ไม่สำเร็จ',detail:e.message})}return}
+ if(url.pathname==='/api/watchlist-news'){try{const raw=url.searchParams.get('stocks')||url.searchParams.get('symbols')||'',stocks=normalizeWatchlistNewsStocks(raw),cacheKey=stocks.map(item=>item.symbol).join(',');const d=await cached('wn:'+cacheKey,300000,()=>getWatchlistNews(stocks));send(res,200,d)}catch(e){send(res,502,{error:'ดึงข่าว Watchlist ไม่สำเร็จ',detail:e.message})}return}
  let pathname;try{pathname=decodeURIComponent(url.pathname)}catch(_){return send(res,400,{error:'URL ไม่ถูกต้อง'})}if(pathname==='/')pathname='/index.html';if(!PUBLIC_FILES.has(pathname)){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}const file=path.resolve(ROOT,'.'+pathname);if(!file.startsWith(ROOT+path.sep)){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}fs.readFile(file,(e,data)=>{if(e){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}res.writeHead(200,{'content-type':TYPES[path.extname(file)]||'application/octet-stream','cache-control':'no-cache',...SECURITY_HEADERS});res.end(data)})
 }
 const server=http.createServer((req,res)=>{

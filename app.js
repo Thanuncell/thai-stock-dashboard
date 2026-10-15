@@ -728,7 +728,7 @@ async function getWatchlistNews() {
     const refresh = $('#refresh-watchlist-news');
     if (refresh) { refresh.disabled = false; refresh.classList.remove('is-loading'); }
     setText('#watchlist-news-status', `${currentWatchlist().name} ยังไม่มีหุ้นให้ค้นหาข่าว`);
-    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">เพิ่มหุ้นใน Watchlist เพื่อดูข่าวที่เกี่ยวข้อง</div></div>';
+    renderWatchlistNews();
     return;
   }
   const button = $('#refresh-watchlist-news');
@@ -741,13 +741,16 @@ async function getWatchlistNews() {
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
     if (requestId !== watchlistNewsRequestId) return;
     latestWatchlistNews = data.items || [];
+    watchNewsPage = 1;
     renderWatchlistNews();
     setText('#watchlist-news-status', `${currentWatchlist().name} · ${latestWatchlistNews.length} ข่าว · อัปเดต ${stamp(data.fetchedAt)}`);
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
   } catch (_) {
     if (requestId !== watchlistNewsRequestId) return;
     setText('#watchlist-news-status', 'โหลดข่าวไม่สำเร็จ · ลองอัปเดตอีกครั้ง');
-    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">ยังดึงข่าวที่ตรงกับหุ้นในรายการนี้ไม่ได้</div></div>';
+    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">โหลดข่าวไม่สำเร็จ ระบบจะลองใหม่อัตโนมัติ หรือกดปุ่มด้านบนเพื่อลองอีกครั้ง</div></div>';
+    const pager = $('#watchlist-news-pager');
+    if (pager) pager.hidden = true;
   } finally {
     if (requestId === watchlistNewsRequestId && button) { button.disabled = false; button.classList.remove('is-loading'); }
   }
@@ -796,10 +799,17 @@ function sentimentHeadline(headline) {
   const negative = /(ขาดทุน|กำไรลด|กำไรวูบ|ร่วง|ลดลง|หดตัว|ปิดลบ|ผิดนัด|ถูกฟ้อง|คดี|เพิ่มทุน|ลดเป้า|เลื่อนโครงการ|ผลกระทบ|คว่ำบาตร|ภัยแล้ง|ต้นทุนพุ่ง)/i;
   return positive.test(text) && !negative.test(text) ? 'บวก' : negative.test(text) && !positive.test(text) ? 'ลบ' : 'เป็นกลาง';
 }
+function watchlistEmptyText() {
+  return watchlist.length ? 'ยังไม่พบข่าวของหุ้นในรายการติดตามในช่วง 30 วันที่ผ่านมา' : 'ยังไม่มีหุ้นในรายการติดตาม';
+}
 function renderWatchlistNews() {
   const root = $('#watchlist-news-list');
   if (!root) return;
-  root.innerHTML = latestWatchlistNews.length ? latestWatchlistNews.map(item => renderNewsItem(item)).join('') : '<div class="news-item"><div class="news-title">ไม่พบข่าวที่พาดพิงหุ้นใน Watchlist นี้ใน 30 วันที่ผ่านมา</div></div>';
+  const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
+  watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
+  const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
+  root.innerHTML = items.length ? items.map(item => renderNewsItem(item)).join('') : `<div class="news-item"><div class="news-title">${escapeHtml(watchlistEmptyText())}</div></div>`;
+  renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => { watchNewsPage = page; renderWatchlistNews(); });
 }
 function matchesNewsQuery(item, query) {
   if (!query) return true;
