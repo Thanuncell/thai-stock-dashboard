@@ -6,6 +6,20 @@
   let refreshTimer;
   const $ = selector => document.querySelector(selector);
   const message = (text, type = '') => { const box = $('#auth-message'); box.textContent = text; box.className = `auth-message ${type}`.trim(); };
+  async function fetchWithWake(url, options = {}, tries = 3) {
+    let lastError;
+    for (let i = 0; i < tries; i++) {
+      try {
+        const response = await fetch(url, { ...options, signal: AbortSignal.timeout(45000) });
+        if (response.status !== 503) return response;
+        lastError = new Error('ระบบกำลังเริ่มทำงาน');
+      } catch (error) {
+        lastError = error;
+      }
+      if (i < tries - 1) await new Promise(resolve => setTimeout(resolve, 3000 * (i + 1)));
+    }
+    throw lastError;
+  }
   function readSession() { try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null'); } catch (_) { return null; } }
   function saveSession(value) { session = value; if (value) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(value)); else sessionStorage.removeItem(STORAGE_KEY); }
   function sessionFrom(payload) { return { ...payload, expires_at: Date.now() + Number(payload.expires_in || 3600) * 1000 }; }
@@ -97,7 +111,8 @@
 
   (async () => {
     try {
-      const response = await fetch('/api/auth-config', { cache: 'no-store' }); config = await response.json();
+      message('กำลังเริ่มระบบ อาจใช้เวลาประมาณ 1 นาที');
+      const response = await fetchWithWake('/api/auth-config', { cache: 'no-store' }); config = await response.json();
       if (!config.configured) {
         document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = true; });
         message('ระบบสมาชิกยังไม่ได้ตั้งค่าใน Render (SUPABASE_URL และ SUPABASE_ANON_KEY)', 'error'); return;

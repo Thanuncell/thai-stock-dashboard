@@ -101,9 +101,9 @@ function scheduleWatchlistCloudSync() {
     watchlistSyncChain = watchlistSyncChain.catch(() => {}).then(async () => {
       const response = await apiFetch('/api/watchlists', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Sync failed');
+      if (!response.ok) throw new Error(result.retryable ? 'ระบบกำลังเริ่มทำงาน' : (result.error || 'Sync failed'));
       setWatchlistSyncStatus('ซิงก์แล้ว', 'synced');
-    }).catch(() => setWatchlistSyncStatus('ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error'));
+    }).catch(error => setWatchlistSyncStatus(error?.message?.includes('กำลังเริ่มทำงาน') ? 'ระบบกำลังเริ่มทำงาน · เก็บในเครื่องชั่วคราว' : 'ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error'));
   }, 450);
 }
 function mergeWatchlists(localLists, cloudLists) {
@@ -125,7 +125,7 @@ async function initializeWatchlistCloudSync() {
   try {
     const response = await apiFetch('/api/watchlists');
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'โหลด Watchlist ไม่สำเร็จ');
+    if (!response.ok) throw new Error(data.retryable ? 'ระบบกำลังเริ่มทำงาน' : (data.error || 'โหลด Watchlist ไม่สำเร็จ'));
     const record = data.record;
     if (record && Array.isArray(record.watchlists)) {
       watchlists = mergeWatchlists(localLists, record.watchlists);
@@ -141,9 +141,9 @@ async function initializeWatchlistCloudSync() {
     setWatchlistSyncStatus('ซิงก์แล้ว', 'synced');
     // First-time sync also uploads this device's existing Watchlist.
     scheduleWatchlistCloudSync();
-  } catch (_) {
+  } catch (error) {
     watchlist = currentWatchlist().items;
-    setWatchlistSyncStatus('ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error');
+    setWatchlistSyncStatus(error?.message?.includes('กำลังเริ่มทำงาน') ? 'ระบบกำลังเริ่มทำงาน · ใช้ข้อมูลในเครื่องชั่วคราว' : 'ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error');
   }
 }
 

@@ -9,7 +9,7 @@ const HOST=process.env.HOST||'127.0.0.1';
 const TYPES={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.ico':'image/x-icon'};
 const PUBLIC_FILES=new Set(['/index.html','/app.js','/auth.js','/style.css','/analysis.css','/privacy.html','/terms.html']);
 const SECURITY_HEADERS={'x-content-type-options':'nosniff','x-frame-options':'DENY','referrer-policy':'same-origin'};
-function send(res,status,obj){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':'same-origin',...SECURITY_HEADERS});res.end(JSON.stringify(obj))}
+function send(res,status,obj,headers={}){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':'same-origin',...SECURITY_HEADERS,...headers});res.end(JSON.stringify(obj))}
 const authConfigured=Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_ANON_KEY);
 const hits=new Map();
 function limited(key,max,windowMs=60000){
@@ -26,8 +26,15 @@ async function requireUser(req,res){
  if(!authConfigured){send(res,503,{error:'ระบบสมาชิกยังไม่ได้ตั้งค่า'});return false}
  const token=(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i)?.[1];
  if(!token){send(res,401,{error:'กรุณาเข้าสู่ระบบ'});return false}
- try{const response=await fetch(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/auth/v1/user`,{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(7000)});if(response.ok)return await response.json()}catch(_){}
- send(res,401,{error:'เซสชันไม่ถูกต้อง กรุณาเข้าสู่ระบบอีกครั้ง'});return false;
+ let response;
+ try{
+  response=await fetch(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/auth/v1/user`,{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(7000)});
+ }catch(_){
+  send(res,503,{error:'ระบบสมาชิกตอบสนองช้า กรุณาลองใหม่อีกครั้ง',retryable:true});return false;
+ }
+ if(response.ok)return await response.json();
+ if(response.status===401||response.status===403){send(res,401,{error:'เซสชันไม่ถูกต้อง กรุณาเข้าสู่ระบบอีกครั้ง'});return false}
+ send(res,503,{error:'ระบบสมาชิกไม่พร้อมชั่วคราว กรุณาลองใหม่อีกครั้ง',retryable:true});return false;
 }
 function readJson(req){return new Promise((resolve,reject)=>{let body='';req.on('data',chunk=>{body+=chunk;if(body.length>64000){reject(Error('ข้อมูลมีขนาดใหญ่เกินไป'));req.destroy()}});req.on('end',()=>{try{resolve(JSON.parse(body||'{}'))}catch(_){reject(Error('รูปแบบข้อมูลไม่ถูกต้อง'))}});req.on('error',reject)})}
 function decodeXml(s=''){return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,'$1').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;|&apos;/g,"'").replace(/&#(\d+);/g,(_,n)=>String.fromCodePoint(Number(n))).replace(/&#x([\da-f]+);/gi,(_,n)=>String.fromCodePoint(parseInt(n,16))).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()}
@@ -242,7 +249,7 @@ async function getMarket(symbols,active,range){
  return{stocks,indices:index?[index]:[],history,levelsHistory:history,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
 }
 async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_HEADERS))res.setHeader(name,value);const url=new URL(req.url,'http://localhost');
- if(url.pathname==='/healthz'){return send(res,200,{ok:true,service:'setscope',time:new Date().toISOString()})}
+ if(url.pathname==='/healthz'){return send(res,200,{ok:true,service:'setscope',uptimeSec:Math.round(process.uptime()),cacheEntries:cache.size,time:new Date().toISOString()})}
  if(req.method==='OPTIONS'){res.writeHead(204,{'access-control-allow-methods':'GET, POST, PUT, OPTIONS','access-control-allow-headers':'authorization, content-type'});return res.end()}
  const ip=process.env.TRUST_PROXY==='1'?(String(req.headers['x-forwarded-for']||'').split(',')[0].trim()||req.socket.remoteAddress):req.socket.remoteAddress||'unknown';
  if(url.pathname.startsWith('/api/')&&limited('ip:'+ip,300))return send(res,429,{error:'คำขอถี่เกินไป กรุณารอสักครู่'});
@@ -250,7 +257,7 @@ async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_H
  const user=url.pathname.startsWith('/api/')?await requireUser(req,res):null;if(url.pathname.startsWith('/api/')&&!user)return;
  if(url.pathname==='/api/watchlists'){
   if(req.method==='GET'){
-   try{const endpoint=new URL(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/rest/v1/user_watchlists`);endpoint.searchParams.set('select','watchlists,active_watchlist_id');endpoint.searchParams.set('user_id',`eq.${user.id}`);const upstream=await fetch(endpoint,{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:req.headers.authorization},signal:AbortSignal.timeout(8000)});if(!upstream.ok)throw Error((await upstream.text()).slice(0,300));const rows=await upstream.json();return send(res,200,{record:rows[0]||null})}catch(e){return send(res,502,{error:'โหลด Watchlist จาก Supabase ไม่สำเร็จ',detail:e.message})}
+   try{const endpoint=new URL(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/rest/v1/user_watchlists`);endpoint.searchParams.set('select','watchlists,active_watchlist_id');endpoint.searchParams.set('user_id',`eq.${user.id}`);const upstream=await fetch(endpoint,{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:req.headers.authorization},signal:AbortSignal.timeout(8000)});if(!upstream.ok)throw Error((await upstream.text()).slice(0,300));const rows=await upstream.json();return send(res,200,{record:rows[0]||null},{'cache-control':'private, max-age=30'})}catch(e){return send(res,502,{error:'โหลด Watchlist จาก Supabase ไม่สำเร็จ',detail:e.message})}
   }
   if(req.method==='PUT'){
    try{const body=await readJson(req),lists=body.watchlists;if(!Array.isArray(lists)||lists.length<1||lists.length>5)return send(res,400,{error:'ต้องมี Watchlist 1–5 รายการ'});const clean=lists.map((list,i)=>{const id=String(list.id||`list-${i+1}`).slice(0,40),name=String(list.name||`Watchlist ${i+1}`).trim().slice(0,40),items=Array.isArray(list.items)?list.items.slice(0,30).filter(item=>item&&/^[A-Z0-9&.-]{1,20}$/.test(String(item.symbol||'').toUpperCase())).map(item=>({symbol:String(item.symbol).toUpperCase(),name:String(item.name||item.symbol).slice(0,100)})):[];return{id,name,items}});const active=clean.some(list=>list.id===body.activeWatchlistId)?body.activeWatchlistId:clean[0].id;const endpoint=new URL(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/rest/v1/user_watchlists`);endpoint.searchParams.set('on_conflict','user_id');const upstream=await fetch(endpoint,{method:'POST',headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:req.headers.authorization,'content-type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:user.id,watchlists:clean,active_watchlist_id:active}),signal:AbortSignal.timeout(8000)});if(!upstream.ok)throw Error((await upstream.text()).slice(0,300));return send(res,200,{ok:true,syncedAt:new Date().toISOString()})}catch(e){return send(res,502,{error:'บันทึก Watchlist ไป Supabase ไม่สำเร็จ',detail:e.message})}
