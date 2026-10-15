@@ -87,7 +87,7 @@ function setupWorkspaceNavigation() {
 }
 function persistWatchlistsLocal() {
   currentWatchlist().items = watchlist;
-  localStorage.setItem('setscope-watchlists', JSON.stringify(watchlists));
+  localStorage.setItem('setscope-watchlists-v2', JSON.stringify(watchlists));
   localStorage.setItem('setscope-watchlist', JSON.stringify(watchlist));
   localStorage.setItem('setscope-active-watchlist', activeWatchlistId);
 }
@@ -107,15 +107,8 @@ function scheduleWatchlistCloudSync() {
   }, 450);
 }
 function mergeWatchlists(localLists, cloudLists) {
-  const merged = (Array.isArray(cloudLists) ? cloudLists : []).slice(0, MAX_WATCHLISTS).map((list, i) => ({ id: String(list.id || `list-${i + 1}`), name: String(list.name || `Watchlist ${i + 1}`), items: Array.isArray(list.items) ? list.items.filter(item => item && /^[A-Z0-9&.-]{1,20}$/.test(item.symbol || '')).slice(0, MAX_WATCHLIST) : [] }));
-  for (const local of localLists) {
-    let target = merged.find(list => list.id === local.id);
-    if (!target && merged.length < MAX_WATCHLISTS) { target = { ...local, items: [] }; merged.push(target); }
-    if (!target) continue;
-    const seen = new Set(target.items.map(item => item.symbol));
-    for (const item of local.items) if (!seen.has(item.symbol) && target.items.length < MAX_WATCHLIST) { target.items.push(item); seen.add(item.symbol); }
-  }
-  return merged.length ? merged : loadWatchlists();
+  if (Array.isArray(cloudLists) && cloudLists.length) return normalizeLists(cloudLists);
+  return localLists;
 }
 async function initializeWatchlistCloudSync() {
   watchlistCloudReady = false;
@@ -151,19 +144,21 @@ function readLocal(key, fallback) {
   try { const value = JSON.parse(localStorage.getItem(key)); return value ?? fallback; } catch (_) { return fallback; }
 }
 
+function normalizeLists(lists) {
+  return lists.slice(0, MAX_WATCHLISTS).map((list, i) => ({
+    id: String(list.id || `list-${i + 1}`).slice(0, 40),
+    name: String(list.name || `Watchlist ${i + 1}`).trim().slice(0, 40) || `Watchlist ${i + 1}`,
+    items: (Array.isArray(list.items) ? list.items : [])
+      .filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(String(x.symbol || '')))
+      .slice(0, MAX_WATCHLIST)
+  }));
+}
 function loadWatchlists() {
   try {
-    const savedLists = JSON.parse(localStorage.getItem('setscope-watchlists') || 'null');
-    if (Array.isArray(savedLists) && savedLists.length) {
-      return savedLists.slice(0, MAX_WATCHLISTS).map((list, i) => ({ id: list.id || `list-${i + 1}`, name: list.name || `Watchlist ${i + 1}`, items: (Array.isArray(list.items) ? list.items : []).filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(x.symbol || '')).slice(0, MAX_WATCHLIST) }));
-    }
+    const saved = JSON.parse(localStorage.getItem('setscope-watchlists-v2') || 'null');
+    if (Array.isArray(saved) && saved.length) return normalizeLists(saved);
   } catch (_) {}
-  let legacy = DEFAULT_WATCHLIST;
-  try { const old = JSON.parse(localStorage.getItem('setscope-watchlist') || 'null'); if (Array.isArray(old)) legacy = old; } catch (_) {}
-  const first = legacy.filter(x => x && /^[A-Z0-9&.-]{1,20}$/.test(x.symbol || '')).slice(0, MAX_WATCHLIST);
-  const lists = [{ id: 'list-1', name: 'Watchlist 1', items: first }];
-  localStorage.setItem('setscope-watchlists', JSON.stringify(lists));
-  return lists;
+  return [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
 }
 function currentWatchlist() { return watchlists.find(list => list.id === activeWatchlistId) || watchlists[0]; }
 function saveWatchlist() { scheduleWatchlistCloudSync(); }
@@ -570,7 +565,9 @@ function drawSignals(bars, levelBars = bars) {
   setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(hold));
   updateSignalDonut(analysis.buy, hold, analysis.sell, analysis.available);
   setText('#overall-signal', analysis.overall); setText('.signal-score strong', analysis.overall);
-  setText('#rsi-value', analysis.rsi.toFixed(1)); $('.rsi-track i').style.left = `${analysis.rsi}%`;
+  setText('#rsi-value', analysis.rsi.toFixed(1));
+  const rsiBar = $('.rsi-track i');
+  if (rsiBar) rsiBar.style.left = `${analysis.rsi}%`;
   const supportive = analysis.reasons.filter(reason => reason.signal === 'ซื้อ');
   const opposing = analysis.reasons.filter(reason => reason.signal === 'ขาย');
   const neutral = analysis.reasons.filter(reason => reason.signal === 'เป็นกลาง');
