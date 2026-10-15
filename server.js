@@ -7,8 +7,21 @@ const ROOT=__dirname;
 const PORT=Number(process.env.PORT)||4173;
 const HOST=process.env.HOST||'127.0.0.1';
 const TYPES={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.ico':'image/x-icon'};
-function send(res,status,obj){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':'same-origin'});res.end(JSON.stringify(obj))}
+const PUBLIC_FILES=new Set(['/index.html','/app.js','/auth.js','/style.css','/analysis.css','/privacy.html','/terms.html']);
+const SECURITY_HEADERS={'x-content-type-options':'nosniff','x-frame-options':'DENY','referrer-policy':'same-origin'};
+function send(res,status,obj){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':'same-origin',...SECURITY_HEADERS});res.end(JSON.stringify(obj))}
 const authConfigured=Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_ANON_KEY);
+const hits=new Map();
+function limited(key,max,windowMs=60000){
+ const now=Date.now(),list=(hits.get(key)||[]).filter(time=>now-time<windowMs);
+ if(list.length>=max){hits.set(key,list);return true}
+ list.push(now);hits.set(key,list);
+ if(hits.size>10000)hits.delete(hits.keys().next().value);
+ return false;
+}
+setInterval(()=>{const now=Date.now();for(const[key,list]of hits){const recent=list.filter(time=>now-time<60000);if(recent.length)hits.set(key,recent);else hits.delete(key)}},60000).unref();
+const cache=new Map();
+async function cached(key,ttlMs,fn){const hit=cache.get(key);if(hit&&hit.exp>Date.now())return hit.value;const value=await fn();cache.set(key,{value,exp:Date.now()+ttlMs});if(cache.size>200)cache.delete(cache.keys().next().value);return value}
 async function requireUser(req,res){
  if(!authConfigured){send(res,503,{error:'ระบบสมาชิกยังไม่ได้ตั้งค่า'});return false}
  const token=(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i)?.[1];
@@ -228,9 +241,11 @@ async function getMarket(symbols,active,range){
  const history=selected?.history||[];
  return{stocks,indices:index?[index]:[],history,levelsHistory:history,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
 }
-const server=http.createServer(async(req,res)=>{const url=new URL(req.url,'http://localhost');
+async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_HEADERS))res.setHeader(name,value);const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/healthz'){return send(res,200,{ok:true,service:'setscope',time:new Date().toISOString()})}
  if(req.method==='OPTIONS'){res.writeHead(204,{'access-control-allow-methods':'GET, POST, PUT, OPTIONS','access-control-allow-headers':'authorization, content-type'});return res.end()}
+ const ip=process.env.TRUST_PROXY==='1'?(String(req.headers['x-forwarded-for']||'').split(',')[0].trim()||req.socket.remoteAddress):req.socket.remoteAddress||'unknown';
+ if(url.pathname.startsWith('/api/')&&limited('ip:'+ip,300))return send(res,429,{error:'คำขอถี่เกินไป กรุณารอสักครู่'});
  if(url.pathname==='/api/auth-config'){return send(res,200,{configured:authConfigured,url:authConfigured?process.env.SUPABASE_URL.replace(/\/$/,''):null,anonKey:authConfigured?process.env.SUPABASE_ANON_KEY:null})}
  const user=url.pathname.startsWith('/api/')?await requireUser(req,res):null;if(url.pathname.startsWith('/api/')&&!user)return;
  if(url.pathname==='/api/watchlists'){
@@ -251,10 +266,19 @@ const server=http.createServer(async(req,res)=>{const url=new URL(req.url,'http:
  if(url.pathname==='/api/news-analysis'){res.writeHead(405);return res.end('Method Not Allowed')}
  if(req.method!=='GET'){res.writeHead(405);return res.end('Method Not Allowed')}
  if(url.pathname==='/api/search'){const q=(url.searchParams.get('q')||'').trim().slice(0,80);if(q.length<1)return send(res,200,{items:[]});try{send(res,200,{items:await yahooSearch(q),provider:'Yahoo Finance'})}catch(e){send(res,502,{error:e.message,items:[]})}return}
- if(url.pathname==='/api/settrade-overview'){try{send(res,200,await getSettradeOverview(url.searchParams.get('refresh')==='1'))}catch(e){send(res,502,{error:'ดึงข้อมูล SETTRADE ไม่สำเร็จ',detail:e.message})}return}
- if(url.pathname==='/api/market'){try{const symbols=(url.searchParams.has('symbols')?url.searchParams.get('symbols'):'PTT,AOT,ADVANC,KBANK,CPALL').split(',').map(s=>s.trim().toUpperCase()).filter(s=>/^[A-Z0-9&.-]{1,20}$/.test(s)).slice(0,30);const active=(url.searchParams.get('symbol')||symbols[0]||'PTT').toUpperCase();if(!/^[A-Z0-9&.-]{1,20}$/.test(active))return send(res,400,{error:'ชื่อย่อหุ้นไม่ถูกต้อง'});if(!symbols.includes(active))symbols.push(active);const range=url.searchParams.get('range')||'1D';send(res,200,await getMarket(symbols,active,range))}catch(e){send(res,502,{error:e.message})}return}
- if(url.pathname==='/api/news'){try{const d=await getNews();send(res,200,d)}catch(e){send(res,502,{error:e.message})}return}
- if(url.pathname==='/api/watchlist-news'){try{const d=await getWatchlistNews(url.searchParams.get('stocks')||url.searchParams.get('symbols')||'');send(res,200,d)}catch(e){send(res,502,{error:'ดึงข่าว Watchlist ไม่สำเร็จ',detail:e.message})}return}
- let pathname=decodeURIComponent(url.pathname);if(pathname==='/')pathname='/index.html';const file=path.resolve(ROOT,'.'+pathname);if(!file.startsWith(ROOT+path.sep)){res.writeHead(403);return res.end('Forbidden')}fs.readFile(file,(e,data)=>{if(e){res.writeHead(404,{'content-type':'text/plain; charset=utf-8'});return res.end('Not found')}res.writeHead(200,{'content-type':TYPES[path.extname(file)]||'application/octet-stream','cache-control':'no-cache'});res.end(data)})
+ if(url.pathname==='/api/settrade-overview'){try{const force=url.searchParams.get('refresh')==='1'&&!limited('refresh:'+user.id,3);send(res,200,await getSettradeOverview(force))}catch(e){send(res,502,{error:'ดึงข้อมูล SETTRADE ไม่สำเร็จ',detail:e.message})}return}
+ if(url.pathname==='/api/market'){try{const symbols=(url.searchParams.has('symbols')?url.searchParams.get('symbols'):'PTT,AOT,ADVANC,KBANK,CPALL').split(',').map(s=>s.trim().toUpperCase()).filter(s=>/^[A-Z0-9&.-]{1,20}$/.test(s)).slice(0,30);const active=(url.searchParams.get('symbol')||symbols[0]||'PTT').toUpperCase();if(!/^[A-Z0-9&.-]{1,20}$/.test(active))return send(res,400,{error:'ชื่อย่อหุ้นไม่ถูกต้อง'});if(!symbols.includes(active))symbols.push(active);const range=url.searchParams.get('range')||'1D';send(res,200,await cached(`market:${symbols.join(',')}|${active}|${range}`,30000,()=>getMarket(symbols,active,range)))}catch(e){send(res,502,{error:e.message})}return}
+ if(url.pathname==='/api/news'){try{const d=await cached('news',300000,getNews);send(res,200,d)}catch(e){send(res,502,{error:e.message})}return}
+ if(url.pathname==='/api/watchlist-news'){try{const raw=url.searchParams.get('stocks')||url.searchParams.get('symbols')||'';const d=await cached('wn:'+raw,300000,()=>getWatchlistNews(raw));send(res,200,d)}catch(e){send(res,502,{error:'ดึงข่าว Watchlist ไม่สำเร็จ',detail:e.message})}return}
+ let pathname;try{pathname=decodeURIComponent(url.pathname)}catch(_){return send(res,400,{error:'URL ไม่ถูกต้อง'})}if(pathname==='/')pathname='/index.html';if(!PUBLIC_FILES.has(pathname)){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}const file=path.resolve(ROOT,'.'+pathname);if(!file.startsWith(ROOT+path.sep)){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}fs.readFile(file,(e,data)=>{if(e){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}res.writeHead(200,{'content-type':TYPES[path.extname(file)]||'application/octet-stream','cache-control':'no-cache',...SECURITY_HEADERS});res.end(data)})
+}
+const server=http.createServer((req,res)=>{
+ handle(req,res).catch(error=>{
+  console.error('Request failed:',error);
+  if(res.destroyed)return;
+  if(res.headersSent){res.end();return}
+  const badUrl=error instanceof URIError||error.code==='ERR_INVALID_URL';
+  send(res,badUrl?400:500,{error:badUrl?'URL ไม่ถูกต้อง':'เกิดข้อผิดพลาดภายในระบบ'});
+ });
 });
 server.listen(PORT,HOST,()=>console.log(`SETscope running at http://${HOST}:${PORT}`));
