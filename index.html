@@ -94,7 +94,33 @@
           </aside>
         </section>
 
-        <section class="bottom-grid workspace-section" id="activity-section"><article class="panel news-panel" id="news-section"><div class="panel-heading"><div><div class="section-overline">THAI MARKET PULSE</div><h2>ข่าวและความเคลื่อนไหว</h2></div><button class="news-refresh-btn" id="refresh-news" type="button">↻ อัปเดตข้อมูลข่าว</button></div><div class="news-sources"><button class="source-chip active" data-source="all">ทั้งหมด</button><button class="source-chip" data-source="thunhoon">ทันหุ้น</button><button class="source-chip" data-source="kaohoon">ข่าวหุ้น</button><button class="source-chip" data-source="settrade">SETTRADE</button></div><div class="news-list" id="news-list"><div class="news-item"><div class="news-title">กำลังโหลดข่าวจากแหล่งต้นทาง…</div></div></div><div class="news-foot"><span>แสดงเฉพาะข่าวย้อนหลัง 30 วัน</span><a href="https://www.settrade.com/th/home" target="_blank" rel="noreferrer">ไปที่ SETTRADE ↗</a></div></article>
+        <section class="bottom-grid workspace-section" id="activity-section"><article class="panel news-panel" id="news-section">
+            <div class="panel-heading">
+              <div><div class="section-overline">THAI MARKET PULSE</div><h2>ข่าวและความเคลื่อนไหว</h2></div>
+              <button class="news-refresh-btn" id="refresh-news" type="button">↻ อัปเดตข้อมูลข่าว</button>
+            </div>
+            <div class="news-search">
+              <input id="news-search" type="search" placeholder="ค้นหาข่าว ชื่อข่าว ที่มา หรือเนื้อหา" aria-label="ค้นหาข่าว">
+              <small id="news-count" class="news-count" aria-live="polite"></small>
+            </div>
+            <div class="news-sources" role="group" aria-label="กรองตามแหล่งข่าว">
+              <button class="source-chip active" data-source="all">ทั้งหมด</button>
+              <button class="source-chip" data-source="thunhoon">ทันหุ้น</button>
+              <button class="source-chip" data-source="kaohoon">ข่าวหุ้น</button>
+              <button class="source-chip" data-source="settrade">SETTRADE</button>
+              <button class="source-chip" data-source="official">ธนาคารแห่งประเทศไทย</button>
+              <button class="source-chip" data-source="infoquest">Infoquest</button>
+              <button class="source-chip" data-source="efinance">efinance</button>
+              <button class="source-chip" data-source="broker">บลจ.</button>
+            </div>
+            <section class="featured-news" aria-label="ข่าวเด่น 7 วันย้อนหลัง">
+              <h3>ข่าวเด่น (7 วันย้อนหลัง)</h3>
+              <div id="featured-news" class="featured-track"></div>
+            </section>
+            <div class="news-list" id="news-list"><div class="news-item"><div class="news-title">กำลังโหลดข่าวจากแหล่งต้นทาง…</div></div></div>
+            <div id="news-pager" class="news-pager" aria-label="เลือกหน้าข่าว" hidden></div>
+            <div class="news-foot"><span>แสดงเฉพาะข่าวย้อนหลัง 30 วัน</span><a href="https://www.settrade.com/th/home" target="_blank" rel="noreferrer">ไปที่ SETTRADE ↗</a></div>
+          </article>
           <article class="panel movers-panel" id="movers-section"><div class="panel-heading"><div><div class="section-overline">WATCHLIST MOVERS</div><h2>หุ้นในรายการติดตาม</h2></div><button class="more-btn">···</button></div><div class="movers-tabs"><button class="selected">ราคาเพิ่ม</button><button>ราคาลด</button><button>มูลค่าสูง</button></div><div class="mover-list" id="mover-list"></div><div class="movers-footer">ราคาอ้างอิงจาก Yahoo Finance</div></article></section>
         <footer class="page-footer"><span>SETscope <i>·</i> ข้อมูลเพื่อประกอบการศึกษาเท่านั้น</span><span>ราคา: <a href="https://finance.yahoo.com/quote/PTT.BK/" target="_blank" rel="noreferrer">Yahoo Finance</a> · ข่าว: <a href="https://www.thunhoon.com/" target="_blank" rel="noreferrer">ทันหุ้น</a> · <a href="https://www.kaohoon.com/" target="_blank" rel="noreferrer">ข่าวหุ้น</a> · <a href="https://www.settrade.com/th/home" target="_blank" rel="noreferrer">SETTRADE</a></span></footer>
       </div>
