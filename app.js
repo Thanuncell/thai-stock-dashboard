@@ -422,6 +422,16 @@ function createWatchlist() {
   watchlists.push({ id, name, items: [] }); activeWatchlistId = id; watchlist = currentWatchlist().items;
   saveWatchlist(); renderWatchlistPicker(); renderWatchlist(); renderAlertSettings(); renderMovers([]); getMarket(); getWatchlistNews();
 }
+function renameActiveWatchlist() {
+  const current = currentWatchlist();
+  const next = (window.prompt('ชื่อใหม่ของรายการ', current.name) || '').trim().slice(0, 40);
+  if (!next || next === current.name) return;
+  current.name = next;
+  saveWatchlist();
+  renderWatchlistPicker();
+  renderAlertSettings();
+  setText('#watchlist-news-status', `${current.name} · ${latestWatchlistNews.length} ข่าว`);
+}
 
 let moverMode = 'up';
 function renderMovers(rows = []) {
@@ -926,6 +936,7 @@ async function setup() {
   ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => $(selector)?.addEventListener('change', event => switchWatchlist(event.target.value)));
   $('#watchlist-create')?.addEventListener('click', createWatchlist);
   $('#watchlist-create-mobile')?.addEventListener('click', createWatchlist);
+  ['#watchlist-rename', '#watchlist-rename-mobile'].forEach(selector => $(selector)?.addEventListener('click', renameActiveWatchlist));
   $('#mover-list').addEventListener('click', event => { const row = event.target.closest('[data-mover-symbol]'); if (row) selectStock(row.dataset.moverSymbol, row.dataset.moverName); });
   document.querySelectorAll('.movers-tabs button').forEach((button, index) => button.addEventListener('click', () => {
     document.querySelectorAll('.movers-tabs button').forEach(item => item.classList.remove('selected'));
