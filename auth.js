@@ -1,9 +1,11 @@
 (() => {
   const STORAGE_KEY = 'setscope-auth-session-v1';
+  const APP_TITLE = 'SETscope — หุ้นไทยและกราฟเทคนิค';
   let config = null;
   let session = readSession();
   let user = null;
   let refreshTimer;
+  const AUTH_ROUTES = { login: '/login', signup: '/register' };
   const $ = selector => document.querySelector(selector);
   const message = (text, type = '') => { const box = $('#auth-message'); box.textContent = text; box.className = `auth-message ${type}`.trim(); };
   async function fetchWithWake(url, options = {}, tries = 3) {
@@ -45,9 +47,12 @@
     catch (_) { saveSession(null); return null; }
   }
   function showDashboard() {
+    const pathname = location.pathname.replace(/\/+$/, '') || '/';
+    if (pathname === AUTH_ROUTES.login || pathname === AUTH_ROUTES.signup) history.replaceState(null, '', `/${location.hash}`);
     document.body.classList.add('authenticated');
     $('#auth-gate').hidden = true;
     $('#app-shell').setAttribute('aria-hidden', 'false');
+    document.title = APP_TITLE;
     const email = user?.email || '';
     const avatar = $('#user-avatar'); if (avatar) { avatar.textContent = email.slice(0, 1).toUpperCase() || 'ก'; avatar.title = email; }
     message('');
@@ -57,14 +62,25 @@
     document.body.classList.remove('authenticated');
     $('#auth-gate').hidden = false;
     $('#app-shell')?.setAttribute('aria-hidden', 'true');
+    const pathname = location.pathname.replace(/\/+$/, '') || '/';
+    const onAuthRoute = pathname === AUTH_ROUTES.login || pathname === AUTH_ROUTES.signup;
+    setMode(onAuthRoute ? modeFromPath() : 'login', { updateUrl: !onAuthRoute, replace: true });
     message(text, type);
   }
-  function setMode(mode) {
+  function modeFromPath() {
+    return (location.pathname.replace(/\/+$/, '') || '/') === AUTH_ROUTES.signup ? 'signup' : 'login';
+  }
+  function setMode(mode, { updateUrl = true, replace = false } = {}) {
     const signup = mode === 'signup';
     $('#login-form').hidden = signup; $('#signup-form').hidden = !signup;
     $('#auth-login-tab').classList.toggle('selected', !signup); $('#auth-signup-tab').classList.toggle('selected', signup);
     $('#auth-login-tab').setAttribute('aria-selected', String(!signup)); $('#auth-signup-tab').setAttribute('aria-selected', String(signup));
     $('#auth-title').textContent = signup ? 'สร้างบัญชี SETscope' : 'เข้าสู่ระบบ SETscope';
+    document.title = signup ? 'สมัครสมาชิก — SETscope' : 'เข้าสู่ระบบ — SETscope';
+    if (updateUrl) {
+      const route = signup ? AUTH_ROUTES.signup : AUTH_ROUTES.login;
+      if (location.pathname !== route || location.search || location.hash) history[replace ? 'replaceState' : 'pushState'](null, '', route);
+    }
     message('');
   }
   function scheduleRefresh() {
@@ -87,13 +103,13 @@
     try {
       const result = await authRequest(`signup?redirect_to=${encodeURIComponent(window.location.origin)}`, { method: 'POST', body: JSON.stringify({ email: form.get('email'), password, data: { terms_accepted_at: new Date().toISOString(), terms_version: '2026-10-13' } }) });
       if (result.access_token) { saveSession(sessionFrom(result)); user = result.user || await authRequest('user', { headers: { Authorization: `Bearer ${session.access_token}` } }); scheduleRefresh(); showDashboard(); }
-      else { signupForm.reset(); setMode('login'); message('สมัครสมาชิกแล้ว กรุณากดยืนยันจากอีเมลก่อน แล้วกลับมาเข้าสู่ระบบ', 'success'); }
+      else { signupForm.reset(); setMode('login', { replace: true }); message('สมัครสมาชิกแล้ว กรุณากดยืนยันจากอีเมลก่อน แล้วกลับมาเข้าสู่ระบบ', 'success'); }
     } catch (error) { message(error.message, 'error'); }
     finally { submit.disabled = false; }
   }
   async function logout() {
     try { if (await ensureFresh()) await authRequest('logout', { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}` } }); } catch (_) {}
-    clearTimeout(refreshTimer); saveSession(null); user = null; window.location.reload();
+    clearTimeout(refreshTimer); saveSession(null); user = null; setMode('login', { replace: true }); window.location.reload();
   }
   async function authorizedFetch(url, options = {}) {
     if (!await ensureFresh()) { const wasAuthenticated = document.body.classList.contains('authenticated'); saveSession(null); showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง'); if (wasAuthenticated) window.location.reload(); throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง'); }
@@ -108,6 +124,11 @@
   $('#login-form').addEventListener('submit', onLogin);
   $('#signup-form').addEventListener('submit', onSignup);
   $('#logout-button').addEventListener('click', logout);
+  window.addEventListener('popstate', () => {
+    if (document.body.classList.contains('authenticated')) showDashboard();
+    else setMode(modeFromPath(), { updateUrl: false });
+  });
+  setMode(modeFromPath(), { updateUrl: !location.hash.includes('access_token='), replace: true });
 
   (async () => {
     try {
