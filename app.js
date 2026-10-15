@@ -783,9 +783,12 @@ function renderNewsItem(item, options = {}) {
   const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
   const analysis = newsAnalyses.get(newsKey(item));
   const summary = analysis?.summary || 'กำลังอ่านและสรุปเนื้อหาข่าว…';
-  const mode = analysis?.mode === 'ai' ? `วิเคราะห์โดย AI · ${analysis.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis.basis === 'snippet' ? 'อ่าน snippet' : 'อ่านพาดหัว'}` : `สรุปอัตโนมัติ · ${analysis?.basis === 'snippet' ? 'snippet' : 'พาดหัว'}`;
+  const mode = analysis?.mode === 'ai'
+    ? `โดย AI · ${analysis.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
+    : 'สรุปจากคำสำคัญ';
+  const promo = item.source === 'broker' ? '<span class="promo-tag">จากผู้ให้บริการ อาจมีเนื้อหาส่งเสริมการขาย</span>' : '';
   const symbolTag = relatedSymbols.length ? `<span class="news-relevance">${escapeHtml(relatedSymbols.join(', '))}</span>` : '';
-  return `<article class="news-item"><div><a class="news-title news-title-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName || item.source || 'ข่าว')}</span><span class="news-impact ${cls}" title="ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม">${mood}</span>${symbolTag}</div><div class="news-ai-summary"><b>${mode}</b><span>${escapeHtml(summary)}</span></div></div><a class="news-time" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(stamp(item.pubDate))} ↗</a></article>`;
+  return `<article class="news-item"><div><a class="news-title news-title-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a><div class="news-tags"><span class="source-tag">${escapeHtml(item.sourceName || item.source || 'ข่าว')}</span><span class="news-impact ${cls}" title="ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม">${mood}</span>${promo}${symbolTag}</div><div class="news-ai-summary"><b>${mode}</b><span>${escapeHtml(summary)}</span></div></div><a class="news-time" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(stamp(item.pubDate))} ↗</a></article>`;
 }
 function sentimentHeadline(headline) {
   const text = String(headline || '');
