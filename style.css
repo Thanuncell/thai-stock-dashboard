@@ -248,18 +248,14 @@ html[data-theme="dark"] .news-refresh-btn{border-color:#35584d;background:#1d302
 html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433d}
 /* SETscope-owned OHLC chart (market data supplied by Yahoo Finance). */
 .chart-indicators{gap:7px;flex-wrap:wrap;min-height:26px}
-.chart-data-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:9px;line-height:1.5}
-.chart-source-note{color:var(--muted)}
-.chart-fullscreen-btn{border:1px solid var(--line);border-radius:6px;background:var(--paper);color:#4d756a;font:600 10px var(--font);padding:7px 10px;cursor:pointer}
-.chart-fullscreen-btn:hover{border-color:#a9cfc2;background:#f0f7f4}
+.chart-source-note{color:var(--muted);margin-right:auto}
 .indicator-toggle{display:inline-flex;align-items:center;gap:5px;border:1px solid transparent;border-radius:5px;padding:4px 6px;background:transparent;color:#98a2ab;font:500 9px var(--font);cursor:pointer}
 .indicator-toggle.active{border-color:var(--line);background:var(--paper);color:var(--ink)}
 .indicator-toggle i{width:11px;height:2px;border-radius:2px;background:#9aa4ac}
-.indicator-toggle .sma-line{background:#8b76c5}.indicator-toggle .ema20-line{background:#188b82}.indicator-toggle .ema50-line{background:#d5943c}.indicator-toggle .ema100-line{background:#5285c3}.indicator-toggle .ema200-line{background:#c56f82}.indicator-toggle .macd-line-key{background:linear-gradient(90deg,#4f77bd 0 50%,#dc9250 50%)}
+.indicator-toggle .sma-line{background:#8b76c5}.indicator-toggle .ema20-line{background:#188b82}.indicator-toggle .ema50-line{background:#d5943c}.indicator-toggle .ema100-line{background:#5285c3}.indicator-toggle .ema200-line{background:#c56f82}
 .own-chart-wrap{height:380px;overflow:hidden;margin-top:6px;border:1px solid var(--line);border-radius:7px;background:var(--paper)}
-.own-chart-wrap.has-macd{height:520px}
 #stock-price-chart,.chart-svg-scroll{width:100%;height:100%}
-.chart-svg-scroll{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+.chart-svg-scroll{overflow-x:auto;overflow-y:hidden}
 .price-chart-svg{display:block;width:100%;min-width:660px;height:100%;font-family:var(--latin),var(--font)}
 .chart-grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}
 .chart-axis-text,.chart-label{fill:var(--muted);font-size:10px}
@@ -272,31 +268,10 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .price-candle .candle-hit{fill:transparent;stroke:none;pointer-events:none}
 .sma20-chart-line,.ema20-chart-line,.ema50-chart-line,.ema100-chart-line,.ema200-chart-line{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke}
 .sma20-chart-line{stroke:#8b76c5}.ema20-chart-line{stroke:#188b82}.ema50-chart-line{stroke:#d5943c}.ema100-chart-line{stroke:#5285c3}.ema200-chart-line{stroke:#c56f82}
-.chart-level line{stroke-width:1.2;stroke-dasharray:7 5;vector-effect:non-scaling-stroke}
-.chart-level text{font-size:9px;font-weight:600;paint-order:stroke;stroke:var(--paper);stroke-width:3px;stroke-linejoin:round}
-.chart-level.support line{stroke:#2c9a7a}.chart-level.support text{fill:#217b64}
-.chart-level.resistance line{stroke:#d56b70}.chart-level.resistance text{fill:#b95057}
-.macd-panel-bg{fill:var(--bg);stroke:var(--line);stroke-width:1}
-.macd-zero{stroke:var(--muted);stroke-width:.8;stroke-dasharray:3 4;opacity:.65}
-.macd-line,.macd-signal-line{fill:none;stroke-width:1.5;vector-effect:non-scaling-stroke}.macd-line{stroke:#4f77bd}.macd-signal-line{stroke:#dc9250}
-.macd-histogram{opacity:.55}.macd-histogram.positive{fill:#299d7d}.macd-histogram.negative{fill:#d96b72}
-.chart-empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;color:var(--muted);font-size:11px;text-align:center;padding:24px}
-.chart-empty button{border:1px solid #b9d7cd;border-radius:6px;background:#edf7f3;color:#2f7765;font:600 10px var(--font);padding:8px 13px;cursor:pointer}
-.analysis-panel.signals-unavailable .signal-summary,.analysis-panel.signals-unavailable .rsi-meter,.analysis-panel.signals-unavailable .signal-list,.analysis-panel.signals-unavailable #technical-reasons{display:none}
-.analysis-panel.no-chart-data .technical-levels,.analysis-panel.no-chart-data .technical-plan,.analysis-panel.no-chart-data #levels-basis{display:none}
-.technical-levels b{overflow-wrap:anywhere;line-height:1.45}
-body.chart-fullscreen-open{overflow:hidden}
-.chart-panel:fullscreen,.chart-panel.chart-fullscreen-fallback{background:var(--paper);border:0;border-radius:0;padding:18px 22px;overflow:auto}
-.chart-panel:fullscreen{width:100vw;height:100vh}
-.chart-panel.chart-fullscreen-fallback{position:fixed;inset:0;z-index:1000;width:100vw;height:100dvh}
-.chart-panel:fullscreen .own-chart-wrap,.chart-panel.chart-fullscreen-fallback .own-chart-wrap{height:max(360px,calc(100vh - 270px));height:max(360px,calc(100dvh - 270px))}
-.chart-panel:fullscreen .price-chart-svg,.chart-panel.chart-fullscreen-fallback .price-chart-svg{min-width:720px}
+.chart-empty{height:100%;display:grid;place-items:center;color:var(--muted);font-size:11px}
 html[data-theme="dark"] .own-chart-wrap{background:#111a23}
 html[data-theme="dark"] .indicator-toggle.active{background:#172532}
-html[data-theme="dark"] .chart-fullscreen-btn{background:#172532;color:#9ad6c1}
-html[data-theme="dark"] .chart-level text{stroke:#111a23}
-@media(max-width:790px){.own-chart-wrap{height:330px}.own-chart-wrap.has-macd{height:470px}.chart-data-meta{display:grid;gap:2px}.chart-fullscreen-btn{min-height:40px}.chart-panel:fullscreen,.chart-panel.chart-fullscreen-fallback{padding:12px}.chart-panel:fullscreen .chart-toolbar,.chart-panel.chart-fullscreen-fallback .chart-toolbar{margin-top:9px}.chart-panel:fullscreen .own-chart-wrap,.chart-panel.chart-fullscreen-fallback .own-chart-wrap{height:max(330px,calc(100dvh - 285px))}}
-@media(max-width:470px){.own-chart-wrap{height:300px}.own-chart-wrap.has-macd{height:440px}.chart-panel:fullscreen .own-chart-wrap,.chart-panel.chart-fullscreen-fallback .own-chart-wrap{height:max(300px,calc(100dvh - 305px))}.chart-panel:fullscreen .price-chart-svg,.chart-panel.chart-fullscreen-fallback .price-chart-svg{min-width:660px}.chart-level text{font-size:8px}}
+@media(max-width:790px){.own-chart-wrap{height:330px}.chart-source-note{width:100%;margin-bottom:2px}}
 /* News summaries and Watchlist-specific news */
 .news-item{align-items:start}
 .news-title-link{display:inline-block;text-decoration:none}
