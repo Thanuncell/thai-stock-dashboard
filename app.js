@@ -36,7 +36,11 @@ let watchlistNewsRequestId = 0;
 let searchTimer;
 let searchSequence = 0;
 let currentRange = '1D';
-const chartIndicators = new Set(['sma20', 'ema20', 'ema50']);
+const chartIndicators = new Set(['sma20', 'ema20', 'ema50', 'macd']);
+let chartLoadState = 'loading';
+let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
+let chartResizeTimer = null;
+let chartCssFullscreen = false;
 let alertPrefs = readLocal('setscope-alert-prefs', {});
 let alertStates = readLocal('setscope-alert-states', {});
 let alertHistory = readLocal('setscope-alert-history', []);
@@ -44,9 +48,6 @@ let unreadAlerts = 0;
 let watchlistCloudReady = false;
 let watchlistSyncTimer = null;
 let watchlistSyncChain = Promise.resolve();
-let latestSettradeOverview = null;
-let activeMarketTab = 'SET';
-let activeMarketRanking = 'activeValue';
 
 function setWatchlistSyncStatus(text, state = '') {
   ['#watchlist-sync-status', '#watchlist-sync-status-mobile'].forEach(selector => {
@@ -201,171 +202,24 @@ function stamp(value) {
     timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short'
   });
 }
-function finiteNumber(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-function fmtVolumeThousand(value) {
-  const parsed = finiteNumber(value);
-  return parsed === null ? '—' : `${number(parsed)} ('000 หุ้น)`;
-}
-function fmtMillionBaht(value) {
-  const parsed = finiteNumber(value);
-  return parsed === null ? '—' : `${number(parsed)} ล้านบาท`;
-}
-function fmtThaiDateTime(value) {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(+date)) return '—';
-  return new Intl.DateTimeFormat('th-TH-u-ca-buddhist', {
-    timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
-  }).format(date);
-}
-function fmtThaiMarketDate(value) {
-  if (!value) return '—';
-  const text = String(value).trim();
-  if (/\b25\d{2}\b/.test(text)) return text;
-  const numeric = text.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/);
-  if (numeric) {
-    const year = Number(numeric[3]) > 2400 ? Number(numeric[3]) - 543 : Number(numeric[3]);
-    const date = new Date(Date.UTC(year, Number(numeric[2]) - 1, Number(numeric[1])));
-    if (!Number.isNaN(+date)) return new Intl.DateTimeFormat('th-TH-u-ca-buddhist', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric' }).format(date);
-  }
-  const parsed = new Date(text);
-  if (!Number.isNaN(+parsed)) return new Intl.DateTimeFormat('th-TH-u-ca-buddhist', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric' }).format(parsed);
-  return text.replace(/\b(?:19|20)\d{2}\b/g, year => String(Number(year) + 543));
-}
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
-function setMarketDataMessage(type, text, retry = false) {
-  const node = $('#market-data-message');
-  if (!node) return;
-  node.hidden = !text;
-  node.className = `market-data-message${type ? ` ${type}` : ''}`;
-  node.innerHTML = text ? `<span>${escapeHtml(text)}</span>${retry ? '<button type="button" data-market-retry>ลองอีกครั้ง</button>' : ''}` : '';
-}
-const SUB_INDEX_ORDER = ['SET50', 'SET50FF', 'SET100', 'SET100FF', 'sSET', 'SETCLMV', 'SETHD', 'SETESG', 'SETWB', 'SET TRI'];
-function renderSubIndices() {
-  const box = $('#sub-index-grid');
-  if (!box) return;
-  box.replaceChildren();
-  setText('#sub-index-market', activeMarketTab);
-  if (activeMarketTab !== 'SET') {
-    const note = document.createElement('p');
-    note.className = 'market-empty';
-    note.textContent = `ข้อมูลดัชนีย่อยของ ${activeMarketTab} ยังไม่พร้อมตามขอบเขต M3`;
-    box.append(note);
-    return;
-  }
-  const bySymbol = Object.fromEntries((latestSettradeOverview?.subIndices || []).map(item => [item.symbol, item]));
-  for (const symbol of SUB_INDEX_ORDER) {
-    const item = bySymbol[symbol];
-    const change = finiteNumber(item?.change), percent = finiteNumber(item?.changePercent);
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'sub-index-card';
-    card.dataset.subIndex = symbol;
-    card.setAttribute('aria-pressed', 'false');
-    card.disabled = !item;
-    const label = document.createElement('span');
-    label.textContent = symbol;
-    const value = document.createElement('strong');
-    value.textContent = number(item?.last);
-    const detail = document.createElement('small');
-    detail.className = change > 0 ? 'up' : change < 0 ? 'down' : '';
-    detail.textContent = change === null || percent === null ? 'ต้นทางยังไม่ส่งข้อมูล' : `${change > 0 ? '+' : ''}${number(change)} (${percent > 0 ? '+' : ''}${number(percent)}%)`;
-    card.append(label, value, detail);
-    box.append(card);
-  }
-}
-function setMarketTab(market) {
-  activeMarketTab = market;
-  document.querySelectorAll('.market-tabs [data-market]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.market === market)));
-  renderSubIndices();
-}
-function renderMarketRanking() {
-  const body = $('#rank-body');
-  if (!body) return;
-  body.replaceChildren();
-  const ranking = latestSettradeOverview?.rankings?.[activeMarketRanking] || { items: [] };
-  const items = (ranking.items || []).slice(0, 10);
-  const sourceUrl = latestSettradeOverview?.links?.[activeMarketRanking];
-  setText('#ranking-updated', ranking.asOf ? `ข้อมูลล่าสุด ${fmtThaiMarketDate(ranking.asOf)}` : 'รอข้อมูล');
-  if (!items.length) {
-    const row = document.createElement('tr'), cell = document.createElement('td');
-    cell.colSpan = 4;
-    const title = document.createElement('strong');
-    title.textContent = 'ข้อมูลจัดอันดับโหลดจากต้นทางไม่สำเร็จ';
-    const detail = document.createElement(sourceUrl ? 'a' : 'span');
-    detail.textContent = sourceUrl ? 'เปิดหน้าต้นทาง SETTRADE' : 'กรุณาลองอัปเดตข้อมูลอีกครั้ง';
-    if (sourceUrl) { detail.href = sourceUrl; detail.target = '_blank'; detail.rel = 'noreferrer'; }
-    cell.append(title, detail); row.append(cell); body.append(row);
-    return;
-  }
-  for (const item of items) {
-    const row = document.createElement('tr');
-    const symbol = document.createElement('th'); symbol.scope = 'row'; symbol.textContent = item.symbol;
-    const price = document.createElement('td'); price.textContent = number(item.last);
-    const change = finiteNumber(item.change), percent = finiteNumber(item.changePercent);
-    const movement = document.createElement('td');
-    movement.textContent = change === null || percent === null ? '—' : `${change > 0 ? '+' : ''}${number(change)} (${percent > 0 ? '+' : ''}${number(percent)}%)`;
-    if (change > 0) movement.className = 'up'; else if (change < 0) movement.className = 'down';
-    const value = document.createElement('td'); value.textContent = number(item.turnoverMillion);
-    row.append(symbol, price, movement, value); body.append(row);
-  }
-}
-function resetMarketOverview() {
-  $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => `<article class="market-index-card${symbol === 'TFEX' ? ' market-index-card-tfex' : ''}"><span>${symbol}</span><strong>—</strong><small>ยังไม่มีข้อมูล</small></article>`).join('');
-  $('#set-index').innerHTML = '— <span class="neutral">—</span>';
-  setText('#set-volume', '—');
-  setText('#set-range', '—');
-  setText('#set-turnover', '—');
-  const conditionNode = $('#market-condition');
-  if (conditionNode) { conditionNode.textContent = 'รอข้อมูลภาพตลาด'; conditionNode.className = 'market-condition'; }
-  $('#market-breadth-list').innerHTML = '<p class="market-empty">ยังไม่มีข้อมูลสถิติหุ้นขึ้น–ลง</p>';
-  setText('#investor-summary-date', 'รอวันที่ข้อมูล');
-  $('#investor-summary-body').innerHTML = '<tr><td colspan="4">ยังไม่มีข้อมูลสรุปซื้อขายสิ้นวัน</td></tr>';
-  $('#nvdr-metrics').innerHTML = '<div><small>มูลค่าตลาด SET + mai</small><strong>—</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>—</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>—</strong><em>%</em></div>';
-  $('#foreign-flow').innerHTML = '<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong>—</strong><small>ล้านบาท · ยังไม่มีข้อมูล</small>';
-  renderSubIndices();
-  renderMarketRanking();
-  setText('#market-data-date', 'ยังไม่มีเวลาอัปเดต');
-  setText('#mkt-time', 'ข้อมูลล่าสุด —');
-}
-function hasMarketOverviewData(data) {
-  return Boolean(
-    (data.indices || []).some(item => finiteNumber(item.last) !== null) ||
-    (data.breadth || []).length ||
-    data.closeSummary ||
-    Object.values(data.nvdr || {}).some(value => finiteNumber(value) !== null) ||
-    (data.investorTypes?.groups || []).some(item => finiteNumber(item.netMillion) !== null) ||
-    finiteNumber(data.foreign?.netMillion) !== null ||
-    (data.subIndices || []).some(item => finiteNumber(item.last) !== null) ||
-    Object.values(data.rankings || {}).some(group => (group.items || []).length)
-  );
-}
 function renderSettradeOverview(data) {
-  latestSettradeOverview = data;
-  resetMarketOverview();
   const indices = data.indices || [];
   $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => {
     if (symbol === 'TFEX') return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ดูข้อมูลต้นทาง</strong><small>ข้อมูลล่าช้า 15 นาที · อ้างอิงแหล่งข้อมูลด้านล่าง</small></article>`;
     const item = indices.find(row => row.symbol === symbol);
     if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
-    const change = finiteNumber(item.change), changePercent = finiteNumber(item.changePercent);
-    const trend = change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
-    const arrow = change > 0 ? '▲' : change < 0 ? '▼' : '•';
-    const changeText = change === null || changePercent === null ? '—' : `${arrow} ${number(Math.abs(change))} (${number(changePercent)}%)`;
-    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${changeText} · มูลค่า ${fmtMillionBaht(item.turnoverMillion)}</small></article>`;
+    const trend = Number(item.change) > 0 ? 'up' : Number(item.change) < 0 ? 'down' : 'neutral';
+    const arrow = Number(item.change) > 0 ? '▲' : Number(item.change) < 0 ? '▼' : '•';
+    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${arrow} ${number(Math.abs(Number(item.change || 0)))} (${number(item.changePercent)}%) · มูลค่า ${number(item.turnoverMillion)} ลบ.</small></article>`;
   }).join('');
   const setIndex = indices.find(row => row.symbol === 'SET');
   if (setIndex) {
-    const change = finiteNumber(setIndex.change), pct = finiteNumber(setIndex.changePercent);
-    const changeMarkup = change === null || pct === null ? '<span class="neutral">—</span>' : `<span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
-    $('#set-index').innerHTML = `${number(setIndex.last)} ${changeMarkup}`;
-    setText('#set-volume', fmtVolumeThousand(setIndex.volumeThousand));
-    setText('#set-range', finiteNumber(setIndex.high) === null || finiteNumber(setIndex.low) === null ? '—' : `${number(setIndex.high)} / ${number(setIndex.low)}`);
-    setText('#set-turnover', fmtMillionBaht(setIndex.turnoverMillion));
+    const change = Number(setIndex.change || 0), pct = Number(setIndex.changePercent || 0);
+    $('#set-index').innerHTML = `${number(setIndex.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
+    setText('#set-volume', `${number(Number(setIndex.volumeThousand || 0) * 1000)} หุ้น`);
+    setText('#set-range', `${number(setIndex.high)} / ${number(setIndex.low)}`);
+    setText('#set-turnover', `${number(setIndex.turnoverMillion)} ล้านบาท`);
     $('#set-turnover').title = 'มูลค่าซื้อขายจากหน้า SETTRADE · หน่วยล้านบาท';
   }
   const breadthLabels = { Gainers: 'ปรับขึ้น', Unchanges: 'ไม่เปลี่ยนแปลง', Losers: 'ปรับลง' };
@@ -380,48 +234,31 @@ function renderSettradeOverview(data) {
   if (conditionNode) { conditionNode.textContent = `ภาวะตลาด: ${condition}`; conditionNode.className = `market-condition ${breadthTotals.up > breadthTotals.down ? 'up' : breadthTotals.up < breadthTotals.down ? 'down' : ''}`; }
   $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<div class="market-breadth-group"><b>${escapeHtml(group.market)}</b>${(group.items || []).map(item => {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
-    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${fmtVolumeThousand(item.volumeThousand)}</small></div>`;
+    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${number(item.volumeThousand)} พันหุ้น</small></div>`;
   }).join('')}</div>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
-  const investorNames = ['นักลงทุนสถาบัน', 'บัญชีบริษัทหลักทรัพย์', 'นักลงทุนต่างประเทศ', 'นักลงทุนในประเทศ'];
-  const investorGroups = data.investorTypes?.groups || [];
-  const investorRows = investorNames.map(name => investorGroups.find(row => row.name === name) || { name, buyMillion: null, sellMillion: null, netMillion: null });
-  $('#investor-summary-body').innerHTML = investorRows.map(row => {
-    const net = finiteNumber(row.netMillion);
-    return `<tr><th scope="row">${escapeHtml(row.name)}</th><td>${number(row.buyMillion)}</td><td>${number(row.sellMillion)}</td><td class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(row.netMillion)}</td></tr>`;
-  }).join('');
-  setText('#investor-summary-date', investorGroups.length ? `ข้อมูล ณ วันที่ ${fmtThaiMarketDate(data.investorTypes?.date || data.marketDate)}` : 'SETTRADE ยังไม่เผยแพร่ข้อมูลรอบนี้');
+  setText('#market-close-summary', data.closeSummary || 'SETTRADE ยังไม่เผยแพร่สรุปซื้อขายสิ้นวันรอบนี้');
   const nvdr = data.nvdr || {};
   $('#nvdr-metrics').innerHTML = `<div><small>มูลค่าตลาด SET + mai</small><strong>${number(nvdr.marketMillion)}</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>${number(nvdr.nvdrMillion)}</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>${number(nvdr.ratioPercent)}</strong><em>%</em></div>`;
   const foreign = data.foreign || {};
-  const net = finiteNumber(foreign.netMillion);
+  const net = Number(foreign.netMillion);
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(foreign.netMillion)}</strong><small>ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}</small>`;
-  setMarketTab(activeMarketTab);
-  renderMarketRanking();
-  setText('#settrade-updated', data.stale ? `ใช้ข้อมูลที่บันทึกล่าสุด · ${fmtThaiDateTime(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
-  setText('#mkt-time', `ข้อมูลล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
-  setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${fmtThaiMarketDate(data.marketDate)}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
-  if (data.stale) setMarketDataMessage('warning', `ใช้ข้อมูลที่บันทึกล่าสุด · ${fmtThaiDateTime(data.fetchedAt)}`, true);
-  else if (data.errors?.length) setMarketDataMessage('warning', 'ข้อมูลบางส่วนจาก SETTRADE โหลดไม่สำเร็จ ส่วนที่สำเร็จยังแสดงตามปกติ', true);
-  else setMarketDataMessage('', '');
+  setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
+  setText('#settrade-updated', data.stale ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${stamp(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${stamp(data.fetchedAt)}`);
+  setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${data.marketDate}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
 }
 async function getSettradeOverview(force = false) {
   const button = $('#refresh-market-data');
   if (button?.disabled) return;
   if (button) { button.disabled = true; button.classList.add('is-loading'); button.textContent = 'กำลังอัปเดต…'; }
-  setText('#settrade-updated', 'กำลังดึงข้อมูลจากต้นทาง…');
-  setMarketDataMessage('loading', 'กำลังดึงข้อมูลจากต้นทาง…');
+  setText('#settrade-updated', 'กำลังดึงข้อมูลจาก SETTRADE…');
   try {
     const response = await apiFetch(`/api/settrade-overview${force ? '?refresh=1' : ''}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'ดึงข้อมูลจาก SETTRADE ไม่สำเร็จ');
-    if (!hasMarketOverviewData(data)) throw new Error('ต้นทางยังไม่ส่งข้อมูลภาพรวมตลาด');
     renderSettradeOverview(data);
   } catch (error) {
     console.warn('SETTRADE overview refresh failed', error);
-    latestSettradeOverview = null;
-    resetMarketOverview();
-    setText('#settrade-updated', 'ข้อมูลจาก SETTRADE โหลดไม่สำเร็จ');
-    setMarketDataMessage('error', 'ข้อมูลจาก SETTRADE โหลดไม่สำเร็จ', true);
+    setText('#settrade-updated', 'ดึงข้อมูลไม่สำเร็จ · ตรวจสอบข้อมูลโดยตรงที่ SETTRADE');
   } finally {
     if (button) { button.disabled = false; button.classList.remove('is-loading'); button.textContent = '↻ อัปเดตข้อมูลตลาด'; }
   }
@@ -461,21 +298,69 @@ function updateTradingViewChart() {
     renderPriceChart([]);
     return;
   }
-  renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt);
+  renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt, latestMarket?.levelsHistory || latestMarket?.history || []);
 }
 
-function renderPriceChart(bars = [], fetchedAt = '') {
+function setChartLoadState(state, message = '') {
+  chartLoadState = state;
+  chartLoadMessage = message || (state === 'loading' ? 'กำลังโหลดข้อมูลจาก Yahoo Finance…' : '');
+}
+
+function setTechnicalPanelState(state) {
+  const panel = $('.analysis-panel');
+  if (!panel) return;
+  panel.classList.toggle('signals-unavailable', state === 'insufficient' || state === 'unavailable' || state === 'error' || state === 'loading');
+  panel.classList.toggle('no-chart-data', state === 'unavailable' || state === 'error' || state === 'loading');
+}
+
+function computeSmaSeries(values, period) {
+  let sum = 0;
+  return values.map((value, index) => {
+    sum += value;
+    if (index >= period) sum -= values[index - period];
+    return index >= period - 1 ? sum / period : null;
+  });
+}
+
+function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars) {
   const host = $('#stock-price-chart');
   if (!host) return;
   const rows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
   if (!rows.length) {
-    host.innerHTML = '<div class="chart-empty">กำลังโหลดข้อมูลกราฟจาก Yahoo Finance…</div>';
+    const isError = chartLoadState === 'error';
+    const isUnavailable = chartLoadState === 'unavailable';
+    const message = chartLoadMessage || (isUnavailable ? 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้' : isError ? 'โหลดข้อมูลไม่สำเร็จ' : 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
+    host.innerHTML = `<div class="chart-empty chart-empty-${escapeHtml(chartLoadState)}"><span>${escapeHtml(message)}</span>${isError ? '<button type="button" data-chart-retry>ลองใหม่</button>' : ''}</div>`;
+    host.closest('.own-chart-wrap')?.classList.remove('has-macd');
+    setText('#chart-updated', 'อัปเดตล่าสุด: —');
     return;
   }
-  const width = 960, height = 370, left = 70, right = 16, top = 18, priceBottom = 278, volumeBottom = 335;
+  const analysis = analyseTechnicals(rows, levelBars);
+  const showMacd = chartIndicators.has('macd') && Boolean(analysis?.macdSeries?.length);
+  const hostWidth = Math.max(320, Math.floor(host.clientWidth || host.parentElement?.clientWidth || 640));
+  const minCandleSpace = currentRange === '1Y' ? 4.8 : currentRange === '3M' ? 6 : 7;
+  const left = hostWidth < 520 ? 52 : 66, right = hostWidth < 520 ? 10 : 16, top = 22;
+  const width = Math.max(hostWidth, Math.ceil(left + right + rows.length * minCandleSpace));
+  const height = showMacd ? 520 : 390;
+  const priceBottom = 280, volumeBottom = 340, macdTop = 375, macdBottom = 475;
   const plotWidth = width - left - right;
-  const lows = rows.map(row => Number(row.low)), highs = rows.map(row => Number(row.high));
-  const minPrice = Math.min(...lows), maxPrice = Math.max(...highs);
+  const closes = rows.map(row => Number(row.close));
+  const smaValues = computeSmaSeries(closes, 20);
+  const indicatorSeries = [
+    ['sma20', smaValues, 'sma20-chart-line'],
+    ['ema20', computeEma(closes, 20), 'ema20-chart-line'],
+    ['ema50', computeEma(closes, 50), 'ema50-chart-line'],
+    ['ema100', computeEma(closes, 100), 'ema100-chart-line'],
+    ['ema200', computeEma(closes, 200), 'ema200-chart-line']
+  ];
+  const chartLevels = analysis?.levels || findPriceLevels(levelBars, closes.at(-1));
+  const levelDetails = [...chartLevels.supportDetails, ...chartLevels.resistanceDetails];
+  const scaleValues = [
+    ...rows.flatMap(row => [Number(row.low), Number(row.high)]),
+    ...indicatorSeries.filter(([key]) => chartIndicators.has(key)).flatMap(([, values]) => values.filter(Number.isFinite)),
+    ...levelDetails.map(item => item.value)
+  ].filter(Number.isFinite);
+  const minPrice = Math.min(...scaleValues), maxPrice = Math.max(...scaleValues);
   const pad = Math.max((maxPrice - minPrice) * .08, maxPrice * .003, .01);
   const min = minPrice - pad, max = maxPrice + pad, span = max - min || 1;
   const y = value => top + (max - value) / span * (priceBottom - top);
@@ -495,25 +380,85 @@ function renderPriceChart(bars = [], fetchedAt = '') {
     const detail = `${dateText} · O ${number(open)} · H ${number(high)} · L ${number(low)} · C ${number(close)} · Vol ${number(volume)}`;
     return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/><rect class="volume-bar" x="${cx - candleWidth / 2}" y="${volumeBottom - volumeHeight}" width="${candleWidth}" height="${volumeHeight}"/><rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
   }).join('');
-  const smaValues = rows.map((_, index) => index < 19 ? null : rows.slice(index - 19, index + 1).reduce((sum, row) => sum + Number(row.close), 0) / 20);
-  const indicators = [
-    ['sma20', smaValues, 'sma20-chart-line'],
-    ['ema20', computeEma(rows.map(row => Number(row.close)), 20), 'ema20-chart-line'],
-    ['ema50', computeEma(rows.map(row => Number(row.close)), 50), 'ema50-chart-line'],
-    ['ema100', computeEma(rows.map(row => Number(row.close)), 100), 'ema100-chart-line'],
-    ['ema200', computeEma(rows.map(row => Number(row.close)), 200), 'ema200-chart-line']
-  ].filter(([key]) => chartIndicators.has(key)).map(([, values, className]) => {
+  const indicators = indicatorSeries.filter(([key]) => chartIndicators.has(key)).map(([, values, className]) => {
     const points = values.map((value, index) => value == null ? '' : `${x(index)},${y(value)}`).filter(Boolean).join(' ');
     return points ? `<polyline class="${className}" points="${points}"/>` : '';
   }).join('');
+  const levelLines = levelDetails.map(item => {
+    const py = y(item.value);
+    const typeLabel = item.type === 'support' ? `S${item.rank}` : `R${item.rank}`;
+    return `<g class="chart-level ${item.type}"><line x1="${left}" y1="${py}" x2="${width - right}" y2="${py}"/><text x="${width - right - 4}" y="${py - 4}" text-anchor="end">${escapeHtml(typeLabel)} ${escapeHtml(number(item.value))} · ${escapeHtml(item.source)}</text></g>`;
+  }).join('');
+  let macdPanel = '';
+  if (showMacd) {
+    const macdValues = [...analysis.macdSeries, ...analysis.signalSeries, 0].filter(Number.isFinite);
+    const macdMin = Math.min(...macdValues), macdMax = Math.max(...macdValues), macdSpan = macdMax - macdMin || 1;
+    const macdY = value => macdTop + (macdMax - value) / macdSpan * (macdBottom - macdTop);
+    const zeroY = macdY(0);
+    const macdLine = analysis.macdSeries.map((value, index) => Number.isFinite(value) ? `${x(index)},${macdY(value)}` : '').filter(Boolean).join(' ');
+    const signalLine = analysis.signalSeries.map((value, index) => Number.isFinite(value) ? `${x(index)},${macdY(value)}` : '').filter(Boolean).join(' ');
+    const histogram = analysis.macdHistogram.map((value, index) => {
+      if (!Number.isFinite(value)) return '';
+      const py = macdY(value), barWidth = Math.max(1.4, Math.min(8, step * .55));
+      return `<rect class="macd-histogram ${value >= 0 ? 'positive' : 'negative'}" x="${x(index) - barWidth / 2}" y="${Math.min(py, zeroY)}" width="${barWidth}" height="${Math.max(1, Math.abs(zeroY - py))}"/>`;
+    }).join('');
+    macdPanel = `<g class="macd-panel"><rect class="macd-panel-bg" x="${left}" y="${macdTop - 18}" width="${plotWidth}" height="${macdBottom - macdTop + 26}" rx="4"/><text class="chart-label" x="${left + 6}" y="${macdTop - 5}">MACD (12, 26, 9)</text><line class="macd-zero" x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}"/>${histogram}<polyline class="macd-line" points="${macdLine}"/><polyline class="macd-signal-line" points="${signalLine}"/></g>`;
+  }
   const labelIndices = [...new Set([0, Math.floor((rows.length - 1) / 3), Math.floor((rows.length - 1) * 2 / 3), rows.length - 1])];
   const dateLabels = labelIndices.map(index => {
     const date = new Date(rows[index].time);
     const label = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', ...(currentRange === '1D' ? { hour: '2-digit', minute: '2-digit' } : {}) });
-    return `<text class="chart-axis-text" x="${x(index)}" y="357" text-anchor="middle">${escapeHtml(label)}</text>`;
+    return `<text class="chart-axis-text" x="${x(index)}" y="${showMacd ? 510 : 375}" text-anchor="middle">${escapeHtml(label)}</text>`;
   }).join('');
-  const updated = fetchedAt ? new Date(fetchedAt).toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit' }) : '—';
-  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="12">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)} · อัปเดต ${escapeHtml(updated)} (เวลาไทย)</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${dateLabels}</svg></div>`;
+  const updated = fetchedAt ? new Date(fetchedAt).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+  setText('#chart-updated', `อัปเดตล่าสุด: ${updated} น. (เวลาไทย)`);
+  host.closest('.own-chart-wrap')?.classList.toggle('has-macd', showMacd);
+  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" style="width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${dateLabels}</svg></div>`;
+}
+
+function scheduleChartRedraw() {
+  clearTimeout(chartResizeTimer);
+  chartResizeTimer = setTimeout(updateTradingViewChart, 180);
+}
+
+function updateFullscreenControl() {
+  const button = $('#chart-fullscreen');
+  const panel = $('.chart-panel');
+  const active = chartCssFullscreen || document.fullscreenElement === panel;
+  if (panel) panel.classList.toggle('is-chart-fullscreen', active);
+  document.body.classList.toggle('chart-fullscreen-open', active);
+  if (button) {
+    button.textContent = active ? 'ย่อกราฟ' : 'เต็มจอ';
+    button.setAttribute('aria-pressed', String(active));
+    button.setAttribute('aria-label', active ? 'ออกจากโหมดเต็มจอ' : 'เปิดกราฟเต็มจอ');
+  }
+  scheduleChartRedraw();
+}
+
+function setCssChartFullscreen(active) {
+  chartCssFullscreen = active;
+  $('.chart-panel')?.classList.toggle('chart-fullscreen-fallback', active);
+  updateFullscreenControl();
+}
+
+async function toggleChartFullscreen() {
+  const panel = $('.chart-panel');
+  if (!panel) return;
+  if (document.fullscreenElement === panel) {
+    await document.exitFullscreen?.();
+    return;
+  }
+  if (chartCssFullscreen) {
+    setCssChartFullscreen(false);
+    return;
+  }
+  if (typeof panel.requestFullscreen === 'function') {
+    try {
+      await panel.requestFullscreen();
+      return;
+    } catch (_) {}
+  }
+  setCssChartFullscreen(true);
 }
 
 function setTheme(theme) {
@@ -611,19 +556,25 @@ function renderMovers(rows = []) {
 }
 
 function computeEma(values, period) {
-  if (!values.length) return [];
+  const numbers = (values || []).map(Number).filter(Number.isFinite);
+  if (!numbers.length) return [];
+  const result = Array(numbers.length).fill(null);
+  if (numbers.length < period) return result;
+  let ema = numbers.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+  result[period - 1] = ema;
   const k = 2 / (period + 1);
-  return values.map((value, index) => index ? value * k + values[index - 1] * (1 - k) : value);
+  for (let index = period; index < numbers.length; index++) {
+    ema = numbers[index] * k + ema * (1 - k);
+    result[index] = ema;
+  }
+  return result;
 }
 function emaAtPeriod(values, period) {
-  if (values.length < period) return null;
-  const seed = values.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
-  const k = 2 / (period + 1);
-  return values.slice(period).reduce((ema, value) => value * k + ema * (1 - k), seed);
+  return computeEma(values, period).at(-1) ?? null;
 }
 function findPriceLevels(bars, last) {
-  if (!Number.isFinite(Number(last)) || Number(last) <= 0) return { supports: [], resistances: [] };
-  const recent = (bars || []).filter(bar => Number.isFinite(Number(bar.low)) && Number(bar.low) > 0 && Number.isFinite(Number(bar.high)) && Number(bar.high) > 0).slice(-200);
+  if (!Number.isFinite(Number(last)) || Number(last) <= 0) return { supports: [], resistances: [], supportDetails: [], resistanceDetails: [] };
+  const recent = (bars || []).filter(bar => [bar.low, bar.high, bar.close].every(value => Number.isFinite(Number(value)) && Number(value) > 0)).slice(-260);
   const supports = [], resistances = [];
   for (let i = 2; i < recent.length - 2; i++) {
     const low = Number(recent[i].low), high = Number(recent[i].high);
@@ -631,20 +582,41 @@ function findPriceLevels(bars, last) {
     if (Number.isFinite(low) && low < last && neighbors.every(bar => low <= Number(bar.low))) supports.push(low);
     if (Number.isFinite(high) && high > last && neighbors.every(bar => high >= Number(bar.high))) resistances.push(high);
   }
-  const softSupports = recent.map(bar => Number(bar.low)).filter(level => level < last);
-  const softResistances = recent.map(bar => Number(bar.high)).filter(level => level > last);
   const gap = Math.max(last * 0.005, 0.01);
-  const nearest = (levels, ascending) => {
+  const nearest = (levels, ascending, source) => {
     const selected = [];
     for (const level of [...new Set(levels)].sort((a, b) => ascending ? a - b : b - a)) {
-      if (selected.every(item => Math.abs(item - level) >= gap)) selected.push(level);
+      if (selected.every(item => Math.abs(item.value - level) >= gap)) selected.push({ value: level, source });
       if (selected.length === 3) break;
     }
     return selected;
   };
+  const supportDetails = nearest(supports, false, 'Swing low');
+  const resistanceDetails = nearest(resistances, true, 'Swing high');
+  const pivotBar = recent.at(-1);
+  if (pivotBar && (supportDetails.length < 3 || resistanceDetails.length < 3)) {
+    const high = Number(pivotBar.high), low = Number(pivotBar.low), close = Number(pivotBar.close);
+    const pivot = (high + low + close) / 3;
+    const pivotSupports = [2 * pivot - high, pivot - (high - low), low - 2 * (high - pivot)].filter(level => level > 0 && level < last);
+    const pivotResistances = [2 * pivot - low, pivot + (high - low), high + 2 * (pivot - low)].filter(level => level > last);
+    for (const candidate of nearest(pivotSupports, false, 'Classic Pivot')) {
+      if (supportDetails.every(item => Math.abs(item.value - candidate.value) >= gap)) supportDetails.push(candidate);
+      if (supportDetails.length === 3) break;
+    }
+    for (const candidate of nearest(pivotResistances, true, 'Classic Pivot')) {
+      if (resistanceDetails.every(item => Math.abs(item.value - candidate.value) >= gap)) resistanceDetails.push(candidate);
+      if (resistanceDetails.length === 3) break;
+    }
+  }
+  supportDetails.sort((a, b) => b.value - a.value).splice(3);
+  resistanceDetails.sort((a, b) => a.value - b.value).splice(3);
+  supportDetails.forEach((item, index) => Object.assign(item, { type: 'support', rank: index + 1 }));
+  resistanceDetails.forEach((item, index) => Object.assign(item, { type: 'resistance', rank: index + 1 }));
   return {
-    supports: nearest(supports, false).length >= 3 ? nearest(supports, false) : nearest([...supports, ...softSupports], false),
-    resistances: nearest(resistances, true).length >= 3 ? nearest(resistances, true) : nearest([...resistances, ...softResistances], true)
+    supports: supportDetails.map(item => item.value),
+    resistances: resistanceDetails.map(item => item.value),
+    supportDetails,
+    resistanceDetails
   };
 }
 function analyseTechnicals(bars, levelBars = bars) {
@@ -667,22 +639,27 @@ function analyseTechnicals(bars, levelBars = bars) {
   const sma20 = values.slice(-20).reduce((sum, value) => sum + value, 0) / 20;
   const emas = { ema20: emaAtPeriod(values, 20), ema50: emaAtPeriod(values, 50), ema100: emaAtPeriod(values, 100), ema200: emaAtPeriod(values, 200) };
   const fast = computeEma(values, 12), slow = computeEma(values, 26);
-  const macd = fast.map((value, index) => value - slow[index]);
-  const signalLine = computeEma(macd, 9);
+  const macd = values.map((_, index) => Number.isFinite(fast[index]) && Number.isFinite(slow[index]) ? fast[index] - slow[index] : null);
+  const macdIndexes = macd.map((value, index) => Number.isFinite(value) ? index : -1).filter(index => index >= 0);
+  const signalValues = computeEma(macdIndexes.map(index => macd[index]), 9);
+  const signalLine = Array(values.length).fill(null);
+  macdIndexes.forEach((sourceIndex, index) => { signalLine[sourceIndex] = signalValues[index]; });
+  const histogram = macd.map((value, index) => Number.isFinite(value) && Number.isFinite(signalLine[index]) ? value - signalLine[index] : null);
   const last = values.at(-1);
-  const macdDiff = macd.at(-1) - signalLine.at(-1);
+  const macdLast = macd.at(-1), macdSignalLast = signalLine.at(-1);
+  const macdDiff = Number.isFinite(macdLast) && Number.isFinite(macdSignalLast) ? macdLast - macdSignalLast : null;
   const signals = {
     rsi: rsi < 30 ? 'ซื้อ' : rsi > 70 ? 'ขาย' : 'เป็นกลาง',
-    macd: macdDiff > 0 ? 'ซื้อ' : 'ขาย',
     sma: last >= sma20 ? 'ซื้อ' : 'ขาย'
   };
+  if (macdDiff !== null) signals.macd = macdDiff > 0 ? 'ซื้อ' : macdDiff < 0 ? 'ขาย' : 'เป็นกลาง';
   Object.entries(emas).forEach(([key, value]) => { if (value !== null) signals[key] = last > value ? 'ซื้อ' : last < value ? 'ขาย' : 'เป็นกลาง'; });
   const reasons = [
     { key: 'RSI (14)', signal: signals.rsi, value: `RSI ${rsi.toFixed(1)}`, detail: rsi < 30 ? 'ต่ำกว่า 30: แรงขายมาก อาจเกิดแรงรีบาวด์ แต่ยังไม่ยืนยันว่าราคากลับตัว' : rsi > 70 ? 'สูงกว่า 70: ภาวะซื้อมาก ราคาอาจย่อตัวได้ แต่ในขาขึ้น RSI อาจสูงต่อเนื่อง' : 'อยู่ระหว่าง 30–70: ยังไม่เข้าขอบเขตซื้อมาก/ขายมากตามเกณฑ์ทั่วไป' },
-    { key: 'MACD (12, 26, 9)', signal: signals.macd, value: `MACD ${macd.at(-1).toFixed(3)} · Signal ${signalLine.at(-1).toFixed(3)}`, detail: macdDiff > 0 ? 'เส้น MACD อยู่เหนือเส้น Signal โมเมนตัมระยะสั้นเป็นบวก' : 'เส้น MACD อยู่ใต้เส้น Signal โมเมนตัมระยะสั้นเป็นลบ' },
     { key: 'SMA (20)', signal: signals.sma, value: `ราคา ${number(last)} · SMA ${number(sma20)}`, detail: last >= sma20 ? 'ราคาปิดอยู่เหนือค่าเฉลี่ย 20 แท่ง เป็นหลักฐานสนับสนุนแนวโน้มระยะสั้น' : 'ราคาปิดต่ำกว่าค่าเฉลี่ย 20 แท่ง แสดงว่าแนวโน้มระยะสั้นยังอ่อน' },
     { key: 'EMA (20)', signal: signals.ema20, value: `ราคา ${number(last)} · EMA ${number(emas.ema20)}`, detail: `ราคา${last >= emas.ema20 ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย 20 แท่ง ใช้ดูโมเมนตัมระยะสั้น` }
   ];
+  if (signals.macd) reasons.splice(1, 0, { key: 'MACD (12, 26, 9)', signal: signals.macd, value: `MACD ${macdLast.toFixed(3)} · Signal ${macdSignalLast.toFixed(3)}`, detail: macdDiff > 0 ? 'เส้น MACD อยู่เหนือเส้น Signal โมเมนตัมระยะสั้นเป็นบวก' : macdDiff < 0 ? 'เส้น MACD อยู่ใต้เส้น Signal โมเมนตัมระยะสั้นเป็นลบ' : 'เส้น MACD และ Signal อยู่ระดับเดียวกัน โมเมนตัมยังไม่ชี้ทิศทาง' });
   for (const [key, period, horizon] of [['ema50', 50, 'ระยะสั้นถึงกลาง'], ['ema100', 100, 'ระยะกลาง'], ['ema200', 200, 'ระยะยาว']]) {
     if (emas[key] === null) continue;
     reasons.push({ key: `EMA (${period})`, signal: signals[key], value: `ราคา ${number(last)} · EMA ${number(emas[key])}`, detail: `ราคา${last >= emas[key] ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย ${period} แท่ง เป็นหลักฐานแนวโน้ม${horizon}` });
@@ -691,7 +668,7 @@ function analyseTechnicals(bars, levelBars = bars) {
   const sell = Object.values(signals).filter(value => value === 'ขาย').length;
   const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
   const levels = findPriceLevels(levelBars || usable, last);
-  return { values, rsi, sma20, emas, macd: macd.at(-1), macdSignal: signalLine.at(-1), last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 7 };
+  return { values, rsi, sma20, emas, macd: macdLast, macdSignal: macdSignalLast, macdSeries: macd, signalSeries: signalLine, macdHistogram: histogram, last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 7 };
 }
 function updateSignalDonut(buy, hold, sell, total) {
   const donut = $('#signal-donut');
@@ -706,13 +683,18 @@ function updateSignalDonut(buy, hold, sell, total) {
   donut.setAttribute('aria-label', safeTotal ? `สัดส่วนสัญญาณ ซื้อ ${counts[0]} ถือ ${counts[1]} ขาย ${counts[2]} จาก ${safeTotal} สัญญาณ` : 'ยังไม่มีข้อมูลพอสรุปสัญญาณ');
 }
 
-function renderPriceLevels(bars, last) {
-  const levels = findPriceLevels(bars || [], last);
+function renderPriceLevels(bars, last, calculatedLevels = null) {
+  const levels = calculatedLevels || findPriceLevels(bars || [], last);
   for (let i = 0; i < 3; i++) {
-    setText(`#support-${i + 1}`, number(levels.supports[i]));
-    setText(`#resistance-${i + 1}`, number(levels.resistances[i]));
+    const support = levels.supportDetails[i], resistance = levels.resistanceDetails[i];
+    setText(`#support-${i + 1}`, support ? `${number(support.value)} · ${support.source}` : 'ไม่มีแนวในช่วงนี้');
+    setText(`#resistance-${i + 1}`, resistance ? `${number(resistance.value)} · ${resistance.source}` : 'ไม่มีแนวในช่วงนี้');
   }
-  setText('#levels-basis', `*แนวรับ–แนวต้านคำนวณจากจุดกลับตัวในกราฟช่วง ${currentRange} (${(bars || []).length} แท่ง) · อาจมีไม่ครบ 3 ระดับ`);
+  const pivotCount = [...levels.supportDetails, ...levels.resistanceDetails].filter(item => item.source === 'Classic Pivot').length;
+  const primaryCount = latestMarket?.history?.length || 0;
+  const levelCount = (bars || []).length;
+  const historyNote = levelCount > primaryCount && primaryCount > 0 ? `ข้อมูลกราฟ ${primaryCount} แท่ง และย้อนหลังเพิ่มเติมรวม ${levelCount} แท่ง` : `${levelCount} แท่ง`;
+  setText('#levels-basis', `แนวรับ–แนวต้านช่วง ${currentRange} จาก ${historyNote} · จุดกลับตัว${pivotCount ? ` และจุดหมุน ${pivotCount} ระดับ` : ''}`);
   return levels;
 }
 
@@ -721,6 +703,7 @@ function drawSignals(bars, levelBars = bars) {
   if (!analysis) {
     const priceBars = (levelBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
     renderPriceLevels(levelBars || bars || [], Number(priceBars.at(-1)?.close));
+    setTechnicalPanelState(priceBars.length ? 'insufficient' : chartLoadState);
     setText('#analysis-note', `ได้รับข้อมูล ${(bars || []).length} จุด ต้องมีอย่างน้อย 30 แท่งเพื่อสรุปสัญญาณ`);
     $('#technical-reasons').innerHTML = '<p class="reason-empty">ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยให้ครบ</p>';
     setText('#technical-plan', 'รอข้อมูลเพิ่มก่อนสรุปเงื่อนไขที่ควรจับตา');
@@ -735,6 +718,7 @@ function drawSignals(bars, levelBars = bars) {
     if ($('.rsi-track i')) $('.rsi-track i').style.left = '50%';
     return null;
   }
+  setTechnicalPanelState('ready');
   const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema20: 'ema20-signal', ema50: 'ema50-signal', ema100: 'ema100-signal', ema200: 'ema200-signal' };
   Object.entries(ids).forEach(([key, id]) => {
     const el = document.getElementById(id);
@@ -756,7 +740,7 @@ function drawSignals(bars, levelBars = bars) {
   const neutral = analysis.reasons.filter(reason => reason.signal === 'เป็นกลาง');
   const group = (title, className, items) => `<div class="reason-group ${className}"><b>${title} (${items.length})</b>${items.length ? `<ul>${items.map(item => `<li><strong>${escapeHtml(item.key)} · ${escapeHtml(item.value)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join('')}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
   $('#technical-reasons').innerHTML = group('แรงหนุนฝั่งบวก', 'positive', supportive) + group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing) + (neutral.length ? group('ยังไม่ชี้ทิศทาง', 'neutral', neutral) : '');
-  renderPriceLevels(levelBars || bars || [], analysis.last);
+  renderPriceLevels(levelBars || bars || [], analysis.last, analysis.levels);
   const support1 = analysis.levels.supports[0], resistance1 = analysis.levels.resistances[0];
   const plan = analysis.overall === 'ซื้อ'
     ? `หลักฐานเอนบวก ${analysis.buy}/${analysis.available} ข้อ · รอการยืนเหนือแนวต้าน 1 ${number(resistance1)} เพื่อยืนยัน; หากปิดต่ำกว่าแนวรับ 1 ${number(support1)} มุมมองนี้อ่อนลง`
@@ -824,7 +808,7 @@ function evaluateWatchlistAlerts(rows) {
   localStorage.setItem('setscope-alert-states', JSON.stringify(alertStates));
 }
 function updateStockCards(rows) {
-  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt);
+  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt, latestMarket?.levelsHistory || latestMarket?.history || []);
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   renderWatchlist(rows);
   const quote = bySymbol[activeSymbol];
@@ -834,6 +818,10 @@ function updateStockCards(rows) {
     setText('#chart-meta', `SET:${activeSymbol} · ${activeName || activeSymbol} · THB`);
     updateWatchlistAddButton();
     setText('#history-count', String(latestMarket?.history?.length || 0));
+    setChartLoadState('unavailable', 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้');
+    renderPriceChart([]);
+    setTechnicalPanelState('unavailable');
+    setText('#analysis-note', 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้');
     return;
   }
   const change = Number(quote.last) - Number(quote.prior);
@@ -849,6 +837,13 @@ function updateStockCards(rows) {
   drawSignals(latestMarket?.history || [], latestMarket?.levelsHistory || latestMarket?.history || []);
 }
 async function getMarket() {
+  const changingChart = latestMarketSymbol !== activeSymbol || latestMarketRange !== currentRange;
+  if (changingChart) {
+    setChartLoadState('loading', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
+    setTechnicalPanelState('loading');
+    setText('#analysis-note', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
+    renderPriceChart([]);
+  }
   try {
     const params = new URLSearchParams({ symbols: watchlist.map(item => item.symbol).join(','), symbol: activeSymbol, range: currentRange });
     const response = await apiFetch(`/api/market?${params}`);
@@ -857,15 +852,29 @@ async function getMarket() {
     latestMarket = data;
     latestMarketSymbol = activeSymbol;
     latestMarketRange = currentRange;
+    setChartLoadState((data.history || []).length ? 'ready' : 'unavailable', (data.history || []).length ? '' : 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้');
     const stocks = data.stocks || [];
     evaluateWatchlistAlerts(stocks);
     updateStockCards(stocks);
     renderMovers(stocks);
+    const index = (data.indices || []).find(item => item.symbol === 'SET');
+    if (index && Number(index.last) > 0) {
+      const change = Number(index.last) - Number(index.prior);
+      const pct = Number(index.prior) ? 100 * change / Number(index.prior) : 0;
+      $('#set-index').innerHTML = `${number(index.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
+      setText('#set-volume', `${number(index.volume)} หุ้น`);
+      setText('#set-range', `${number(index.high)} / ${number(index.low)}`);
+      setText('#set-turnover', `${number(index.turnoverMillionBaht)} ล้านบาท`);
+      $('#set-turnover').title = index.turnoverMillionBaht == null ? 'ต้องตั้งค่า SET_API_KEY ใน Render เพื่อแสดงมูลค่าซื้อขายจากข้อมูลของ SET' : 'ข้อมูลมูลค่าซื้อขายจาก SET API · หน่วยล้านบาท';
+    }
     const selected = stocks.find(item => item.symbol === activeSymbol);
     if (selected) setText('#chart-meta', `SET:${activeSymbol} · ${activeName || selected.fullName} · THB`);
   } catch (error) {
     console.warn('Market data refresh failed', error);
-    if (!latestMarket) setText('#analysis-note', error.message);
+    setChartLoadState('error', 'โหลดข้อมูลไม่สำเร็จ');
+    setTechnicalPanelState('error');
+    renderPriceChart([]);
+    setText('#analysis-note', error.message || 'โหลดข้อมูลไม่สำเร็จ');
   }
 }
 
@@ -1197,6 +1206,19 @@ async function setup() {
     button.classList.toggle('active', chartIndicators.has(key));
     updateTradingViewChart();
   });
+  $('#chart-fullscreen')?.addEventListener('click', toggleChartFullscreen);
+  $('#stock-price-chart')?.addEventListener('click', event => {
+    if (event.target.closest('[data-chart-retry]')) getMarket();
+  });
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) chartCssFullscreen = false;
+    updateFullscreenControl();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && chartCssFullscreen) setCssChartFullscreen(false);
+  });
+  window.addEventListener('resize', scheduleChartRedraw, { passive: true });
+  window.addEventListener('orientationchange', scheduleChartRedraw, { passive: true });
   document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.source-chip').forEach(item => item.classList.remove('active'));
     button.classList.add('active'); activeSource = button.dataset.source; newsPage = 1; getNews();
@@ -1206,34 +1228,6 @@ async function setup() {
   $('#refresh-watchlist-news').addEventListener('click', getWatchlistNews);
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
-  $('.market-tabs')?.addEventListener('click', event => {
-    const button = event.target.closest('[data-market]');
-    if (button) setMarketTab(button.dataset.market);
-  });
-  $('#sub-index-grid')?.addEventListener('click', event => {
-    const card = event.target.closest('[data-sub-index]');
-    if (!card || card.disabled) return;
-    document.querySelectorAll('.sub-index-card').forEach(item => {
-      item.classList.toggle('selected', item === card);
-      item.setAttribute('aria-pressed', String(item === card));
-    });
-  });
-  $('#rank-tabs')?.addEventListener('click', event => {
-    const button = event.target.closest('[data-ranking]');
-    if (!button) return;
-    activeMarketRanking = button.dataset.ranking;
-    document.querySelectorAll('#rank-tabs [data-ranking]').forEach(tab => tab.setAttribute('aria-selected', String(tab === button)));
-    renderMarketRanking();
-  });
-  $('.market-subtabs')?.addEventListener('click', event => {
-    const button = event.target.closest('[data-market-section]');
-    if (!button) return;
-    document.querySelectorAll('.market-subtabs [role="tab"]').forEach(tab => tab.setAttribute('aria-selected', String(tab === button)));
-    document.getElementById(button.dataset.marketSection)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  });
-  $('#market-data-message')?.addEventListener('click', event => {
-    if (event.target.closest('[data-market-retry]')) getSettradeOverview(true);
-  });
   updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews(); getWatchlistNews();
   setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(getNews, 300000); setInterval(getWatchlistNews, 300000);
 }

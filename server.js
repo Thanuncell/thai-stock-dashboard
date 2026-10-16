@@ -45,24 +45,18 @@ function marketHtmlText(value=''){
 function marketRowsFromTable(table=''){
  return [...table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>[...match[1].matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map(cell=>marketHtmlText(cell[1])).filter(Boolean)).filter(row=>row.length);
 }
-function marketNumber(value){const match=String(value??'').replace(/,/g,'').match(/[-+]?\d+(?:\.\d+)?/);const n=match?Number(match[0]):NaN;return Number.isFinite(n)?n:null}
-const SET_SUB_INDEX_SYMBOLS=['SET50','SET50FF','SET100','SET100FF','sSET','SETCLMV','SETHD','SETESG','SETWB','SET TRI'];
-function parseSettradeIndexRow(block=''){
- const row=[...block.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(cell=>marketHtmlText(cell[1]));
- const rawSymbol=block.match(/index=([^&\x22']+)/i)?.[1];
- if(!rawSymbol||row.length<7)return null;
- const decoded=decodeURIComponent(rawSymbol);
- const symbol=decoded.toUpperCase()==='MAI'?'mai':decoded.toLowerCase()==='sset'?'sSET':decoded.toUpperCase();
- const change=row[2]?.match(/([-+]?\d[\d,.]*)\s*\(([-+]?\d[\d,.]*)%\)/);
- const range=(row[4]||'').match(/([-+]?\d[\d,.]*)\s+([-+]?\d[\d,.]*)/);
- return{symbol,last:marketNumber(row[1]),change:change?marketNumber(change[1]):null,changePercent:change?marketNumber(change[2]):null,open:marketNumber(row[3]),low:range?marketNumber(range[1]):null,high:range?marketNumber(range[2]):null,volumeThousand:marketNumber(row[5]),turnoverMillion:marketNumber(row[6])};
-}
+function marketNumber(value){const n=Number(String(value||'').replace(/,/g,'').match(/[-+]?\d+(?:\.\d+)?/)?.[0]);return Number.isFinite(n)?n:null}
 function parseSettradeMarket(html){
  const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
  const indexTable=tables.find(table=>table.includes('index=SET')&&table.includes('index=mai'))||'';
- const indexRows=[...indexTable.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>parseSettradeIndexRow(match[1])).filter(Boolean);
- const indices=indexRows.filter(item=>item.symbol==='SET'||item.symbol==='mai');
- const subIndices=SET_SUB_INDEX_SYMBOLS.slice(0,-1).map(symbol=>indexRows.find(item=>item.symbol===symbol)).filter(Boolean);
+ const indices=[...indexTable.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>{
+  const row=[...match[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(cell=>marketHtmlText(cell[1]));
+  const href=match[1].match(/index=(SET|mai)(?:&|[\x22'])/i)?.[1];
+  if(!href||row.length<7)return null;
+  const change=row[2]?.match(/([-+]?\d[\d,.]*)\s*\(([-+]?\d[\d,.]*)%\)/);
+  const range=(row[4]||"").match(/([-+]?\d[\d,.]*)\s+([-+]?\d[\d,.]*)/);
+  return{symbol:href.toUpperCase()==="MAI"?"mai":"SET",last:marketNumber(row[1]),change:change?marketNumber(change[1]):null,changePercent:change?marketNumber(change[2]):null,open:marketNumber(row[3]),low:range?marketNumber(range[1]):null,high:range?marketNumber(range[2]):null,volumeThousand:marketNumber(row[5]),turnoverMillion:marketNumber(row[6])};
+ }).filter(Boolean);
  const breadth=[];
  let breadthMarketIndex=0;
  for(let i=0;i<tables.length;i++){
@@ -75,77 +69,15 @@ function parseSettradeMarket(html){
  const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
  const closeStart=text.indexOf('หลังตลาดปิด');
  const closeSummary=closeStart>=0?text.slice(closeStart).replace(/^หลังตลาดปิด\s*:?\s*/,'').split(/ดูเพิ่มเติม|ติดต่อเรา/)[0].trim().slice(0,1200):'';
- return{indices,subIndices,breadth,closeSummary};
+ return{indices,breadth,closeSummary};
 }
-function parseSettradeHomeTri(html){
- const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
- const match=text.match(/SET TRI\s*([\d,.]+)\s*([-+]?\d[\d,.]*)\s*\(([-+]?\d[\d,.]*)%\)/);
- return match?{symbol:'SET TRI',last:marketNumber(match[1]),change:marketNumber(match[2]),changePercent:marketNumber(match[3]),open:null,low:null,high:null,volumeThousand:null,turnoverMillion:null}:null;
-}
-function splitJsValues(source=''){
- const values=[];let start=0,quote='',escaped=false,depth=0;
- for(let i=0;i<source.length;i++){
-  const char=source[i];
-  if(quote){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char===quote)quote='';continue}
-  if(char==='\x22'||char==="'"){quote=char;continue}
-  if('([{'.includes(char)){depth++;continue}
-  if(')]}'.includes(char)){depth--;continue}
-  if(char===','&&depth===0){values.push(source.slice(start,i).trim());start=i+1}
- }
- values.push(source.slice(start).trim());return values;
-}
-function parseNuxtLiteral(token=''){
- const value=token.trim();
- if(value==='null'||value==='undefined'||value==='void 0')return null;
- if(value==='true')return true;if(value==='false')return false;
- if(/^[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?$/i.test(value))return Number(value);
- if(value.startsWith('\x22')){try{return JSON.parse(value)}catch(_){return value.slice(1,-1)}}
- if(value.startsWith("'"))return value.slice(1,-1).replace(/\\'/g,"'").replace(/\\\\/g,'\\');
- const date=value.match(/^new Date\((.*)\)$/s);return date?parseNuxtLiteral(date[1]):null;
-}
-function nuxtParamMap(script=''){
- const prefix='window.__NUXT__=(function(';
- if(!script.startsWith(prefix))return new Map();
- const paramsEnd=script.indexOf('){',prefix.length),invokeStart=script.lastIndexOf('}('),invokeEnd=script.lastIndexOf('))');
- if(paramsEnd<0||invokeStart<0||invokeEnd<invokeStart)return new Map();
- const params=script.slice(prefix.length,paramsEnd).split(',').map(value=>value.trim());
- const args=splitJsValues(script.slice(invokeStart+2,invokeEnd));
- return new Map(params.map((name,index)=>[name,parseNuxtLiteral(args[index]||'')]));
-}
-function resolveNuxtValue(token,map){const key=String(token||'').trim();return map.has(key)?map.get(key):parseNuxtLiteral(key)}
-function parseSettradeRanking(html){
- const marker=html.indexOf('window.__NUXT__=(function('),end=marker>=0?html.indexOf('</script>',marker):-1;
- if(marker<0||end<0)return{asOf:'',items:[]};
- const script=html.slice(marker,end).trim(),params=nuxtParamMap(script),topStart=script.indexOf('topRanking:{info:');
- const stocksMarker=topStart>=0?script.indexOf('stocks:[',topStart):-1;
- if(stocksMarker<0)return{asOf:'',items:[]};
- const arrayStart=stocksMarker+'stocks:'.length;let depth=0,arrayEnd=-1,quote='',escaped=false;
- for(let i=arrayStart;i<script.length;i++){
-  const char=script[i];
-  if(quote){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char===quote)quote='';continue}
-  if(char==='\x22'||char==="'"){quote=char;continue}
-  if(char==='[')depth++;else if(char===']'&&--depth===0){arrayEnd=i;break}
- }
- if(arrayEnd<0)return{asOf:'',items:[]};
- const infoPrefix=script.slice(topStart,stocksMarker),asOfToken=infoPrefix.match(/marketDateTime:([^,}]+)/)?.[1];
- const items=[...script.slice(arrayStart+1,arrayEnd).matchAll(/\{([^{}]+)\}/g)].map(match=>{
-  const fields={};
-  for(const pair of splitJsValues(match[1])){const colon=pair.indexOf(':');if(colon>0)fields[pair.slice(0,colon).trim()]=resolveNuxtValue(pair.slice(colon+1),params)}
-  const aomVolume=marketNumber(fields.aomVolume),aomValue=marketNumber(fields.aomValue);
-  return{symbol:String(fields.symbol||''),last:marketNumber(fields.last),change:marketNumber(fields.change),changePercent:marketNumber(fields.percentChange),volumeThousand:aomVolume===null?null:aomVolume/1000,turnoverMillion:aomValue===null?null:aomValue/1000000};
- }).filter(item=>item.symbol&&item.last!==null).slice(0,10);
- return{asOf:String(resolveNuxtValue(asOfToken,params)||''),items};
-}
-function parseSettradeInvestorTypes(html){
+function parseSettradeForeign(html){
  const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
  const table=tables.find(value=>value.includes('นักลงทุนต่างประเทศ')&&value.includes('มูลค่าซื้อ'))||'';
- const allowed=['นักลงทุนสถาบัน','บัญชีบริษัทหลักทรัพย์','นักลงทุนต่างประเทศ','นักลงทุนในประเทศ'];
- const groups=marketRowsFromTable(table).filter(items=>allowed.includes(items[0])).map(row=>({
-  name:row[0],buyMillion:marketNumber(row[1]),sellMillion:marketNumber(row[3]),netMillion:marketNumber(row[5])
- }));
+ const row=marketRowsFromTable(table).find(items=>items[0]?.includes('นักลงทุนต่างประเทศ'));
  const page=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
  const date=page.match(/ข้อมูล ณ วันที่\s*(\d{1,2}\s+[^\s]+\s+\d{4}|[\d/.-]{8,10})/)?.[1]?.trim()||'';
- return{date,groups};
+ return row?{date,name:row[0],buyMillion:marketNumber(row[1]),sellMillion:marketNumber(row[3]),netMillion:marketNumber(row[5])}:{date,name:'นักลงทุนต่างประเทศ',buyMillion:null,sellMillion:null,netMillion:null};
 }
 function parseSettradeNvdr(html){
  const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
@@ -164,26 +96,20 @@ async function getSettradeOverview(force=false){
  if(!force&&settradeOverviewCache.data&&Date.now()<settradeOverviewCache.expiresAt)return{...settradeOverviewCache.data,cached:true};
  if(settradeOverviewCache.pending)return settradeOverviewCache.pending;
  settradeOverviewCache.pending=(async()=>{
-  const paths=['/th/equities/market-summary/overview?market=SET','/th/equities/market-data/nvdr/value','/th/equities/market-data/historical-report/investor-type','/th/derivatives/overview','/th/home','/th/equities/market-summary/top-ranking/most-active-value','/th/equities/market-summary/top-ranking/most-active-volume','/th/equities/market-summary/top-ranking/top-gainer','/th/equities/market-summary/top-ranking/top-loser'];
+  const paths=['/th/equities/market-summary/overview?market=SET','/th/equities/market-data/nvdr/value','/th/equities/market-data/historical-report/investor-type','/th/derivatives/overview','/th/equities/market-summary/top-ranking/most-active-value'];
   const pages=await Promise.allSettled(paths.map(fetchSettradePage));
   const htmlAt=i=>pages[i]?.status==='fulfilled'?pages[i].value:'';
   const overview=parseSettradeMarket(htmlAt(0));
   const nvdr=parseSettradeNvdr(htmlAt(1));
-  const investorTypes=parseSettradeInvestorTypes(htmlAt(2));
-  const foreign=investorTypes.groups.find(row=>row.name==='นักลงทุนต่างประเทศ')||{name:'นักลงทุนต่างประเทศ',buyMillion:null,sellMillion:null,netMillion:null};
-  foreign.date=investorTypes.date;
+  const foreign=parseSettradeForeign(htmlAt(2));
   const tfexText=marketHtmlText(htmlAt(3).slice(0,htmlAt(3).indexOf('window.__NUXT__')>0?htmlAt(3).indexOf('window.__NUXT__'):undefined));
-  const tri=parseSettradeHomeTri(htmlAt(4));
-  const subIndices=SET_SUB_INDEX_SYMBOLS.map(symbol=>symbol==='SET TRI'?tri:overview.subIndices.find(item=>item.symbol===symbol)).filter(Boolean);
-  const rankings={activeValue:parseSettradeRanking(htmlAt(5)),activeVolume:parseSettradeRanking(htmlAt(6)),gainers:parseSettradeRanking(htmlAt(7)),losers:parseSettradeRanking(htmlAt(8))};
-  const rankingOverview='https://www.settrade.com/th/equities/market-summary/top-ranking/overview';
-  const data={...overview,subIndices,nvdr,investorTypes,foreign,tfex:{available:/Total Market\s*[^-]*\d/i.test(tfexText),delayMinutes:15},rankings,activeValue:rankings.activeValue.items,source:'SETTRADE',fetchedAt:new Date().toISOString(),marketDate:investorTypes.date||null,errors:pages.map((page,i)=>page.status==='rejected'?paths[i]:null).filter(Boolean),links:{overview:'https://www.settrade.com/th/equities/market-summary/overview?market=SET',activeValue:rankingOverview,activeVolume:rankingOverview,gainers:rankingOverview,losers:rankingOverview,nvdr:'https://www.settrade.com/th/equities/market-data/nvdr/value',investorType:'https://www.settrade.com/th/equities/market-data/historical-report/investor-type',tfex:'https://www.settrade.com/th/derivatives/overview'},activeValueStatus:rankings.activeValue.items.length?'':'ข้อมูลจัดอันดับโหลดจากต้นทางไม่สำเร็จ'};
+  const activeHtml=htmlAt(4);
+  const data={...overview,nvdr,foreign,tfex:{available:/Total Market\s*[^-]*\d/i.test(tfexText),delayMinutes:15},activeValue:[],source:'SETTRADE',fetchedAt:new Date().toISOString(),marketDate:foreign.date||null,errors:pages.map((page,i)=>page.status==='rejected'?paths[i]:null).filter(Boolean),links:{overview:'https://www.settrade.com/th/equities/market-summary/overview?market=SET',activeValue:'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value',nvdr:'https://www.settrade.com/th/equities/market-data/nvdr/value',investorType:'https://www.settrade.com/th/equities/market-data/historical-report/investor-type',tfex:'https://www.settrade.com/th/derivatives/overview'},activeValueStatus:activeHtml&&activeHtml.includes('table-placeholder')?'SETTRADE โหลดรายการผ่านตารางแบบโต้ตอบ โปรดเปิดดูต้นทาง':'ไม่สามารถอ่านตารางจัดอันดับจากต้นทางได้'};
   if(settradeOverviewCache.data){
-   for(const key of ['indices','subIndices','breadth','closeSummary','nvdr','investorTypes','foreign']){
-    const empty=key==='closeSummary'?!data[key]:key==='nvdr'?Object.values(data[key]||{}).every(value=>value==null):key==='investorTypes'?!data[key]?.groups?.length:key==='foreign'?(data[key].netMillion==null):!data[key]?.length;
+   for(const key of ['indices','breadth','closeSummary','nvdr','foreign']){
+    const empty=key==='closeSummary'?!data[key]:key==='nvdr'?Object.values(data[key]||{}).every(value=>value==null):key==='foreign'?(data[key].netMillion==null):!data[key]?.length;
     if(empty)data[key]=settradeOverviewCache.data[key];
    }
-   for(const key of Object.keys(rankings))if(!data.rankings[key]?.items?.length&&settradeOverviewCache.data.rankings?.[key]?.items?.length)data.rankings[key]=settradeOverviewCache.data.rankings[key];
   }
   settradeOverviewCache.data=data;settradeOverviewCache.expiresAt=Date.now()+60000;
   return data;
@@ -322,6 +248,7 @@ async function getWatchlistNews(rawStocks=''){
  return{items,fetchedAt:new Date().toISOString(),maxAgeDays:30};
 }
 const periods={ '1D':['1d','1m'],'1W':['5d','15m'],'1M':['1mo','1d'],'3M':['3mo','1d'],'1Y':['1y','1d'] };
+const levelFallbackPeriods={ '1D':['1mo','1d'],'1W':['3mo','1d'],'1M':['6mo','1d'],'3M':['1y','1d'],'1Y':['2y','1d'] };
 async function yahooChart(symbol,range,interval){const endpoint=new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);endpoint.searchParams.set('range',range);endpoint.searchParams.set('interval',interval);endpoint.searchParams.set('events','div,splits');const response=await fetch(endpoint,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36','accept':'application/json'}});if(!response.ok)throw Error(`Yahoo Finance ${symbol}: HTTP ${response.status}`);const body=await response.json(),result=body?.chart?.result?.[0];if(!result)throw Error(body?.chart?.error?.description||`ไม่มีข้อมูล ${symbol} จาก Yahoo Finance`);return result}
 async function yahooSearch(query){const endpoint=new URL('https://query1.finance.yahoo.com/v1/finance/search');endpoint.searchParams.set('q',query);endpoint.searchParams.set('quotesCount','20');endpoint.searchParams.set('newsCount','0');const response=await fetch(endpoint,{headers:{'user-agent':'Mozilla/5.0 SETscope stock search','accept':'application/json'},signal:AbortSignal.timeout(9000)});if(!response.ok)throw Error(`Yahoo Finance search HTTP ${response.status}`);const body=await response.json();return(body.quotes||[]).filter(q=>/\.BK$/i.test(q.symbol||'')&&q.quoteType==='EQUITY').slice(0,12).map(q=>({symbol:q.symbol.replace(/\.BK$/i,''),name:q.longname||q.shortname||q.symbol.replace(/\.BK$/i,''),exchange:q.exchange||'SET',type:q.quoteType}))}
 function shapeChart(result,symbol){const q=result.indicators?.quote?.[0]||{},timestamps=result.timestamp||[],bars=timestamps.map((time,i)=>({time:time*1000,open:q.open?.[i]??null,high:q.high?.[i]??null,low:q.low?.[i]??null,close:q.close?.[i]??null,volume:q.volume?.[i]??null})).filter(x=>x.close!==null);const meta=result.meta||{},last=meta.regularMarketPrice??bars.at(-1)?.close??null,prior=meta.chartPreviousClose??meta.previousClose??null;return{symbol,last,prior,time:(meta.regularMarketTime?meta.regularMarketTime*1000:bars.at(-1)?.time)||null,fullName:meta.longName||meta.shortName||symbol,currency:meta.currency||'THB',high:meta.regularMarketDayHigh??null,low:meta.regularMarketDayLow??null,volume:meta.regularMarketVolume??null,exchange:meta.fullExchangeName||'SET',marketState:meta.marketState||'UNKNOWN',history:bars}}
@@ -350,7 +277,9 @@ async function getMarket(symbols,active,range){
  let selected=stocks.find(x=>x.symbol===active);
  if(selected&&(rangeName!=='1d'||interval!=='5m')){try{const hist=shapeChart(await yahooChart(active+'.BK',rangeName,interval),active);selected={...selected,history:hist.history}}catch(e){errors.push(e.message)}}
  const history=selected?.history||[];
- return{stocks,indices:index?[index]:[],history,levelsHistory:history,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
+ let levelsHistory=history;
+ if(selected&&history.length<40){const[fallbackRange,fallbackInterval]=levelFallbackPeriods[range]||levelFallbackPeriods['1M'];try{const fallback=shapeChart(await yahooChart(active+'.BK',fallbackRange,fallbackInterval),active);if(fallback.history.length>history.length)levelsHistory=fallback.history}catch(e){errors.push(`แนวรับแนวต้าน: ${e.message}`)}}
+ return{stocks,indices:index?[index]:[],history,levelsHistory,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
 }
 async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_HEADERS))res.setHeader(name,value);const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/healthz'){return send(res,200,{ok:true,service:'setscope',uptimeSec:Math.round(process.uptime()),cacheEntries:cache.size,time:new Date().toISOString()})}
