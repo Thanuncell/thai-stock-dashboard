@@ -57,6 +57,8 @@
     catch (_) { saveSession(null); return null; }
   }
   function showDashboard() {
+    document.body.classList.remove('auth-checking');
+    $('#auth-gate').removeAttribute('aria-busy');
     const pathname = location.pathname.replace(/\/+$/, '') || '/';
     if (pathname === AUTH_ROUTES.login || pathname === AUTH_ROUTES.signup) history.replaceState(null, '', `/${location.hash}`);
     document.body.classList.add('authenticated');
@@ -69,6 +71,8 @@
     window.dispatchEvent(new CustomEvent('setscope:authenticated', { detail: { email } }));
   }
   function showLogin(text = '', type = '') {
+    document.body.classList.remove('auth-checking');
+    $('#auth-gate').removeAttribute('aria-busy');
     document.body.classList.remove('authenticated');
     $('#auth-gate').hidden = false;
     $('#app-shell')?.setAttribute('aria-hidden', 'true');
@@ -140,7 +144,13 @@
     if (document.body.classList.contains('authenticated')) showDashboard();
     else setMode(modeFromPath(), { updateUrl: false });
   });
-  setMode(modeFromPath(), { updateUrl: !location.hash.includes('access_token='), replace: true });
+  const isAuthCallback = location.hash.includes('access_token=');
+  if (session?.access_token || isAuthCallback) {
+    document.body.classList.add('auth-checking');
+    $('#auth-gate').setAttribute('aria-busy', 'true');
+  } else {
+    setMode(modeFromPath(), { replace: true });
+  }
 
   (async () => {
     try {
@@ -148,7 +158,7 @@
       const response = await fetchWithWake('/api/auth-config', { cache: 'no-store' }); config = await response.json();
       if (!config.configured) {
         document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = true; });
-        message('ระบบสมาชิกยังไม่ได้ตั้งค่าใน Render (SUPABASE_URL และ SUPABASE_ANON_KEY)', 'error'); return;
+        showLogin('ระบบสมาชิกยังไม่ได้ตั้งค่าใน Render (SUPABASE_URL และ SUPABASE_ANON_KEY)', 'error'); return;
       }
       document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = false; });
       if (location.hash.includes('access_token=')) {
@@ -156,6 +166,6 @@
         if (params.get('access_token')) { saveSession(sessionFrom({ access_token: params.get('access_token'), refresh_token: params.get('refresh_token'), expires_in: params.get('expires_in') })); history.replaceState(null, '', location.pathname + location.search); }
       }
       if (!await openDashboardIfValid()) showLogin();
-    } catch (_) { message('เชื่อมต่อระบบสมาชิกไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ', 'error'); }
+    } catch (_) { showLogin('เชื่อมต่อระบบสมาชิกไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ', 'error'); }
   })();
 })();
