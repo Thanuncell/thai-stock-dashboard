@@ -71,13 +71,16 @@ function parseSettradeMarket(html){
  const closeSummary=closeStart>=0?text.slice(closeStart).replace(/^หลังตลาดปิด\s*:?\s*/,'').split(/ดูเพิ่มเติม|ติดต่อเรา/)[0].trim().slice(0,1200):'';
  return{indices,breadth,closeSummary};
 }
-function parseSettradeForeign(html){
+function parseSettradeInvestorTypes(html){
  const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
  const table=tables.find(value=>value.includes('นักลงทุนต่างประเทศ')&&value.includes('มูลค่าซื้อ'))||'';
- const row=marketRowsFromTable(table).find(items=>items[0]?.includes('นักลงทุนต่างประเทศ'));
+ const allowed=['นักลงทุนสถาบัน','บัญชีบริษัทหลักทรัพย์','นักลงทุนต่างประเทศ','นักลงทุนในประเทศ'];
+ const groups=marketRowsFromTable(table).filter(items=>allowed.includes(items[0])).map(row=>({
+  name:row[0],buyMillion:marketNumber(row[1]),sellMillion:marketNumber(row[3]),netMillion:marketNumber(row[5])
+ }));
  const page=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
  const date=page.match(/ข้อมูล ณ วันที่\s*(\d{1,2}\s+[^\s]+\s+\d{4}|[\d/.-]{8,10})/)?.[1]?.trim()||'';
- return row?{date,name:row[0],buyMillion:marketNumber(row[1]),sellMillion:marketNumber(row[3]),netMillion:marketNumber(row[5])}:{date,name:'นักลงทุนต่างประเทศ',buyMillion:null,sellMillion:null,netMillion:null};
+ return{date,groups};
 }
 function parseSettradeNvdr(html){
  const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
@@ -101,13 +104,15 @@ async function getSettradeOverview(force=false){
   const htmlAt=i=>pages[i]?.status==='fulfilled'?pages[i].value:'';
   const overview=parseSettradeMarket(htmlAt(0));
   const nvdr=parseSettradeNvdr(htmlAt(1));
-  const foreign=parseSettradeForeign(htmlAt(2));
+  const investorTypes=parseSettradeInvestorTypes(htmlAt(2));
+  const foreign=investorTypes.groups.find(row=>row.name==='นักลงทุนต่างประเทศ')||{name:'นักลงทุนต่างประเทศ',buyMillion:null,sellMillion:null,netMillion:null};
+  foreign.date=investorTypes.date;
   const tfexText=marketHtmlText(htmlAt(3).slice(0,htmlAt(3).indexOf('window.__NUXT__')>0?htmlAt(3).indexOf('window.__NUXT__'):undefined));
   const activeHtml=htmlAt(4);
-  const data={...overview,nvdr,foreign,tfex:{available:/Total Market\s*[^-]*\d/i.test(tfexText),delayMinutes:15},activeValue:[],source:'SETTRADE',fetchedAt:new Date().toISOString(),marketDate:foreign.date||null,errors:pages.map((page,i)=>page.status==='rejected'?paths[i]:null).filter(Boolean),links:{overview:'https://www.settrade.com/th/equities/market-summary/overview?market=SET',activeValue:'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value',nvdr:'https://www.settrade.com/th/equities/market-data/nvdr/value',investorType:'https://www.settrade.com/th/equities/market-data/historical-report/investor-type',tfex:'https://www.settrade.com/th/derivatives/overview'},activeValueStatus:activeHtml&&activeHtml.includes('table-placeholder')?'SETTRADE โหลดรายการผ่านตารางแบบโต้ตอบ โปรดเปิดดูต้นทาง':'ไม่สามารถอ่านตารางจัดอันดับจากต้นทางได้'};
+  const data={...overview,nvdr,investorTypes,foreign,tfex:{available:/Total Market\s*[^-]*\d/i.test(tfexText),delayMinutes:15},activeValue:[],source:'SETTRADE',fetchedAt:new Date().toISOString(),marketDate:investorTypes.date||null,errors:pages.map((page,i)=>page.status==='rejected'?paths[i]:null).filter(Boolean),links:{overview:'https://www.settrade.com/th/equities/market-summary/overview?market=SET',activeValue:'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value',nvdr:'https://www.settrade.com/th/equities/market-data/nvdr/value',investorType:'https://www.settrade.com/th/equities/market-data/historical-report/investor-type',tfex:'https://www.settrade.com/th/derivatives/overview'},activeValueStatus:activeHtml&&activeHtml.includes('table-placeholder')?'SETTRADE โหลดรายการผ่านตารางแบบโต้ตอบ โปรดเปิดดูต้นทาง':'ไม่สามารถอ่านตารางจัดอันดับจากต้นทางได้'};
   if(settradeOverviewCache.data){
-   for(const key of ['indices','breadth','closeSummary','nvdr','foreign']){
-    const empty=key==='closeSummary'?!data[key]:key==='nvdr'?Object.values(data[key]||{}).every(value=>value==null):key==='foreign'?(data[key].netMillion==null):!data[key]?.length;
+   for(const key of ['indices','breadth','closeSummary','nvdr','investorTypes','foreign']){
+    const empty=key==='closeSummary'?!data[key]:key==='nvdr'?Object.values(data[key]||{}).every(value=>value==null):key==='investorTypes'?!data[key]?.groups?.length:key==='foreign'?(data[key].netMillion==null):!data[key]?.length;
     if(empty)data[key]=settradeOverviewCache.data[key];
    }
   }
