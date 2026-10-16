@@ -202,24 +202,81 @@ function stamp(value) {
     timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short'
   });
 }
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function fmtVolumeThousand(value) {
+  const parsed = finiteNumber(value);
+  return parsed === null ? '—' : `${number(parsed)} ('000 หุ้น)`;
+}
+function fmtMillionBaht(value) {
+  const parsed = finiteNumber(value);
+  return parsed === null ? '—' : `${number(parsed)} ล้านบาท`;
+}
+function fmtThaiDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(+date)) return '—';
+  return new Intl.DateTimeFormat('th-TH', {
+    timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }).format(date);
+}
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
+function setMarketDataMessage(type, text, retry = false) {
+  const node = $('#market-data-message');
+  if (!node) return;
+  node.hidden = !text;
+  node.className = `market-data-message${type ? ` ${type}` : ''}`;
+  node.innerHTML = text ? `<span>${escapeHtml(text)}</span>${retry ? '<button type="button" data-market-retry>ลองอีกครั้ง</button>' : ''}` : '';
+}
+function resetMarketOverview() {
+  $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => `<article class="market-index-card${symbol === 'TFEX' ? ' market-index-card-tfex' : ''}"><span>${symbol}</span><strong>—</strong><small>ยังไม่มีข้อมูล</small></article>`).join('');
+  $('#set-index').innerHTML = '— <span class="neutral">—</span>';
+  setText('#set-volume', '—');
+  setText('#set-range', '—');
+  setText('#set-turnover', '—');
+  const conditionNode = $('#market-condition');
+  if (conditionNode) { conditionNode.textContent = 'รอข้อมูลภาพตลาด'; conditionNode.className = 'market-condition'; }
+  $('#market-breadth-list').innerHTML = '<p class="market-empty">ยังไม่มีข้อมูลสถิติหุ้นขึ้น–ลง</p>';
+  setText('#market-close-summary', 'ยังไม่มีข้อมูลสรุปซื้อขายสิ้นวัน');
+  $('#nvdr-metrics').innerHTML = '<div><small>มูลค่าตลาด SET + mai</small><strong>—</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>—</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>—</strong><em>%</em></div>';
+  $('#foreign-flow').innerHTML = '<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong>—</strong><small>ล้านบาท · ยังไม่มีข้อมูล</small>';
+  setText('#active-value-status', 'ยังไม่มีข้อมูลจัดอันดับจากต้นทาง');
+  setText('#market-data-date', 'ยังไม่มีเวลาอัปเดต');
+  setText('#mkt-time', 'ข้อมูลล่าสุด —');
+}
+function hasMarketOverviewData(data) {
+  return Boolean(
+    (data.indices || []).some(item => finiteNumber(item.last) !== null) ||
+    (data.breadth || []).length ||
+    data.closeSummary ||
+    Object.values(data.nvdr || {}).some(value => finiteNumber(value) !== null) ||
+    finiteNumber(data.foreign?.netMillion) !== null
+  );
+}
 function renderSettradeOverview(data) {
+  resetMarketOverview();
   const indices = data.indices || [];
   $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => {
     if (symbol === 'TFEX') return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ดูข้อมูลต้นทาง</strong><small>ข้อมูลล่าช้า 15 นาที · อ้างอิงแหล่งข้อมูลด้านล่าง</small></article>`;
     const item = indices.find(row => row.symbol === symbol);
     if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
-    const trend = Number(item.change) > 0 ? 'up' : Number(item.change) < 0 ? 'down' : 'neutral';
-    const arrow = Number(item.change) > 0 ? '▲' : Number(item.change) < 0 ? '▼' : '•';
-    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${arrow} ${number(Math.abs(Number(item.change || 0)))} (${number(item.changePercent)}%) · มูลค่า ${number(item.turnoverMillion)} ลบ.</small></article>`;
+    const change = finiteNumber(item.change), changePercent = finiteNumber(item.changePercent);
+    const trend = change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
+    const arrow = change > 0 ? '▲' : change < 0 ? '▼' : '•';
+    const changeText = change === null || changePercent === null ? '—' : `${arrow} ${number(Math.abs(change))} (${number(changePercent)}%)`;
+    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${changeText} · มูลค่า ${fmtMillionBaht(item.turnoverMillion)}</small></article>`;
   }).join('');
   const setIndex = indices.find(row => row.symbol === 'SET');
   if (setIndex) {
-    const change = Number(setIndex.change || 0), pct = Number(setIndex.changePercent || 0);
-    $('#set-index').innerHTML = `${number(setIndex.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
-    setText('#set-volume', `${number(Number(setIndex.volumeThousand || 0) * 1000)} หุ้น`);
-    setText('#set-range', `${number(setIndex.high)} / ${number(setIndex.low)}`);
-    setText('#set-turnover', `${number(setIndex.turnoverMillion)} ล้านบาท`);
+    const change = finiteNumber(setIndex.change), pct = finiteNumber(setIndex.changePercent);
+    const changeMarkup = change === null || pct === null ? '<span class="neutral">—</span>' : `<span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
+    $('#set-index').innerHTML = `${number(setIndex.last)} ${changeMarkup}`;
+    setText('#set-volume', fmtVolumeThousand(setIndex.volumeThousand));
+    setText('#set-range', finiteNumber(setIndex.high) === null || finiteNumber(setIndex.low) === null ? '—' : `${number(setIndex.high)} / ${number(setIndex.low)}`);
+    setText('#set-turnover', fmtMillionBaht(setIndex.turnoverMillion));
     $('#set-turnover').title = 'มูลค่าซื้อขายจากหน้า SETTRADE · หน่วยล้านบาท';
   }
   const breadthLabels = { Gainers: 'ปรับขึ้น', Unchanges: 'ไม่เปลี่ยนแปลง', Losers: 'ปรับลง' };
@@ -234,31 +291,39 @@ function renderSettradeOverview(data) {
   if (conditionNode) { conditionNode.textContent = `ภาวะตลาด: ${condition}`; conditionNode.className = `market-condition ${breadthTotals.up > breadthTotals.down ? 'up' : breadthTotals.up < breadthTotals.down ? 'down' : ''}`; }
   $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<div class="market-breadth-group"><b>${escapeHtml(group.market)}</b>${(group.items || []).map(item => {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
-    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${number(item.volumeThousand)} พันหุ้น</small></div>`;
+    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${fmtVolumeThousand(item.volumeThousand)}</small></div>`;
   }).join('')}</div>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
   setText('#market-close-summary', data.closeSummary || 'SETTRADE ยังไม่เผยแพร่สรุปซื้อขายสิ้นวันรอบนี้');
   const nvdr = data.nvdr || {};
   $('#nvdr-metrics').innerHTML = `<div><small>มูลค่าตลาด SET + mai</small><strong>${number(nvdr.marketMillion)}</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>${number(nvdr.nvdrMillion)}</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>${number(nvdr.ratioPercent)}</strong><em>%</em></div>`;
   const foreign = data.foreign || {};
-  const net = Number(foreign.netMillion);
+  const net = finiteNumber(foreign.netMillion);
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(foreign.netMillion)}</strong><small>ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}</small>`;
   setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
-  setText('#settrade-updated', data.stale ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${stamp(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${stamp(data.fetchedAt)}`);
+  setText('#settrade-updated', data.stale ? `ใช้ข้อมูลที่บันทึกล่าสุด · ${fmtThaiDateTime(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
+  setText('#mkt-time', `ข้อมูลล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
   setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${data.marketDate}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
+  if (data.stale) setMarketDataMessage('warning', `ใช้ข้อมูลที่บันทึกล่าสุด · ${fmtThaiDateTime(data.fetchedAt)}`, true);
+  else if (data.errors?.length) setMarketDataMessage('warning', 'ข้อมูลบางส่วนจาก SETTRADE โหลดไม่สำเร็จ ส่วนที่สำเร็จยังแสดงตามปกติ', true);
+  else setMarketDataMessage('', '');
 }
 async function getSettradeOverview(force = false) {
   const button = $('#refresh-market-data');
   if (button?.disabled) return;
   if (button) { button.disabled = true; button.classList.add('is-loading'); button.textContent = 'กำลังอัปเดต…'; }
-  setText('#settrade-updated', 'กำลังดึงข้อมูลจาก SETTRADE…');
+  setText('#settrade-updated', 'กำลังดึงข้อมูลจากต้นทาง…');
+  setMarketDataMessage('loading', 'กำลังดึงข้อมูลจากต้นทาง…');
   try {
     const response = await apiFetch(`/api/settrade-overview${force ? '?refresh=1' : ''}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'ดึงข้อมูลจาก SETTRADE ไม่สำเร็จ');
+    if (!hasMarketOverviewData(data)) throw new Error('ต้นทางยังไม่ส่งข้อมูลภาพรวมตลาด');
     renderSettradeOverview(data);
   } catch (error) {
     console.warn('SETTRADE overview refresh failed', error);
-    setText('#settrade-updated', 'ดึงข้อมูลไม่สำเร็จ · ตรวจสอบข้อมูลโดยตรงที่ SETTRADE');
+    resetMarketOverview();
+    setText('#settrade-updated', 'ข้อมูลจาก SETTRADE โหลดไม่สำเร็จ');
+    setMarketDataMessage('error', 'ข้อมูลจาก SETTRADE โหลดไม่สำเร็จ', true);
   } finally {
     if (button) { button.disabled = false; button.classList.remove('is-loading'); button.textContent = '↻ อัปเดตข้อมูลตลาด'; }
   }
@@ -857,16 +922,6 @@ async function getMarket() {
     evaluateWatchlistAlerts(stocks);
     updateStockCards(stocks);
     renderMovers(stocks);
-    const index = (data.indices || []).find(item => item.symbol === 'SET');
-    if (index && Number(index.last) > 0) {
-      const change = Number(index.last) - Number(index.prior);
-      const pct = Number(index.prior) ? 100 * change / Number(index.prior) : 0;
-      $('#set-index').innerHTML = `${number(index.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
-      setText('#set-volume', `${number(index.volume)} หุ้น`);
-      setText('#set-range', `${number(index.high)} / ${number(index.low)}`);
-      setText('#set-turnover', `${number(index.turnoverMillionBaht)} ล้านบาท`);
-      $('#set-turnover').title = index.turnoverMillionBaht == null ? 'ต้องตั้งค่า SET_API_KEY ใน Render เพื่อแสดงมูลค่าซื้อขายจากข้อมูลของ SET' : 'ข้อมูลมูลค่าซื้อขายจาก SET API · หน่วยล้านบาท';
-    }
     const selected = stocks.find(item => item.symbol === activeSymbol);
     if (selected) setText('#chart-meta', `SET:${activeSymbol} · ${activeName || selected.fullName} · THB`);
   } catch (error) {
@@ -1228,6 +1283,9 @@ async function setup() {
   $('#refresh-watchlist-news').addEventListener('click', getWatchlistNews);
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
+  $('#market-data-message')?.addEventListener('click', event => {
+    if (event.target.closest('[data-market-retry]')) getSettradeOverview(true);
+  });
   updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews(); getWatchlistNews();
   setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(getNews, 300000); setInterval(getWatchlistNews, 300000);
 }
