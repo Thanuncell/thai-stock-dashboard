@@ -359,9 +359,6 @@ html[data-theme="dark"] .rsi-meter .rsi-track i{border-color:#8ca0af;background:
 .page-footer a{color:#567e73;text-decoration:none}
 .page-footer a:hover{text-decoration:underline}
 .footer-sources{color:#a1aab1}
-.auth-legal-links{display:flex;flex-wrap:wrap;gap:5px 12px;margin-top:10px}
-.auth-legal-links a{color:#5f897d;font-size:9px;text-decoration:none}
-.auth-legal-links a:hover{text-decoration:underline}
 html[data-theme="dark"] .page-footer{color:#82929e}
 html[data-theme="dark"] .page-footer a{color:#82b8a8}
 html[data-theme="dark"] .footer-disclaimer strong{color:var(--ink)}
