@@ -219,23 +219,9 @@ function fmtThaiDateTime(value) {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(+date)) return '—';
-  return new Intl.DateTimeFormat('th-TH-u-ca-buddhist', {
-    timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
+  return new Intl.DateTimeFormat('th-TH', {
+    timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit'
   }).format(date);
-}
-function fmtThaiMarketDate(value) {
-  if (!value) return '—';
-  const text = String(value).trim();
-  if (/\b25\d{2}\b/.test(text)) return text;
-  const numeric = text.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/);
-  if (numeric) {
-    const year = Number(numeric[3]) > 2400 ? Number(numeric[3]) - 543 : Number(numeric[3]);
-    const date = new Date(Date.UTC(year, Number(numeric[2]) - 1, Number(numeric[1])));
-    if (!Number.isNaN(+date)) return new Intl.DateTimeFormat('th-TH-u-ca-buddhist', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric' }).format(date);
-  }
-  const parsed = new Date(text);
-  if (!Number.isNaN(+parsed)) return new Intl.DateTimeFormat('th-TH-u-ca-buddhist', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric' }).format(parsed);
-  return text.replace(/\b(?:19|20)\d{2}\b/g, year => String(Number(year) + 543));
 }
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
 function setMarketDataMessage(type, text, retry = false) {
@@ -254,8 +240,7 @@ function resetMarketOverview() {
   const conditionNode = $('#market-condition');
   if (conditionNode) { conditionNode.textContent = 'รอข้อมูลภาพตลาด'; conditionNode.className = 'market-condition'; }
   $('#market-breadth-list').innerHTML = '<p class="market-empty">ยังไม่มีข้อมูลสถิติหุ้นขึ้น–ลง</p>';
-  setText('#investor-summary-date', 'รอวันที่ข้อมูล');
-  $('#investor-summary-body').innerHTML = '<tr><td colspan="4">ยังไม่มีข้อมูลสรุปซื้อขายสิ้นวัน</td></tr>';
+  setText('#market-close-summary', 'ยังไม่มีข้อมูลสรุปซื้อขายสิ้นวัน');
   $('#nvdr-metrics').innerHTML = '<div><small>มูลค่าตลาด SET + mai</small><strong>—</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>—</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>—</strong><em>%</em></div>';
   $('#foreign-flow').innerHTML = '<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong>—</strong><small>ล้านบาท · ยังไม่มีข้อมูล</small>';
   setText('#active-value-status', 'ยังไม่มีข้อมูลจัดอันดับจากต้นทาง');
@@ -268,7 +253,6 @@ function hasMarketOverviewData(data) {
     (data.breadth || []).length ||
     data.closeSummary ||
     Object.values(data.nvdr || {}).some(value => finiteNumber(value) !== null) ||
-    (data.investorTypes?.groups || []).some(item => finiteNumber(item.netMillion) !== null) ||
     finiteNumber(data.foreign?.netMillion) !== null
   );
 }
@@ -309,14 +293,7 @@ function renderSettradeOverview(data) {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
     return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${fmtVolumeThousand(item.volumeThousand)}</small></div>`;
   }).join('')}</div>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
-  const investorNames = ['นักลงทุนสถาบัน', 'บัญชีบริษัทหลักทรัพย์', 'นักลงทุนต่างประเทศ', 'นักลงทุนในประเทศ'];
-  const investorGroups = data.investorTypes?.groups || [];
-  const investorRows = investorNames.map(name => investorGroups.find(row => row.name === name) || { name, buyMillion: null, sellMillion: null, netMillion: null });
-  $('#investor-summary-body').innerHTML = investorRows.map(row => {
-    const net = finiteNumber(row.netMillion);
-    return `<tr><th scope="row">${escapeHtml(row.name)}</th><td>${number(row.buyMillion)}</td><td>${number(row.sellMillion)}</td><td class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(row.netMillion)}</td></tr>`;
-  }).join('');
-  setText('#investor-summary-date', investorGroups.length ? `ข้อมูล ณ วันที่ ${fmtThaiMarketDate(data.investorTypes?.date || data.marketDate)}` : 'SETTRADE ยังไม่เผยแพร่ข้อมูลรอบนี้');
+  setText('#market-close-summary', data.closeSummary || 'SETTRADE ยังไม่เผยแพร่สรุปซื้อขายสิ้นวันรอบนี้');
   const nvdr = data.nvdr || {};
   $('#nvdr-metrics').innerHTML = `<div><small>มูลค่าตลาด SET + mai</small><strong>${number(nvdr.marketMillion)}</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>${number(nvdr.nvdrMillion)}</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>${number(nvdr.ratioPercent)}</strong><em>%</em></div>`;
   const foreign = data.foreign || {};
@@ -325,7 +302,7 @@ function renderSettradeOverview(data) {
   setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
   setText('#settrade-updated', data.stale ? `ใช้ข้อมูลที่บันทึกล่าสุด · ${fmtThaiDateTime(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
   setText('#mkt-time', `ข้อมูลล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
-  setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${fmtThaiMarketDate(data.marketDate)}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
+  setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${data.marketDate}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
   if (data.stale) setMarketDataMessage('warning', `ใช้ข้อมูลที่บันทึกล่าสุด · ${fmtThaiDateTime(data.fetchedAt)}`, true);
   else if (data.errors?.length) setMarketDataMessage('warning', 'ข้อมูลบางส่วนจาก SETTRADE โหลดไม่สำเร็จ ส่วนที่สำเร็จยังแสดงตามปกติ', true);
   else setMarketDataMessage('', '');
@@ -1306,12 +1283,6 @@ async function setup() {
   $('#refresh-watchlist-news').addEventListener('click', getWatchlistNews);
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
-  $('.market-subtabs')?.addEventListener('click', event => {
-    const button = event.target.closest('[data-market-section]');
-    if (!button) return;
-    document.querySelectorAll('.market-subtabs [role="tab"]').forEach(tab => tab.setAttribute('aria-selected', String(tab === button)));
-    document.getElementById(button.dataset.marketSection)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  });
   $('#market-data-message')?.addEventListener('click', event => {
     if (event.target.closest('[data-market-retry]')) getSettradeOverview(true);
   });
