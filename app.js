@@ -274,7 +274,15 @@ function renderSubIndices() {
     const label = document.createElement('span');
     label.textContent = symbol;
     const value = document.createElement('strong');
-    value.textContent = number(item?.last);
+    const valueText = document.createElement('b');
+    valueText.textContent = number(item?.last);
+    if (item) {
+      const arrow = document.createElement('i');
+      arrow.className = `sub-index-arrow ${change > 0 ? 'up' : change < 0 ? 'down' : 'neutral'}`;
+      arrow.textContent = change > 0 ? '▲' : change < 0 ? '▼' : '•';
+      value.append(arrow);
+    }
+    value.append(valueText);
     const detail = document.createElement('small');
     detail.className = change > 0 ? 'up' : change < 0 ? 'down' : '';
     detail.textContent = change === null || percent === null ? 'ต้นทางยังไม่ส่งข้อมูล' : `${change > 0 ? '+' : ''}${number(change)} (${percent > 0 ? '+' : ''}${number(percent)}%)`;
