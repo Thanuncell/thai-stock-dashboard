@@ -857,16 +857,6 @@ async function getMarket() {
     evaluateWatchlistAlerts(stocks);
     updateStockCards(stocks);
     renderMovers(stocks);
-    const index = (data.indices || []).find(item => item.symbol === 'SET');
-    if (index && Number(index.last) > 0) {
-      const change = Number(index.last) - Number(index.prior);
-      const pct = Number(index.prior) ? 100 * change / Number(index.prior) : 0;
-      $('#set-index').innerHTML = `${number(index.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
-      setText('#set-volume', `${number(index.volume)} หุ้น`);
-      setText('#set-range', `${number(index.high)} / ${number(index.low)}`);
-      setText('#set-turnover', `${number(index.turnoverMillionBaht)} ล้านบาท`);
-      $('#set-turnover').title = index.turnoverMillionBaht == null ? 'ต้องตั้งค่า SET_API_KEY ใน Render เพื่อแสดงมูลค่าซื้อขายจากข้อมูลของ SET' : 'ข้อมูลมูลค่าซื้อขายจาก SET API · หน่วยล้านบาท';
-    }
     const selected = stocks.find(item => item.symbol === activeSymbol);
     if (selected) setText('#chart-meta', `SET:${activeSymbol} · ${activeName || selected.fullName} · THB`);
   } catch (error) {
