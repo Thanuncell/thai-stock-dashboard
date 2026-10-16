@@ -2,14 +2,31 @@ const http=require('node:http');
 const fs=require('node:fs');
 const path=require('node:path');
 const {URL}=require('node:url');
+const {allowedNewsUrl,resolveAllowedNewsRedirect}=require('./lib/news-policy');
+const {decodeXml,marketHtmlText,parseSettradeForeign,parseSettradeMarket,parseSettradeNvdr,xmlTag}=require('./lib/settrade-parser');
+const {normalizeMarketSymbols,normalizeSymbol,normalizeWatchlistNewsStocks,normalizeWatchlistsPayload}=require('./lib/validation');
 
 const ROOT=__dirname;
 const PORT=Number(process.env.PORT)||4173;
 const HOST=process.env.HOST||'127.0.0.1';
 const TYPES={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.ico':'image/x-icon'};
-const PUBLIC_FILES=new Set(['/index.html','/app.js','/auth.js','/style.css','/analysis.css','/about.html','/privacy.html','/terms.html','/disclaimer.html']);
-const SECURITY_HEADERS={'x-content-type-options':'nosniff','x-frame-options':'DENY','referrer-policy':'same-origin'};
-function send(res,status,obj,headers={}){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':'same-origin',...SECURITY_HEADERS,...headers});res.end(JSON.stringify(obj))}
+const PUBLIC_FILES=new Set(['/index.html','/app.js','/auth.js','/theme-init.js','/lib/indicators.js','/style.css','/analysis.css','/about.html','/privacy.html','/terms.html','/disclaimer.html']);
+function configuredSupabaseOrigin(value){try{const url=new URL(value);return url.protocol==='https:'?url.origin:null}catch(_){return null}}
+const supabaseOrigin=configuredSupabaseOrigin(process.env.SUPABASE_URL);
+const contentSecurityPolicy=[
+ "default-src 'self'",
+ "base-uri 'self'",
+ "object-src 'none'",
+ "frame-ancestors 'none'",
+ "script-src 'self'",
+ "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+ "font-src 'self' https://fonts.gstatic.com",
+ "img-src 'self' data:",
+ `connect-src 'self'${supabaseOrigin?` ${supabaseOrigin}`:''}`,
+ "form-action 'self'"
+].join('; ');
+const SECURITY_HEADERS={'content-security-policy':contentSecurityPolicy,'x-content-type-options':'nosniff','x-frame-options':'DENY','referrer-policy':'same-origin'};
+function send(res,status,obj,headers={}){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store',...SECURITY_HEADERS,...headers});res.end(JSON.stringify(obj))}
 const authConfigured=Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_ANON_KEY);
 const hits=new Map();
 function limited(key,max,windowMs=60000){
@@ -37,55 +54,6 @@ async function requireUser(req,res){
  send(res,503,{error:'ระบบสมาชิกไม่พร้อมชั่วคราว กรุณาลองใหม่อีกครั้ง',retryable:true});return false;
 }
 function readJson(req){return new Promise((resolve,reject)=>{let body='';req.on('data',chunk=>{body+=chunk;if(body.length>64000){reject(Error('ข้อมูลมีขนาดใหญ่เกินไป'));req.destroy()}});req.on('end',()=>{try{resolve(JSON.parse(body||'{}'))}catch(_){reject(Error('รูปแบบข้อมูลไม่ถูกต้อง'))}});req.on('error',reject)})}
-function decodeXml(s=''){return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,'$1').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;|&apos;/g,"'").replace(/&#(\d+);/g,(_,n)=>String.fromCodePoint(Number(n))).replace(/&#x([\da-f]+);/gi,(_,n)=>String.fromCodePoint(parseInt(n,16))).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()}
-function xmlTag(block,name){return block.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`,'i'))?.[1]||''}
-function marketHtmlText(value=''){
- return decodeXml(String(value).replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]*>/g,' ').replace(/\s+/g,' '));
-}
-function marketRowsFromTable(table=''){
- return [...table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>[...match[1].matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map(cell=>marketHtmlText(cell[1])).filter(Boolean)).filter(row=>row.length);
-}
-function marketNumber(value){const n=Number(String(value||'').replace(/,/g,'').match(/[-+]?\d+(?:\.\d+)?/)?.[0]);return Number.isFinite(n)?n:null}
-function parseSettradeMarket(html){
- const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
- const indexTable=tables.find(table=>table.includes('index=SET')&&table.includes('index=mai'))||'';
- const indices=[...indexTable.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>{
-  const row=[...match[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(cell=>marketHtmlText(cell[1]));
-  const href=match[1].match(/index=(SET|mai)(?:&|[\x22'])/i)?.[1];
-  if(!href||row.length<7)return null;
-  const change=row[2]?.match(/([-+]?\d[\d,.]*)\s*\(([-+]?\d[\d,.]*)%\)/);
-  const range=(row[4]||"").match(/([-+]?\d[\d,.]*)\s+([-+]?\d[\d,.]*)/);
-  return{symbol:href.toUpperCase()==="MAI"?"mai":"SET",last:marketNumber(row[1]),change:change?marketNumber(change[1]):null,changePercent:change?marketNumber(change[2]):null,open:marketNumber(row[3]),low:range?marketNumber(range[1]):null,high:range?marketNumber(range[2]):null,volumeThousand:marketNumber(row[5]),turnoverMillion:marketNumber(row[6])};
- }).filter(Boolean);
- const breadth=[];
- let breadthMarketIndex=0;
- for(let i=0;i<tables.length;i++){
-  const rows=marketRowsFromTable(tables[i]);
-  if(rows.some(row=>/Gainers|Unchanges|Losers/i.test(row[0]||''))){
-   const market=['SET','mai'][breadthMarketIndex++]||'SET';
-   breadth.push({market,items:rows.filter(row=>/Gainers|Unchanges|Losers/i.test(row[0]||'')).map(row=>({label:row[0],count:marketNumber(row[1]),volumeThousand:marketNumber(row[2])}))});
-  }
- }
- const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
- const closeStart=text.indexOf('หลังตลาดปิด');
- const closeSummary=closeStart>=0?text.slice(closeStart).replace(/^หลังตลาดปิด\s*:?\s*/,'').split(/ดูเพิ่มเติม|ติดต่อเรา/)[0].trim().slice(0,1200):'';
- return{indices,breadth,closeSummary};
-}
-function parseSettradeForeign(html){
- const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
- const table=tables.find(value=>value.includes('นักลงทุนต่างประเทศ')&&value.includes('มูลค่าซื้อ'))||'';
- const row=marketRowsFromTable(table).find(items=>items[0]?.includes('นักลงทุนต่างประเทศ'));
- const page=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
- const date=page.match(/ข้อมูล ณ วันที่\s*(\d{1,2}\s+[^\s]+\s+\d{4}|[\d/.-]{8,10})/)?.[1]?.trim()||'';
- return row?{date,name:row[0],buyMillion:marketNumber(row[1]),sellMillion:marketNumber(row[3]),netMillion:marketNumber(row[5])}:{date,name:'นักลงทุนต่างประเทศ',buyMillion:null,sellMillion:null,netMillion:null};
-}
-function parseSettradeNvdr(html){
- const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
- const market=text.match(/มูลค่าการซื้อขายของ SET และ mai \(ล้านบาท\)\s*([\d,.]+)/);
- const nvdr=text.match(/มูลค่าการซื้อขายของ NVDR \(ล้านบาท\)\s*([\d,.]+)/);
- const ratio=text.match(/สัดส่วนของ NVDR เทียบกับ SET และ mai \(%\)\s*([\d,.]+)/);
- return{marketMillion:market?marketNumber(market[1]):null,nvdrMillion:nvdr?marketNumber(nvdr[1]):null,ratioPercent:ratio?marketNumber(ratio[1]):null};
-}
 let settradeOverviewCache={data:null,expiresAt:0,pending:null};
 async function fetchSettradePage(pathname){
  const response=await fetch(`https://www.settrade.com${pathname}`,{headers:{'user-agent':'Mozilla/5.0 (compatible; SETscope/1.0; public market overview)','accept':'text/html'},signal:AbortSignal.timeout(10000)});
@@ -157,8 +125,6 @@ function fallbackNewsSummary(title=''){
  if(/(ขาดทุน|กำไรลด|ร่วง|หดตัว|ผิดนัด|ถูกฟ้อง|เพิ่มทุน|ลดเป้า|เลื่อนโครงการ|ต้นทุนพุ่ง)/i.test(text))return'พาดหัวมีความเสี่ยงเชิงลบ ควรดูผลกระทบต่อกำไร กระแสเงินสด และกำหนดเวลาที่ระบุในข่าว';
  return'พาดหัวยังไม่ชี้ผลบวกหรือลบชัดเจน ควรอ่านรายละเอียด ตัวเลข และเงื่อนไขก่อนประเมินผลต่อหุ้น';
 }
-const allowedNewsHosts=['news.google.com','thunhoon.com','kaohoon.com','settrade.com','set.or.th','bot.or.th','efinancethai.com'];
-function allowedNewsUrl(value){try{const url=new URL(value);return url.protocol==='https:'&&allowedNewsHosts.some(host=>url.hostname===host||url.hostname.endsWith(`.${host}`))?url:null}catch(_){return null}}
 async function extractNewsArticle(item){
  let target=allowedNewsUrl(item.url);if(!target)return'';
  try{
@@ -167,7 +133,7 @@ async function extractNewsArticle(item){
    response=await fetch(target,{redirect:'manual',headers:{'user-agent':'Mozilla/5.0 (compatible; SETscope news summarizer/1.0)','accept':'text/html,application/xhtml+xml'},signal:AbortSignal.timeout(9000)});
    if(![301,302,303,307,308].includes(response.status))break;
    const location=response.headers.get('location');if(!location)return'';
-   target=allowedNewsUrl(new URL(location,target).href);if(!target)return'';
+   target=resolveAllowedNewsRedirect(target,location);if(!target)return'';
   }
   const finalUrl=allowedNewsUrl(response.url);if(!response.ok||!finalUrl||!/text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type')||''))return'';
   const reader=response.body?.getReader();if(!reader)return'';const chunks=[];let size=0;
@@ -215,16 +181,6 @@ const OUTLET_SOURCE=[
  [/(หลักทรัพย์\s*กสิกรไทย|KSecurities|K Securities|อินโนเวสท์|InnovestX|หลักทรัพย์\s*บัวหลวง|Bualuang|ลิเบอเรเตอร์|Liberator|เอสบีไอ|SBI Thai Online|SBITO|หยวนต้า|Yuanta|หลักทรัพย์\s*พาย|Pi Securities)/i,'broker']
 ];
 function sourceFromOutlet(name=''){return(OUTLET_SOURCE.find(([pattern])=>pattern.test(name))||[null,'other'])[1]}
-function normalizeWatchlistNewsStocks(rawStocks=''){
- let stocks=[];try{stocks=Array.isArray(rawStocks)?rawStocks:JSON.parse(rawStocks)}catch(_){stocks=String(rawStocks).split(',').map(symbol=>({symbol}))}
- const unique=new Map();
- for(const item of Array.isArray(stocks)?stocks:[]){
-  const symbol=String(item.symbol||'').trim().toUpperCase(),name=String(item.name||'').trim().slice(0,80);
-  if(/^[A-Z0-9&.-]{1,20}$/.test(symbol)&&!unique.has(symbol))unique.set(symbol,{symbol,name});
-  if(unique.size>=30)break;
- }
- return[...unique.values()].sort((a,b)=>a.symbol.localeCompare(b.symbol));
-}
 async function getWatchlistNews(rawStocks=''){
  const requested=normalizeWatchlistNewsStocks(rawStocks);
  if(!requested.length)return{items:[],fetchedAt:new Date().toISOString(),maxAgeDays:30};
@@ -293,7 +249,7 @@ async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_H
    try{const endpoint=new URL(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/rest/v1/user_watchlists`);endpoint.searchParams.set('select','watchlists,active_watchlist_id');endpoint.searchParams.set('user_id',`eq.${user.id}`);const upstream=await fetch(endpoint,{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:req.headers.authorization},signal:AbortSignal.timeout(8000)});if(!upstream.ok)throw Error((await upstream.text()).slice(0,300));const rows=await upstream.json();return send(res,200,{record:rows[0]||null},{'cache-control':'private, max-age=30'})}catch(e){return send(res,502,{error:'โหลด Watchlist จาก Supabase ไม่สำเร็จ',detail:e.message})}
   }
   if(req.method==='PUT'){
-   try{const body=await readJson(req),lists=body.watchlists;if(!Array.isArray(lists)||lists.length<1||lists.length>5)return send(res,400,{error:'ต้องมี Watchlist 1–5 รายการ'});const clean=lists.map((list,i)=>{const id=String(list.id||`list-${i+1}`).slice(0,40),name=String(list.name||`Watchlist ${i+1}`).trim().slice(0,40),items=Array.isArray(list.items)?list.items.slice(0,30).filter(item=>item&&/^[A-Z0-9&.-]{1,20}$/.test(String(item.symbol||'').toUpperCase())).map(item=>({symbol:String(item.symbol).toUpperCase(),name:String(item.name||item.symbol).slice(0,100)})):[];return{id,name,items}});const active=clean.some(list=>list.id===body.activeWatchlistId)?body.activeWatchlistId:clean[0].id;const endpoint=new URL(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/rest/v1/user_watchlists`);endpoint.searchParams.set('on_conflict','user_id');const upstream=await fetch(endpoint,{method:'POST',headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:req.headers.authorization,'content-type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:user.id,watchlists:clean,active_watchlist_id:active}),signal:AbortSignal.timeout(8000)});if(!upstream.ok)throw Error((await upstream.text()).slice(0,300));return send(res,200,{ok:true,syncedAt:new Date().toISOString()})}catch(e){return send(res,502,{error:'บันทึก Watchlist ไป Supabase ไม่สำเร็จ',detail:e.message})}
+   try{const body=await readJson(req),normalized=normalizeWatchlistsPayload(body);if(!normalized.ok)return send(res,400,{error:normalized.error});const endpoint=new URL(`${process.env.SUPABASE_URL.replace(/\/$/,'')}/rest/v1/user_watchlists`);endpoint.searchParams.set('on_conflict','user_id');const upstream=await fetch(endpoint,{method:'POST',headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:req.headers.authorization,'content-type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({user_id:user.id,watchlists:normalized.watchlists,active_watchlist_id:normalized.activeWatchlistId}),signal:AbortSignal.timeout(8000)});if(!upstream.ok)throw Error((await upstream.text()).slice(0,300));return send(res,200,{ok:true,syncedAt:new Date().toISOString()})}catch(e){return send(res,502,{error:'บันทึก Watchlist ไป Supabase ไม่สำเร็จ',detail:e.message})}
   }
   res.writeHead(405);return res.end('Method Not Allowed')
  }
@@ -307,7 +263,7 @@ async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_H
  if(req.method!=='GET'){res.writeHead(405);return res.end('Method Not Allowed')}
  if(url.pathname==='/api/search'){const q=(url.searchParams.get('q')||'').trim().slice(0,80);if(q.length<1)return send(res,200,{items:[]});try{send(res,200,{items:await yahooSearch(q),provider:'Yahoo Finance'})}catch(e){send(res,502,{error:e.message,items:[]})}return}
  if(url.pathname==='/api/settrade-overview'){try{const force=url.searchParams.get('refresh')==='1'&&!limited('refresh:'+user.id,3);send(res,200,await getSettradeOverview(force))}catch(e){send(res,502,{error:'ดึงข้อมูล SETTRADE ไม่สำเร็จ',detail:e.message})}return}
- if(url.pathname==='/api/market'){try{const symbols=(url.searchParams.has('symbols')?url.searchParams.get('symbols'):'PTT,AOT,ADVANC,KBANK,CPALL').split(',').map(s=>s.trim().toUpperCase()).filter(s=>/^[A-Z0-9&.-]{1,20}$/.test(s)).slice(0,30);const active=(url.searchParams.get('symbol')||symbols[0]||'PTT').toUpperCase();if(!/^[A-Z0-9&.-]{1,20}$/.test(active))return send(res,400,{error:'ชื่อย่อหุ้นไม่ถูกต้อง'});if(!symbols.includes(active))symbols.push(active);const range=url.searchParams.get('range')||'1D';send(res,200,await cached(`market:${symbols.join(',')}|${active}|${range}`,30000,()=>getMarket(symbols,active,range)))}catch(e){send(res,502,{error:e.message})}return}
+ if(url.pathname==='/api/market'){try{const symbols=normalizeMarketSymbols(url.searchParams.has('symbols')?url.searchParams.get('symbols'):'PTT,AOT,ADVANC,KBANK,CPALL');const active=normalizeSymbol(url.searchParams.get('symbol')||symbols[0]||'PTT');if(!active)return send(res,400,{error:'ชื่อย่อหุ้นไม่ถูกต้อง'});if(!symbols.includes(active))symbols.push(active);const range=url.searchParams.get('range')||'1D';send(res,200,await cached(`market:${symbols.join(',')}|${active}|${range}`,30000,()=>getMarket(symbols,active,range)))}catch(e){send(res,502,{error:e.message})}return}
  if(url.pathname==='/api/news'){try{const d=await cached('news',300000,getNews);send(res,200,d)}catch(e){send(res,502,{error:e.message})}return}
  if(url.pathname==='/api/watchlist-news'){try{const raw=url.searchParams.get('stocks')||url.searchParams.get('symbols')||'',stocks=normalizeWatchlistNewsStocks(raw),cacheKey=stocks.map(item=>item.symbol).join(',');const d=await cached('wn:'+cacheKey,300000,()=>getWatchlistNews(stocks));send(res,200,d)}catch(e){send(res,502,{error:'ดึงข่าว Watchlist ไม่สำเร็จ',detail:e.message})}return}
  let pathname;try{pathname=decodeURIComponent(url.pathname)}catch(_){return send(res,400,{error:'URL ไม่ถูกต้อง'})}if(pathname==='/'||pathname==='/login'||pathname==='/login/'||pathname==='/register'||pathname==='/register/')pathname='/index.html';if(!PUBLIC_FILES.has(pathname)){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}const file=path.resolve(ROOT,'.'+pathname);if(!file.startsWith(ROOT+path.sep)){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}fs.readFile(file,(e,data)=>{if(e){res.writeHead(404,{'content-type':'text/plain; charset=utf-8',...SECURITY_HEADERS});return res.end('Not found')}res.writeHead(200,{'content-type':TYPES[path.extname(file)]||'application/octet-stream','cache-control':'no-cache',...SECURITY_HEADERS});res.end(data)})
@@ -321,4 +277,6 @@ const server=http.createServer((req,res)=>{
   send(res,badUrl?400:500,{error:badUrl?'URL ไม่ถูกต้อง':'เกิดข้อผิดพลาดภายในระบบ'});
  });
 });
-server.listen(PORT,HOST,()=>console.log(`SETscope running at http://${HOST}:${PORT}`));
+if(require.main===module)server.listen(PORT,HOST,()=>console.log(`SETscope running at http://${HOST}:${PORT}`));
+
+module.exports={handle,server,SECURITY_HEADERS};

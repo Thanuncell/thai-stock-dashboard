@@ -7,8 +7,31 @@ const {
   analyseTechnicals,
   computeEma,
   computeSmaSeries,
+  createRequestSequence,
   findPriceLevels
 } = require('../lib/indicators');
+
+test('a slower stale response cannot overwrite the newest request state', async () => {
+  const sequence = createRequestSequence();
+  const applied = [];
+  let releaseSlow;
+  const slow = new Promise(resolve => { releaseSlow = resolve; });
+
+  const run = async (value, pending) => {
+    const requestId = sequence.begin();
+    const result = await pending;
+    if (!sequence.isCurrent(requestId)) return;
+    applied.push({ value, result });
+  };
+
+  const requestA = run('A', slow);
+  const requestB = run('B', Promise.resolve('newer'));
+  await requestB;
+  releaseSlow('older');
+  await requestA;
+
+  assert.deepEqual(applied, [{ value: 'B', result: 'newer' }]);
+});
 
 test('SMA and EMA preserve the current warm-up contract', () => {
   assert.deepEqual(computeSmaSeries([1, 2, 3, 4, 5], 3), [null, null, 2, 3, 4]);

@@ -2,6 +2,10 @@
 
 Thai stock dashboard. Run `start.bat` (Node.js 18 or newer is required), then open http://127.0.0.1:4173.
 
+## Development checks
+
+Run `npm test` for deterministic unit, contract, auth, outage, and security regression tests. Run `npm run check` for JavaScript syntax checks. The tests use local fixtures and mocks; they do not call live market-data providers or require production credentials.
+
 ## Deploy from GitHub
 
 This app needs a small Node.js server to proxy Yahoo Finance and RSS requests. GitHub Pages only serves static files, so use Render's free web service instead. Push this repository to GitHub, sign in to [Render](https://render.com/), create a new Blueprint, and select the repository. Render reads `render.yaml`, builds the Node app, and gives it a public `onrender.com` URL. The free service may sleep after 15 minutes with no incoming traffic and take time to wake; see [Render free-instance limits](https://render.com/docs/free).
