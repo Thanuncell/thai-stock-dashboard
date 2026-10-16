@@ -1,5 +1,6 @@
 (() => {
   const STORAGE_KEY = 'setscope-auth-session-v1';
+  const THEME_KEY = 'setscope-theme';
   const APP_TITLE = 'SETscope — หุ้นไทยและกราฟเทคนิค';
   let config = null;
   let session = readSession();
@@ -7,6 +8,15 @@
   let refreshTimer;
   const AUTH_ROUTES = { login: '/login', signup: '/register' };
   const $ = selector => document.querySelector(selector);
+  function setAuthTheme(theme) {
+    const next = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem(THEME_KEY, next);
+    const icon = $('#auth-theme-icon'); if (icon) icon.textContent = next === 'dark' ? '☀' : '☾';
+    const label = $('#auth-theme-label'); if (label) label.textContent = next === 'dark' ? 'โหมดสว่าง' : 'โหมดมืด';
+    const button = $('#auth-theme-toggle'); if (button) button.setAttribute('aria-label', next === 'dark' ? 'เปลี่ยนเป็นโหมดสว่าง' : 'เปลี่ยนเป็นโหมดมืด');
+    const themeColor = $('meta[name="theme-color"]'); if (themeColor) themeColor.content = next === 'dark' ? '#0b1118' : '#f6f7f9';
+  }
   const message = (text, type = '') => { const box = $('#auth-message'); box.textContent = text; box.className = `auth-message ${type}`.trim(); };
   async function fetchWithWake(url, options = {}, tries = 3) {
     let lastError;
@@ -119,6 +129,8 @@
     return response;
   }
   window.setscopeAuth = { get accessToken() { return session?.access_token || ''; }, get user() { return user; }, refresh: refreshSession, authorizedFetch };
+  setAuthTheme(localStorage.getItem(THEME_KEY) || 'light');
+  $('#auth-theme-toggle').addEventListener('click', () => setAuthTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
   $('#auth-login-tab').addEventListener('click', () => setMode('login'));
   $('#auth-signup-tab').addEventListener('click', () => setMode('signup'));
   $('#login-form').addEventListener('submit', onLogin);
