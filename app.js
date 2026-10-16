@@ -48,6 +48,9 @@ let unreadAlerts = 0;
 let watchlistCloudReady = false;
 let watchlistSyncTimer = null;
 let watchlistSyncChain = Promise.resolve();
+let latestSettradeOverview = null;
+let activeMarketTab = 'SET';
+let activeMarketRanking = 'activeValue';
 
 function setWatchlistSyncStatus(text, state = '') {
   ['#watchlist-sync-status', '#watchlist-sync-status-mobile'].forEach(selector => {
@@ -245,6 +248,76 @@ function setMarketDataMessage(type, text, retry = false) {
   node.className = `market-data-message${type ? ` ${type}` : ''}`;
   node.innerHTML = text ? `<span>${escapeHtml(text)}</span>${retry ? '<button type="button" data-market-retry>ลองอีกครั้ง</button>' : ''}` : '';
 }
+const SUB_INDEX_ORDER = ['SET50', 'SET50FF', 'SET100', 'SET100FF', 'sSET', 'SETCLMV', 'SETHD', 'SETESG', 'SETWB', 'SET TRI'];
+function renderSubIndices() {
+  const box = $('#sub-index-grid');
+  if (!box) return;
+  box.replaceChildren();
+  setText('#sub-index-market', activeMarketTab);
+  if (activeMarketTab !== 'SET') {
+    const note = document.createElement('p');
+    note.className = 'market-empty';
+    note.textContent = `ข้อมูลดัชนีย่อยของ ${activeMarketTab} ยังไม่พร้อมตามขอบเขต M3`;
+    box.append(note);
+    return;
+  }
+  const bySymbol = Object.fromEntries((latestSettradeOverview?.subIndices || []).map(item => [item.symbol, item]));
+  for (const symbol of SUB_INDEX_ORDER) {
+    const item = bySymbol[symbol];
+    const change = finiteNumber(item?.change), percent = finiteNumber(item?.changePercent);
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'sub-index-card';
+    card.dataset.subIndex = symbol;
+    card.setAttribute('aria-pressed', 'false');
+    card.disabled = !item;
+    const label = document.createElement('span');
+    label.textContent = symbol;
+    const value = document.createElement('strong');
+    value.textContent = number(item?.last);
+    const detail = document.createElement('small');
+    detail.className = change > 0 ? 'up' : change < 0 ? 'down' : '';
+    detail.textContent = change === null || percent === null ? 'ต้นทางยังไม่ส่งข้อมูล' : `${change > 0 ? '+' : ''}${number(change)} (${percent > 0 ? '+' : ''}${number(percent)}%)`;
+    card.append(label, value, detail);
+    box.append(card);
+  }
+}
+function setMarketTab(market) {
+  activeMarketTab = market;
+  document.querySelectorAll('.market-tabs [data-market]').forEach(button => button.setAttribute('aria-selected', String(button.dataset.market === market)));
+  renderSubIndices();
+}
+function renderMarketRanking() {
+  const body = $('#rank-body');
+  if (!body) return;
+  body.replaceChildren();
+  const ranking = latestSettradeOverview?.rankings?.[activeMarketRanking] || { items: [] };
+  const items = (ranking.items || []).slice(0, 10);
+  const sourceUrl = latestSettradeOverview?.links?.[activeMarketRanking];
+  setText('#ranking-updated', ranking.asOf ? `ข้อมูลล่าสุด ${fmtThaiMarketDate(ranking.asOf)}` : 'รอข้อมูล');
+  if (!items.length) {
+    const row = document.createElement('tr'), cell = document.createElement('td');
+    cell.colSpan = 4;
+    const title = document.createElement('strong');
+    title.textContent = 'ข้อมูลจัดอันดับโหลดจากต้นทางไม่สำเร็จ';
+    const detail = document.createElement(sourceUrl ? 'a' : 'span');
+    detail.textContent = sourceUrl ? 'เปิดหน้าต้นทาง SETTRADE' : 'กรุณาลองอัปเดตข้อมูลอีกครั้ง';
+    if (sourceUrl) { detail.href = sourceUrl; detail.target = '_blank'; detail.rel = 'noreferrer'; }
+    cell.append(title, detail); row.append(cell); body.append(row);
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement('tr');
+    const symbol = document.createElement('th'); symbol.scope = 'row'; symbol.textContent = item.symbol;
+    const price = document.createElement('td'); price.textContent = number(item.last);
+    const change = finiteNumber(item.change), percent = finiteNumber(item.changePercent);
+    const movement = document.createElement('td');
+    movement.textContent = change === null || percent === null ? '—' : `${change > 0 ? '+' : ''}${number(change)} (${percent > 0 ? '+' : ''}${number(percent)}%)`;
+    if (change > 0) movement.className = 'up'; else if (change < 0) movement.className = 'down';
+    const value = document.createElement('td'); value.textContent = number(item.turnoverMillion);
+    row.append(symbol, price, movement, value); body.append(row);
+  }
+}
 function resetMarketOverview() {
   $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => `<article class="market-index-card${symbol === 'TFEX' ? ' market-index-card-tfex' : ''}"><span>${symbol}</span><strong>—</strong><small>ยังไม่มีข้อมูล</small></article>`).join('');
   $('#set-index').innerHTML = '— <span class="neutral">—</span>';
@@ -258,7 +331,8 @@ function resetMarketOverview() {
   $('#investor-summary-body').innerHTML = '<tr><td colspan="4">ยังไม่มีข้อมูลสรุปซื้อขายสิ้นวัน</td></tr>';
   $('#nvdr-metrics').innerHTML = '<div><small>มูลค่าตลาด SET + mai</small><strong>—</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>—</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>—</strong><em>%</em></div>';
   $('#foreign-flow').innerHTML = '<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong>—</strong><small>ล้านบาท · ยังไม่มีข้อมูล</small>';
-  setText('#active-value-status', 'ยังไม่มีข้อมูลจัดอันดับจากต้นทาง');
+  renderSubIndices();
+  renderMarketRanking();
   setText('#market-data-date', 'ยังไม่มีเวลาอัปเดต');
   setText('#mkt-time', 'ข้อมูลล่าสุด —');
 }
@@ -269,10 +343,13 @@ function hasMarketOverviewData(data) {
     data.closeSummary ||
     Object.values(data.nvdr || {}).some(value => finiteNumber(value) !== null) ||
     (data.investorTypes?.groups || []).some(item => finiteNumber(item.netMillion) !== null) ||
-    finiteNumber(data.foreign?.netMillion) !== null
+    finiteNumber(data.foreign?.netMillion) !== null ||
+    (data.subIndices || []).some(item => finiteNumber(item.last) !== null) ||
+    Object.values(data.rankings || {}).some(group => (group.items || []).length)
   );
 }
 function renderSettradeOverview(data) {
+  latestSettradeOverview = data;
   resetMarketOverview();
   const indices = data.indices || [];
   $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => {
@@ -322,7 +399,8 @@ function renderSettradeOverview(data) {
   const foreign = data.foreign || {};
   const net = finiteNumber(foreign.netMillion);
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(foreign.netMillion)}</strong><small>ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}</small>`;
-  setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
+  setMarketTab(activeMarketTab);
+  renderMarketRanking();
   setText('#settrade-updated', data.stale ? `ใช้ข้อมูลที่บันทึกล่าสุด · ${fmtThaiDateTime(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
   setText('#mkt-time', `ข้อมูลล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
   setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${fmtThaiMarketDate(data.marketDate)}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
@@ -344,6 +422,7 @@ async function getSettradeOverview(force = false) {
     renderSettradeOverview(data);
   } catch (error) {
     console.warn('SETTRADE overview refresh failed', error);
+    latestSettradeOverview = null;
     resetMarketOverview();
     setText('#settrade-updated', 'ข้อมูลจาก SETTRADE โหลดไม่สำเร็จ');
     setMarketDataMessage('error', 'ข้อมูลจาก SETTRADE โหลดไม่สำเร็จ', true);
@@ -1306,6 +1385,25 @@ async function setup() {
   $('#refresh-watchlist-news').addEventListener('click', getWatchlistNews);
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
+  $('.market-tabs')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-market]');
+    if (button) setMarketTab(button.dataset.market);
+  });
+  $('#sub-index-grid')?.addEventListener('click', event => {
+    const card = event.target.closest('[data-sub-index]');
+    if (!card || card.disabled) return;
+    document.querySelectorAll('.sub-index-card').forEach(item => {
+      item.classList.toggle('selected', item === card);
+      item.setAttribute('aria-pressed', String(item === card));
+    });
+  });
+  $('#rank-tabs')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-ranking]');
+    if (!button) return;
+    activeMarketRanking = button.dataset.ranking;
+    document.querySelectorAll('#rank-tabs [data-ranking]').forEach(tab => tab.setAttribute('aria-selected', String(tab === button)));
+    renderMarketRanking();
+  });
   $('.market-subtabs')?.addEventListener('click', event => {
     const button = event.target.closest('[data-market-section]');
     if (!button) return;
