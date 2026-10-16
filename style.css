@@ -358,7 +358,6 @@ html[data-theme="dark"] .rsi-meter .rsi-track i{border-color:#8ca0af;background:
 .footer-links{display:flex;flex-wrap:wrap;gap:7px 18px}
 .page-footer a{color:#567e73;text-decoration:none}
 .page-footer a:hover{text-decoration:underline}
-.footer-sources{color:#a1aab1}
 html[data-theme="dark"] .page-footer{color:#82929e}
 html[data-theme="dark"] .page-footer a{color:#82b8a8}
 html[data-theme="dark"] .footer-disclaimer strong{color:var(--ink)}
