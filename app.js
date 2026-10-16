@@ -240,7 +240,8 @@ function resetMarketOverview() {
   const conditionNode = $('#market-condition');
   if (conditionNode) { conditionNode.textContent = 'รอข้อมูลภาพตลาด'; conditionNode.className = 'market-condition'; }
   $('#market-breadth-list').innerHTML = '<p class="market-empty">ยังไม่มีข้อมูลสถิติหุ้นขึ้น–ลง</p>';
-  setText('#market-close-summary', 'ยังไม่มีข้อมูลสรุปซื้อขายสิ้นวัน');
+  setText('#investor-summary-date', 'รอวันที่ข้อมูล');
+  $('#investor-summary-body').innerHTML = '<tr><td colspan="4">ยังไม่มีข้อมูลสรุปซื้อขายสิ้นวัน</td></tr>';
   $('#nvdr-metrics').innerHTML = '<div><small>มูลค่าตลาด SET + mai</small><strong>—</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>—</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>—</strong><em>%</em></div>';
   $('#foreign-flow').innerHTML = '<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong>—</strong><small>ล้านบาท · ยังไม่มีข้อมูล</small>';
   setText('#active-value-status', 'ยังไม่มีข้อมูลจัดอันดับจากต้นทาง');
@@ -253,6 +254,7 @@ function hasMarketOverviewData(data) {
     (data.breadth || []).length ||
     data.closeSummary ||
     Object.values(data.nvdr || {}).some(value => finiteNumber(value) !== null) ||
+    (data.investorTypes?.groups || []).some(item => finiteNumber(item.netMillion) !== null) ||
     finiteNumber(data.foreign?.netMillion) !== null
   );
 }
@@ -293,7 +295,14 @@ function renderSettradeOverview(data) {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
     return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${fmtVolumeThousand(item.volumeThousand)}</small></div>`;
   }).join('')}</div>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
-  setText('#market-close-summary', data.closeSummary || 'SETTRADE ยังไม่เผยแพร่สรุปซื้อขายสิ้นวันรอบนี้');
+  const investorNames = ['นักลงทุนสถาบัน', 'บัญชีบริษัทหลักทรัพย์', 'นักลงทุนต่างประเทศ', 'นักลงทุนในประเทศ'];
+  const investorGroups = data.investorTypes?.groups || [];
+  const investorRows = investorNames.map(name => investorGroups.find(row => row.name === name) || { name, buyMillion: null, sellMillion: null, netMillion: null });
+  $('#investor-summary-body').innerHTML = investorRows.map(row => {
+    const net = finiteNumber(row.netMillion);
+    return `<tr><th scope="row">${escapeHtml(row.name)}</th><td>${number(row.buyMillion)}</td><td>${number(row.sellMillion)}</td><td class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(row.netMillion)}</td></tr>`;
+  }).join('');
+  setText('#investor-summary-date', investorGroups.length ? `ข้อมูล ณ วันที่ ${data.investorTypes?.date || data.marketDate || '—'}` : 'SETTRADE ยังไม่เผยแพร่ข้อมูลรอบนี้');
   const nvdr = data.nvdr || {};
   $('#nvdr-metrics').innerHTML = `<div><small>มูลค่าตลาด SET + mai</small><strong>${number(nvdr.marketMillion)}</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>${number(nvdr.nvdrMillion)}</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>${number(nvdr.ratioPercent)}</strong><em>%</em></div>`;
   const foreign = data.foreign || {};
@@ -1283,6 +1292,12 @@ async function setup() {
   $('#refresh-watchlist-news').addEventListener('click', getWatchlistNews);
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
+  $('.market-subtabs')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-market-section]');
+    if (!button) return;
+    document.querySelectorAll('.market-subtabs [role="tab"]').forEach(tab => tab.setAttribute('aria-selected', String(tab === button)));
+    document.getElementById(button.dataset.marketSection)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
   $('#market-data-message')?.addEventListener('click', event => {
     if (event.target.closest('[data-market-retry]')) getSettradeOverview(true);
   });
