@@ -202,6 +202,27 @@ function stamp(value) {
     timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short'
   });
 }
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function fmtVolumeThousand(value) {
+  const parsed = finiteNumber(value);
+  return parsed === null ? '—' : `${number(parsed)} ('000 หุ้น)`;
+}
+function fmtMillionBaht(value) {
+  const parsed = finiteNumber(value);
+  return parsed === null ? '—' : `${number(parsed)} ล้านบาท`;
+}
+function fmtThaiDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(+date)) return '—';
+  return new Intl.DateTimeFormat('th-TH', {
+    timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }).format(date);
+}
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
 function renderSettradeOverview(data) {
   const indices = data.indices || [];
@@ -209,17 +230,20 @@ function renderSettradeOverview(data) {
     if (symbol === 'TFEX') return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ดูข้อมูลต้นทาง</strong><small>ข้อมูลล่าช้า 15 นาที · อ้างอิงแหล่งข้อมูลด้านล่าง</small></article>`;
     const item = indices.find(row => row.symbol === symbol);
     if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
-    const trend = Number(item.change) > 0 ? 'up' : Number(item.change) < 0 ? 'down' : 'neutral';
-    const arrow = Number(item.change) > 0 ? '▲' : Number(item.change) < 0 ? '▼' : '•';
-    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${arrow} ${number(Math.abs(Number(item.change || 0)))} (${number(item.changePercent)}%) · มูลค่า ${number(item.turnoverMillion)} ลบ.</small></article>`;
+    const change = finiteNumber(item.change), changePercent = finiteNumber(item.changePercent);
+    const trend = change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
+    const arrow = change > 0 ? '▲' : change < 0 ? '▼' : '•';
+    const changeText = change === null || changePercent === null ? '—' : `${arrow} ${number(Math.abs(change))} (${number(changePercent)}%)`;
+    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${changeText} · มูลค่า ${fmtMillionBaht(item.turnoverMillion)}</small></article>`;
   }).join('');
   const setIndex = indices.find(row => row.symbol === 'SET');
   if (setIndex) {
-    const change = Number(setIndex.change || 0), pct = Number(setIndex.changePercent || 0);
-    $('#set-index').innerHTML = `${number(setIndex.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
-    setText('#set-volume', `${number(Number(setIndex.volumeThousand || 0) * 1000)} หุ้น`);
-    setText('#set-range', `${number(setIndex.high)} / ${number(setIndex.low)}`);
-    setText('#set-turnover', `${number(setIndex.turnoverMillion)} ล้านบาท`);
+    const change = finiteNumber(setIndex.change), pct = finiteNumber(setIndex.changePercent);
+    const changeMarkup = change === null || pct === null ? '<span class="neutral">—</span>' : `<span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
+    $('#set-index').innerHTML = `${number(setIndex.last)} ${changeMarkup}`;
+    setText('#set-volume', fmtVolumeThousand(setIndex.volumeThousand));
+    setText('#set-range', finiteNumber(setIndex.high) === null || finiteNumber(setIndex.low) === null ? '—' : `${number(setIndex.high)} / ${number(setIndex.low)}`);
+    setText('#set-turnover', fmtMillionBaht(setIndex.turnoverMillion));
     $('#set-turnover').title = 'มูลค่าซื้อขายจากหน้า SETTRADE · หน่วยล้านบาท';
   }
   const breadthLabels = { Gainers: 'ปรับขึ้น', Unchanges: 'ไม่เปลี่ยนแปลง', Losers: 'ปรับลง' };
@@ -243,7 +267,8 @@ function renderSettradeOverview(data) {
   const net = Number(foreign.netMillion);
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(foreign.netMillion)}</strong><small>ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}</small>`;
   setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
-  setText('#settrade-updated', data.stale ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${stamp(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${stamp(data.fetchedAt)}`);
+  setText('#settrade-updated', data.stale ? `ใช้ข้อมูลที่บันทึกล่าสุด · ${fmtThaiDateTime(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
+  setText('#mkt-time', `ข้อมูลล่าสุด ${fmtThaiDateTime(data.fetchedAt)}`);
   setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${data.marketDate}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
 }
 async function getSettradeOverview(force = false) {
