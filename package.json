@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/auth-flow.test.js test/indicators.test.js test/network-budget.test.js test/news-policy.test.js test/server-smoke.test.js test/settrade-parser.test.js test/supabase-policy.test.js test/validation.test.js",
-    "check": "node --check server.js && node --check app.js && node --check auth.js && node --check theme-init.js && node --check lib/indicators.js && node --check lib/news-policy.js && node --check lib/settrade-parser.js && node --check lib/validation.js"
+    "check": "node --check server.js && node --check app.js && node --check auth.js && node --check theme-init.js && node --check lib/indicators.js && node --check lib/news-policy.js && node --check lib/settrade-parser.js && node --check lib/validation.js && node --check server/auth-service.js && node --check server/market-service.js && node --check server/news-service.js && node --check server/settrade-service.js && node --check server/watchlist-service.js"
   },
   "engines": {
     "node": ">=18"

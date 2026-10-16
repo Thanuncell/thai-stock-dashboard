@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 
 process.env.SUPABASE_URL = 'https://project.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test-publishable-key';
+delete process.env.OPENAI_API_KEY;
 
 const NativeResponse = globalThis.Response;
 const upstreamCalls = [];
@@ -42,6 +43,11 @@ globalThis.fetch = async (input, init = {}) => {
       timestamp: [1_760_000_000],
       indicators: { quote: [{ open: [35], high: [35.5], low: [34.75], close: [35.25], volume: [1000] }] }
     }], error: null } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (url.startsWith('https://query1.finance.yahoo.com/v1/finance/search')) {
+    return new NativeResponse(JSON.stringify({ quotes: [{
+      symbol: 'PTT.BK', quoteType: 'EQUITY', longname: 'PTT Public Company Limited', exchange: 'SET'
+    }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
   if (url.startsWith('https://news.google.com/rss/search')) {
     if (decodeURIComponent(url).includes('site:kaohoon.com')) return new NativeResponse('unavailable', { status: 503 });
@@ -159,4 +165,43 @@ test('partial provider outages degrade independently without fabricating zero va
   const news = JSON.parse(newsResponse.body);
   assert.ok(news.items.length > 0);
   assert.deepEqual(news.errors, ['kaohoon']);
+});
+
+test('backend API response contracts remain stable before service extraction', async () => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { authorization: 'Bearer test-token' };
+
+  const authConfig = JSON.parse((await request(base, '/api/auth-config')).body);
+  assert.deepEqual(Object.keys(authConfig).sort(), ['anonKey', 'configured', 'url']);
+
+  const search = JSON.parse((await request(base, '/api/search?q=ptt', { headers })).body);
+  assert.deepEqual(Object.keys(search).sort(), ['items', 'provider']);
+  assert.deepEqual(Object.keys(search.items[0]).sort(), ['exchange', 'name', 'symbol', 'type']);
+
+  const market = JSON.parse((await request(base, '/api/market?symbols=PTT&symbol=PTT&range=1D', { headers })).body);
+  assert.deepEqual(Object.keys(market).sort(), [
+    'delayMinutes', 'errors', 'fetchedAt', 'history', 'indicatorHistory', 'indices',
+    'levelsHistory', 'provider', 'stocks'
+  ]);
+
+  const overview = JSON.parse((await request(base, '/api/settrade-overview', { headers })).body);
+  assert.deepEqual(Object.keys(overview).sort(), [
+    'activeValue', 'activeValueStatus', 'breadth', 'cached', 'closeSummary', 'errors', 'fetchedAt',
+    'foreign', 'indices', 'links', 'marketDate', 'nvdr', 'source', 'tfex'
+  ]);
+  assert.equal(overview.cached, true);
+
+  const news = JSON.parse((await request(base, '/api/news', { headers })).body);
+  assert.deepEqual(Object.keys(news).sort(), ['errors', 'fetchedAt', 'items', 'maxAgeDays']);
+
+  const watchlistNews = JSON.parse((await request(base, '/api/watchlist-news?stocks=%5B%7B%22symbol%22%3A%22PTT%22%7D%5D', { headers })).body);
+  assert.deepEqual(Object.keys(watchlistNews).sort(), ['fetchedAt', 'items', 'maxAgeDays']);
+
+  const analysis = JSON.parse((await request(base, '/api/news-analysis', {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ items: [{ source: 'thunhoon', title: 'PTT update', url: 'https://news.google.com/articles/1', snippet: 'ผลประกอบการเติบโต' }] })
+  })).body);
+  assert.deepEqual(Object.keys(analysis).sort(), ['aiConfigured', 'items', 'mode']);
+  assert.deepEqual(Object.keys(analysis.items[0]).sort(), ['basis', 'mode', 'summary']);
 });

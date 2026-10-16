@@ -23,6 +23,6 @@ test('main page adds only the tested indicator module to the static request budg
 test('cache keys include every public input and never cache watchlist responses globally', () => {
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.match(serverSource, /`market:\$\{symbols\.join\(','\)\}\|\$\{active\}\|\$\{range\}`/);
-  assert.match(serverSource, /cached\('wn:'\+cacheKey,300000/);
+  assert.match(serverSource, /cached\('wn:'\s*\+\s*cacheKey,\s*300000/);
   assert.doesNotMatch(serverSource, /cached\([^\n]*watchlists/);
 });
