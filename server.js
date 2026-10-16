@@ -45,18 +45,24 @@ function marketHtmlText(value=''){
 function marketRowsFromTable(table=''){
  return [...table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>[...match[1].matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map(cell=>marketHtmlText(cell[1])).filter(Boolean)).filter(row=>row.length);
 }
-function marketNumber(value){const n=Number(String(value||'').replace(/,/g,'').match(/[-+]?\d+(?:\.\d+)?/)?.[0]);return Number.isFinite(n)?n:null}
+function marketNumber(value){const match=String(value??'').replace(/,/g,'').match(/[-+]?\d+(?:\.\d+)?/);const n=match?Number(match[0]):NaN;return Number.isFinite(n)?n:null}
+const SET_SUB_INDEX_SYMBOLS=['SET50','SET50FF','SET100','SET100FF','sSET','SETCLMV','SETHD','SETESG','SETWB','SET TRI'];
+function parseSettradeIndexRow(block=''){
+ const row=[...block.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(cell=>marketHtmlText(cell[1]));
+ const rawSymbol=block.match(/index=([^&\x22']+)/i)?.[1];
+ if(!rawSymbol||row.length<7)return null;
+ const decoded=decodeURIComponent(rawSymbol);
+ const symbol=decoded.toUpperCase()==='MAI'?'mai':decoded.toLowerCase()==='sset'?'sSET':decoded.toUpperCase();
+ const change=row[2]?.match(/([-+]?\d[\d,.]*)\s*\(([-+]?\d[\d,.]*)%\)/);
+ const range=(row[4]||'').match(/([-+]?\d[\d,.]*)\s+([-+]?\d[\d,.]*)/);
+ return{symbol,last:marketNumber(row[1]),change:change?marketNumber(change[1]):null,changePercent:change?marketNumber(change[2]):null,open:marketNumber(row[3]),low:range?marketNumber(range[1]):null,high:range?marketNumber(range[2]):null,volumeThousand:marketNumber(row[5]),turnoverMillion:marketNumber(row[6])};
+}
 function parseSettradeMarket(html){
  const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
  const indexTable=tables.find(table=>table.includes('index=SET')&&table.includes('index=mai'))||'';
- const indices=[...indexTable.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>{
-  const row=[...match[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(cell=>marketHtmlText(cell[1]));
-  const href=match[1].match(/index=(SET|mai)(?:&|[\x22'])/i)?.[1];
-  if(!href||row.length<7)return null;
-  const change=row[2]?.match(/([-+]?\d[\d,.]*)\s*\(([-+]?\d[\d,.]*)%\)/);
-  const range=(row[4]||"").match(/([-+]?\d[\d,.]*)\s+([-+]?\d[\d,.]*)/);
-  return{symbol:href.toUpperCase()==="MAI"?"mai":"SET",last:marketNumber(row[1]),change:change?marketNumber(change[1]):null,changePercent:change?marketNumber(change[2]):null,open:marketNumber(row[3]),low:range?marketNumber(range[1]):null,high:range?marketNumber(range[2]):null,volumeThousand:marketNumber(row[5]),turnoverMillion:marketNumber(row[6])};
- }).filter(Boolean);
+ const indexRows=[...indexTable.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(match=>parseSettradeIndexRow(match[1])).filter(Boolean);
+ const indices=indexRows.filter(item=>item.symbol==='SET'||item.symbol==='mai');
+ const subIndices=SET_SUB_INDEX_SYMBOLS.slice(0,-1).map(symbol=>indexRows.find(item=>item.symbol===symbol)).filter(Boolean);
  const breadth=[];
  let breadthMarketIndex=0;
  for(let i=0;i<tables.length;i++){
@@ -69,7 +75,66 @@ function parseSettradeMarket(html){
  const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
  const closeStart=text.indexOf('หลังตลาดปิด');
  const closeSummary=closeStart>=0?text.slice(closeStart).replace(/^หลังตลาดปิด\s*:?\s*/,'').split(/ดูเพิ่มเติม|ติดต่อเรา/)[0].trim().slice(0,1200):'';
- return{indices,breadth,closeSummary};
+ return{indices,subIndices,breadth,closeSummary};
+}
+function parseSettradeHomeTri(html){
+ const text=marketHtmlText(html.slice(0,html.indexOf('window.__NUXT__')>0?html.indexOf('window.__NUXT__'):undefined));
+ const match=text.match(/SET TRI\s*([\d,.]+)\s*([-+]?\d[\d,.]*)\s*\(([-+]?\d[\d,.]*)%\)/);
+ return match?{symbol:'SET TRI',last:marketNumber(match[1]),change:marketNumber(match[2]),changePercent:marketNumber(match[3]),open:null,low:null,high:null,volumeThousand:null,turnoverMillion:null}:null;
+}
+function splitJsValues(source=''){
+ const values=[];let start=0,quote='',escaped=false,depth=0;
+ for(let i=0;i<source.length;i++){
+  const char=source[i];
+  if(quote){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char===quote)quote='';continue}
+  if(char==='\x22'||char==="'"){quote=char;continue}
+  if('([{'.includes(char)){depth++;continue}
+  if(')]}'.includes(char)){depth--;continue}
+  if(char===','&&depth===0){values.push(source.slice(start,i).trim());start=i+1}
+ }
+ values.push(source.slice(start).trim());return values;
+}
+function parseNuxtLiteral(token=''){
+ const value=token.trim();
+ if(value==='null'||value==='undefined'||value==='void 0')return null;
+ if(value==='true')return true;if(value==='false')return false;
+ if(/^[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?$/i.test(value))return Number(value);
+ if(value.startsWith('\x22')){try{return JSON.parse(value)}catch(_){return value.slice(1,-1)}}
+ if(value.startsWith("'"))return value.slice(1,-1).replace(/\\'/g,"'").replace(/\\\\/g,'\\');
+ const date=value.match(/^new Date\((.*)\)$/s);return date?parseNuxtLiteral(date[1]):null;
+}
+function nuxtParamMap(script=''){
+ const prefix='window.__NUXT__=(function(';
+ if(!script.startsWith(prefix))return new Map();
+ const paramsEnd=script.indexOf('){',prefix.length),invokeStart=script.lastIndexOf('}('),invokeEnd=script.lastIndexOf('))');
+ if(paramsEnd<0||invokeStart<0||invokeEnd<invokeStart)return new Map();
+ const params=script.slice(prefix.length,paramsEnd).split(',').map(value=>value.trim());
+ const args=splitJsValues(script.slice(invokeStart+2,invokeEnd));
+ return new Map(params.map((name,index)=>[name,parseNuxtLiteral(args[index]||'')]));
+}
+function resolveNuxtValue(token,map){const key=String(token||'').trim();return map.has(key)?map.get(key):parseNuxtLiteral(key)}
+function parseSettradeRanking(html){
+ const marker=html.indexOf('window.__NUXT__=(function('),end=marker>=0?html.indexOf('</script>',marker):-1;
+ if(marker<0||end<0)return{asOf:'',items:[]};
+ const script=html.slice(marker,end).trim(),params=nuxtParamMap(script),topStart=script.indexOf('topRanking:{info:');
+ const stocksMarker=topStart>=0?script.indexOf('stocks:[',topStart):-1;
+ if(stocksMarker<0)return{asOf:'',items:[]};
+ const arrayStart=stocksMarker+'stocks:'.length;let depth=0,arrayEnd=-1,quote='',escaped=false;
+ for(let i=arrayStart;i<script.length;i++){
+  const char=script[i];
+  if(quote){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char===quote)quote='';continue}
+  if(char==='\x22'||char==="'"){quote=char;continue}
+  if(char==='[')depth++;else if(char===']'&&--depth===0){arrayEnd=i;break}
+ }
+ if(arrayEnd<0)return{asOf:'',items:[]};
+ const infoPrefix=script.slice(topStart,stocksMarker),asOfToken=infoPrefix.match(/marketDateTime:([^,}]+)/)?.[1];
+ const items=[...script.slice(arrayStart+1,arrayEnd).matchAll(/\{([^{}]+)\}/g)].map(match=>{
+  const fields={};
+  for(const pair of splitJsValues(match[1])){const colon=pair.indexOf(':');if(colon>0)fields[pair.slice(0,colon).trim()]=resolveNuxtValue(pair.slice(colon+1),params)}
+  const aomVolume=marketNumber(fields.aomVolume),aomValue=marketNumber(fields.aomValue);
+  return{symbol:String(fields.symbol||''),last:marketNumber(fields.last),change:marketNumber(fields.change),changePercent:marketNumber(fields.percentChange),volumeThousand:aomVolume===null?null:aomVolume/1000,turnoverMillion:aomValue===null?null:aomValue/1000000};
+ }).filter(item=>item.symbol&&item.last!==null).slice(0,10);
+ return{asOf:String(resolveNuxtValue(asOfToken,params)||''),items};
 }
 function parseSettradeInvestorTypes(html){
  const tables=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(x=>x[1]);
@@ -99,7 +164,7 @@ async function getSettradeOverview(force=false){
  if(!force&&settradeOverviewCache.data&&Date.now()<settradeOverviewCache.expiresAt)return{...settradeOverviewCache.data,cached:true};
  if(settradeOverviewCache.pending)return settradeOverviewCache.pending;
  settradeOverviewCache.pending=(async()=>{
-  const paths=['/th/equities/market-summary/overview?market=SET','/th/equities/market-data/nvdr/value','/th/equities/market-data/historical-report/investor-type','/th/derivatives/overview','/th/equities/market-summary/top-ranking/most-active-value'];
+  const paths=['/th/equities/market-summary/overview?market=SET','/th/equities/market-data/nvdr/value','/th/equities/market-data/historical-report/investor-type','/th/derivatives/overview','/th/home','/th/equities/market-summary/top-ranking/most-active-value','/th/equities/market-summary/top-ranking/most-active-volume','/th/equities/market-summary/top-ranking/top-gainer','/th/equities/market-summary/top-ranking/top-loser'];
   const pages=await Promise.allSettled(paths.map(fetchSettradePage));
   const htmlAt=i=>pages[i]?.status==='fulfilled'?pages[i].value:'';
   const overview=parseSettradeMarket(htmlAt(0));
@@ -108,13 +173,17 @@ async function getSettradeOverview(force=false){
   const foreign=investorTypes.groups.find(row=>row.name==='นักลงทุนต่างประเทศ')||{name:'นักลงทุนต่างประเทศ',buyMillion:null,sellMillion:null,netMillion:null};
   foreign.date=investorTypes.date;
   const tfexText=marketHtmlText(htmlAt(3).slice(0,htmlAt(3).indexOf('window.__NUXT__')>0?htmlAt(3).indexOf('window.__NUXT__'):undefined));
-  const activeHtml=htmlAt(4);
-  const data={...overview,nvdr,investorTypes,foreign,tfex:{available:/Total Market\s*[^-]*\d/i.test(tfexText),delayMinutes:15},activeValue:[],source:'SETTRADE',fetchedAt:new Date().toISOString(),marketDate:investorTypes.date||null,errors:pages.map((page,i)=>page.status==='rejected'?paths[i]:null).filter(Boolean),links:{overview:'https://www.settrade.com/th/equities/market-summary/overview?market=SET',activeValue:'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value',nvdr:'https://www.settrade.com/th/equities/market-data/nvdr/value',investorType:'https://www.settrade.com/th/equities/market-data/historical-report/investor-type',tfex:'https://www.settrade.com/th/derivatives/overview'},activeValueStatus:activeHtml&&activeHtml.includes('table-placeholder')?'SETTRADE โหลดรายการผ่านตารางแบบโต้ตอบ โปรดเปิดดูต้นทาง':'ไม่สามารถอ่านตารางจัดอันดับจากต้นทางได้'};
+  const tri=parseSettradeHomeTri(htmlAt(4));
+  const subIndices=SET_SUB_INDEX_SYMBOLS.map(symbol=>symbol==='SET TRI'?tri:overview.subIndices.find(item=>item.symbol===symbol)).filter(Boolean);
+  const rankings={activeValue:parseSettradeRanking(htmlAt(5)),activeVolume:parseSettradeRanking(htmlAt(6)),gainers:parseSettradeRanking(htmlAt(7)),losers:parseSettradeRanking(htmlAt(8))};
+  const rankingOverview='https://www.settrade.com/th/equities/market-summary/top-ranking/overview';
+  const data={...overview,subIndices,nvdr,investorTypes,foreign,tfex:{available:/Total Market\s*[^-]*\d/i.test(tfexText),delayMinutes:15},rankings,activeValue:rankings.activeValue.items,source:'SETTRADE',fetchedAt:new Date().toISOString(),marketDate:investorTypes.date||null,errors:pages.map((page,i)=>page.status==='rejected'?paths[i]:null).filter(Boolean),links:{overview:'https://www.settrade.com/th/equities/market-summary/overview?market=SET',activeValue:rankingOverview,activeVolume:rankingOverview,gainers:rankingOverview,losers:rankingOverview,nvdr:'https://www.settrade.com/th/equities/market-data/nvdr/value',investorType:'https://www.settrade.com/th/equities/market-data/historical-report/investor-type',tfex:'https://www.settrade.com/th/derivatives/overview'},activeValueStatus:rankings.activeValue.items.length?'':'ข้อมูลจัดอันดับโหลดจากต้นทางไม่สำเร็จ'};
   if(settradeOverviewCache.data){
-   for(const key of ['indices','breadth','closeSummary','nvdr','investorTypes','foreign']){
+   for(const key of ['indices','subIndices','breadth','closeSummary','nvdr','investorTypes','foreign']){
     const empty=key==='closeSummary'?!data[key]:key==='nvdr'?Object.values(data[key]||{}).every(value=>value==null):key==='investorTypes'?!data[key]?.groups?.length:key==='foreign'?(data[key].netMillion==null):!data[key]?.length;
     if(empty)data[key]=settradeOverviewCache.data[key];
    }
+   for(const key of Object.keys(rankings))if(!data.rankings[key]?.items?.length&&settradeOverviewCache.data.rankings?.[key]?.items?.length)data.rankings[key]=settradeOverviewCache.data.rankings[key];
   }
   settradeOverviewCache.data=data;settradeOverviewCache.expiresAt=Date.now()+60000;
   return data;
