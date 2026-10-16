@@ -7,7 +7,7 @@ const ROOT=__dirname;
 const PORT=Number(process.env.PORT)||4173;
 const HOST=process.env.HOST||'127.0.0.1';
 const TYPES={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.ico':'image/x-icon'};
-const PUBLIC_FILES=new Set(['/index.html','/app.js','/auth.js','/style.css','/analysis.css','/privacy.html','/terms.html']);
+const PUBLIC_FILES=new Set(['/index.html','/app.js','/auth.js','/style.css','/analysis.css','/about.html','/privacy.html','/terms.html','/disclaimer.html']);
 const SECURITY_HEADERS={'x-content-type-options':'nosniff','x-frame-options':'DENY','referrer-policy':'same-origin'};
 function send(res,status,obj,headers={}){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':'same-origin',...SECURITY_HEADERS,...headers});res.end(JSON.stringify(obj))}
 const authConfigured=Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_ANON_KEY);
