@@ -298,7 +298,7 @@ function updateTradingViewChart() {
     renderPriceChart([]);
     return;
   }
-  renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt, latestMarket?.levelsHistory || latestMarket?.history || []);
+  renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt, latestMarket?.levelsHistory || latestMarket?.history || [], latestMarket?.indicatorHistory || latestMarket?.history || []);
 }
 
 function setChartLoadState(state, message = '') {
@@ -322,7 +322,23 @@ function computeSmaSeries(values, period) {
   });
 }
 
-function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars) {
+function alignIndicatorSeries(sourceRows, values, visibleRows) {
+  const byTime = new Map(), byDay = new Map();
+  sourceRows.forEach((row, index) => {
+    const value = values[index];
+    byTime.set(Number(row.time), value);
+    const date = new Date(Number(row.time));
+    if (!Number.isNaN(+date)) byDay.set(date.toISOString().slice(0, 10), value);
+  });
+  return visibleRows.map(row => {
+    const exact = byTime.get(Number(row.time));
+    if (exact !== undefined) return exact;
+    const date = new Date(Number(row.time));
+    return Number.isNaN(+date) ? null : (byDay.get(date.toISOString().slice(0, 10)) ?? null);
+  });
+}
+
+function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars, indicatorBars = bars) {
   const host = $('#stock-price-chart');
   if (!host) return;
   const rows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
@@ -335,8 +351,13 @@ function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars) {
     setText('#chart-updated', 'อัปเดตล่าสุด: —');
     return;
   }
-  const analysis = analyseTechnicals(rows, levelBars);
-  const showMacd = chartIndicators.has('macd') && Boolean(analysis?.macdSeries?.length);
+  const calculationRows = (indicatorBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
+  const analysis = analyseTechnicals(calculationRows, levelBars);
+  const alignToChart = values => alignIndicatorSeries(calculationRows, values, rows);
+  const macdSeries = analysis ? alignToChart(analysis.macdSeries) : [];
+  const signalSeries = analysis ? alignToChart(analysis.signalSeries) : [];
+  const macdHistogram = analysis ? alignToChart(analysis.macdHistogram) : [];
+  const showMacd = chartIndicators.has('macd') && macdSeries.some(Number.isFinite);
   const hostWidth = Math.max(320, Math.floor(host.clientWidth || host.parentElement?.clientWidth || 640));
   const minCandleSpace = currentRange === '1Y' ? 4.8 : currentRange === '3M' ? 6 : 7;
   const left = hostWidth < 520 ? 52 : 66, right = hostWidth < 520 ? 10 : 16, top = 22;
@@ -345,13 +366,14 @@ function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars) {
   const priceBottom = 280, volumeBottom = 340, macdTop = 375, macdBottom = 475;
   const plotWidth = width - left - right;
   const closes = rows.map(row => Number(row.close));
-  const smaValues = computeSmaSeries(closes, 20);
+  const calculationCloses = calculationRows.map(row => Number(row.close));
+  const smaValues = alignToChart(computeSmaSeries(calculationCloses, 20));
   const indicatorSeries = [
     ['sma20', smaValues, 'sma20-chart-line'],
-    ['ema20', computeEma(closes, 20), 'ema20-chart-line'],
-    ['ema50', computeEma(closes, 50), 'ema50-chart-line'],
-    ['ema100', computeEma(closes, 100), 'ema100-chart-line'],
-    ['ema200', computeEma(closes, 200), 'ema200-chart-line']
+    ['ema20', alignToChart(computeEma(calculationCloses, 20)), 'ema20-chart-line'],
+    ['ema50', alignToChart(computeEma(calculationCloses, 50)), 'ema50-chart-line'],
+    ['ema100', alignToChart(computeEma(calculationCloses, 100)), 'ema100-chart-line'],
+    ['ema200', alignToChart(computeEma(calculationCloses, 200)), 'ema200-chart-line']
   ];
   const chartLevels = analysis?.levels || findPriceLevels(levelBars, closes.at(-1));
   const levelDetails = [...chartLevels.supportDetails, ...chartLevels.resistanceDetails];
@@ -391,13 +413,13 @@ function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars) {
   }).join('');
   let macdPanel = '';
   if (showMacd) {
-    const macdValues = [...analysis.macdSeries, ...analysis.signalSeries, 0].filter(Number.isFinite);
+    const macdValues = [...macdSeries, ...signalSeries, 0].filter(Number.isFinite);
     const macdMin = Math.min(...macdValues), macdMax = Math.max(...macdValues), macdSpan = macdMax - macdMin || 1;
     const macdY = value => macdTop + (macdMax - value) / macdSpan * (macdBottom - macdTop);
     const zeroY = macdY(0);
-    const macdLine = analysis.macdSeries.map((value, index) => Number.isFinite(value) ? `${x(index)},${macdY(value)}` : '').filter(Boolean).join(' ');
-    const signalLine = analysis.signalSeries.map((value, index) => Number.isFinite(value) ? `${x(index)},${macdY(value)}` : '').filter(Boolean).join(' ');
-    const histogram = analysis.macdHistogram.map((value, index) => {
+    const macdLine = macdSeries.map((value, index) => Number.isFinite(value) ? `${x(index)},${macdY(value)}` : '').filter(Boolean).join(' ');
+    const signalLine = signalSeries.map((value, index) => Number.isFinite(value) ? `${x(index)},${macdY(value)}` : '').filter(Boolean).join(' ');
+    const histogram = macdHistogram.map((value, index) => {
       if (!Number.isFinite(value)) return '';
       const py = macdY(value), barWidth = Math.max(1.4, Math.min(8, step * .55));
       return `<rect class="macd-histogram ${value >= 0 ? 'positive' : 'negative'}" x="${x(index) - barWidth / 2}" y="${Math.min(py, zeroY)}" width="${barWidth}" height="${Math.max(1, Math.abs(zeroY - py))}"/>`;
@@ -698,7 +720,7 @@ function renderPriceLevels(bars, last, calculatedLevels = null) {
   return levels;
 }
 
-function drawSignals(bars, levelBars = bars) {
+function drawSignals(bars, levelBars = bars, displayBars = bars) {
   const analysis = analyseTechnicals(bars, levelBars);
   if (!analysis) {
     const priceBars = (levelBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
@@ -748,7 +770,11 @@ function drawSignals(bars, levelBars = bars) {
       ? `หลักฐานเอนลบ ${analysis.sell}/${analysis.available} ข้อ · หากหลุดแนวรับ 1 ${number(support1)} แรงกดดันอาจต่อเนื่อง; การกลับยืนเหนือแนวต้าน 1 ${number(resistance1)} จะทำให้มุมมองลบอ่อนลง`
       : `สัญญาณบวก ${analysis.buy} ข้อและลบ ${analysis.sell} ข้อ · รอราคาเลือกทิศทางเหนือแนวต้าน 1 ${number(resistance1)} หรือหลุดแนวรับ 1 ${number(support1)} ก่อนพิจารณา`;
   setText('#technical-plan', plan);
-  setText('#analysis-note', `${analysis.overall === 'ซื้อ' ? 'หลักฐานเอนบวก' : analysis.overall === 'ขาย' ? 'หลักฐานเอนลบ' : 'สัญญาณยังผสม'} · ซื้อ ${analysis.buy} / กลาง ${analysis.available - analysis.buy - analysis.sell} / ขาย ${analysis.sell} · มีข้อมูล ${analysis.available}/${analysis.total} indicators · ช่วง ${currentRange} (${analysis.values.length} แท่ง)`);
+  const displayedCount = (displayBars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0).length;
+  const barsNote = analysis.values.length > displayedCount
+    ? `แสดง ${displayedCount} แท่ง · ใช้ย้อนหลัง ${analysis.values.length} แท่งคำนวณ`
+    : `${analysis.values.length} แท่ง`;
+  setText('#analysis-note', `${analysis.overall === 'ซื้อ' ? 'หลักฐานเอนบวก' : analysis.overall === 'ขาย' ? 'หลักฐานเอนลบ' : 'สัญญาณยังผสม'} · ซื้อ ${analysis.buy} / กลาง ${analysis.available - analysis.buy - analysis.sell} / ขาย ${analysis.sell} · มีข้อมูล ${analysis.available}/${analysis.total} indicators · ช่วง ${currentRange} (${barsNote})`);
   return analysis;
 }
 function getAlertPref(symbol) { return alertPrefs[symbol] || { technical: true, above: '', below: '' }; }
@@ -808,7 +834,7 @@ function evaluateWatchlistAlerts(rows) {
   localStorage.setItem('setscope-alert-states', JSON.stringify(alertStates));
 }
 function updateStockCards(rows) {
-  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt, latestMarket?.levelsHistory || latestMarket?.history || []);
+  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt, latestMarket?.levelsHistory || latestMarket?.history || [], latestMarket?.indicatorHistory || latestMarket?.history || []);
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   renderWatchlist(rows);
   const quote = bySymbol[activeSymbol];
@@ -834,7 +860,7 @@ function updateStockCards(rows) {
   setText('#chart-meta', `SET:${activeSymbol} · ${activeName} · THB`);
   updateWatchlistAddButton();
   setText('#history-count', String(latestMarket?.history?.length || 0));
-  drawSignals(latestMarket?.history || [], latestMarket?.levelsHistory || latestMarket?.history || []);
+  drawSignals(latestMarket?.indicatorHistory || latestMarket?.history || [], latestMarket?.levelsHistory || latestMarket?.history || [], latestMarket?.history || []);
 }
 async function getMarket() {
   const changingChart = latestMarketSymbol !== activeSymbol || latestMarketRange !== currentRange;

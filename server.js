@@ -277,9 +277,9 @@ async function getMarket(symbols,active,range){
  let selected=stocks.find(x=>x.symbol===active);
  if(selected&&(rangeName!=='1d'||interval!=='5m')){try{const hist=shapeChart(await yahooChart(active+'.BK',rangeName,interval),active);selected={...selected,history:hist.history}}catch(e){errors.push(e.message)}}
  const history=selected?.history||[];
- let levelsHistory=history;
- if(selected&&history.length<40){const[fallbackRange,fallbackInterval]=levelFallbackPeriods[range]||levelFallbackPeriods['1M'];try{const fallback=shapeChart(await yahooChart(active+'.BK',fallbackRange,fallbackInterval),active);if(fallback.history.length>history.length)levelsHistory=fallback.history}catch(e){errors.push(`แนวรับแนวต้าน: ${e.message}`)}}
- return{stocks,indices:index?[index]:[],history,levelsHistory,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
+ let levelsHistory=history,indicatorHistory=history;
+ if(selected&&history.length<40){const[fallbackRange,fallbackInterval]=levelFallbackPeriods[range]||levelFallbackPeriods['1M'];try{const fallback=shapeChart(await yahooChart(active+'.BK',fallbackRange,fallbackInterval),active);if(fallback.history.length>history.length){levelsHistory=fallback.history;indicatorHistory=fallback.history}}catch(e){errors.push(`ข้อมูลย้อนหลังสำหรับการวิเคราะห์: ${e.message}`)}}
+ return{stocks,indices:index?[index]:[],history,levelsHistory,indicatorHistory,fetchedAt:new Date().toISOString(),provider:'Yahoo Finance',delayMinutes:15,errors}
 }
 async function handle(req,res){for(const[name,value]of Object.entries(SECURITY_HEADERS))res.setHeader(name,value);const url=new URL(req.url,'http://localhost');
  if(url.pathname==='/healthz'){return send(res,200,{ok:true,service:'setscope',uptimeSec:Math.round(process.uptime()),cacheEntries:cache.size,time:new Date().toISOString()})}
