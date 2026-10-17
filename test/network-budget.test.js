@@ -26,6 +26,7 @@ test('ES module split preserves the six-request main-page static budget', () => 
 test('cache keys include every public input and never cache watchlist responses globally', () => {
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.match(serverSource, /`market:\$\{symbols\.join\(','\)\}\|\$\{active\}\|\$\{range\}`/);
-  assert.match(serverSource, /cached\('wn:'\s*\+\s*cacheKey,\s*300000/);
-  assert.doesNotMatch(serverSource, /cached\([^\n]*watchlists/);
+  assert.match(serverSource, /loadCached\(res,\s*'wn:'\s*\+\s*cacheKey,\s*PROVIDER_POLICIES\.watchlistNews/);
+  const watchlistHandler = serverSource.match(/async function handleWatchlists[\s\S]*?\n}\r?\n\r?\nasync function handleNewsAnalysis/)?.[0] || '';
+  assert.doesNotMatch(watchlistHandler, /loadCached|responseCache/);
 });

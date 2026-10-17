@@ -6,6 +6,7 @@ const {
   parseSettradeMarket,
   parseSettradeNvdr
 } = require('../lib/settrade-parser');
+const { PROVIDER_POLICIES, createMemoryCache } = require('./reliability');
 
 const PATHS = Object.freeze([
   '/th/equities/market-summary/overview?market=SET',
@@ -15,8 +16,8 @@ const PATHS = Object.freeze([
   '/th/equities/market-summary/top-ranking/most-active-value'
 ]);
 
-function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } = {}) {
-  let overviewCache = { data: null, expiresAt: 0, pending: null };
+function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now, cache = createMemoryCache({ maxEntries: 2, now }) } = {}) {
+  let lastData = null;
 
   async function fetchPage(pathname) {
     const response = await fetchImpl(`https://www.settrade.com${pathname}`, {
@@ -31,12 +32,9 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } 
   }
 
   async function getOverview(force = false) {
-    if (!force && overviewCache.data && now() < overviewCache.expiresAt) {
-      return { ...overviewCache.data, cached: true };
-    }
-    if (overviewCache.pending) return overviewCache.pending;
-    overviewCache.pending = (async () => {
+    return cache.get('settrade:overview', PROVIDER_POLICIES.settrade, async () => {
       const pages = await Promise.allSettled(PATHS.map(fetchPage));
+      if (pages.every(page => page.status === 'rejected')) throw Error('SETTRADE upstream unavailable');
       const htmlAt = index => pages[index]?.status === 'fulfilled' ? pages[index].value : '';
       const overview = parseSettradeMarket(htmlAt(0));
       const nvdr = parseSettradeNvdr(htmlAt(1));
@@ -66,7 +64,7 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } 
           ? 'SETTRADE โหลดรายการผ่านตารางแบบโต้ตอบ โปรดเปิดดูต้นทาง'
           : 'ไม่สามารถอ่านตารางจัดอันดับจากต้นทางได้'
       };
-      if (overviewCache.data) {
+      if (lastData) {
         for (const key of ['indices', 'breadth', 'closeSummary', 'nvdr', 'foreign']) {
           const empty = key === 'closeSummary'
             ? !data[key]
@@ -75,19 +73,12 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } 
               : key === 'foreign'
                 ? data[key].netMillion == null
                 : !data[key]?.length;
-          if (empty) data[key] = overviewCache.data[key];
+          if (empty) data[key] = lastData[key];
         }
       }
-      overviewCache.data = data;
-      overviewCache.expiresAt = now() + 60000;
+      lastData = data;
       return data;
-    })().catch(error => {
-      if (overviewCache.data) {
-        return { ...overviewCache.data, cached: true, stale: true, errors: [error.message] };
-      }
-      throw error;
-    }).finally(() => { overviewCache.pending = null; });
-    return overviewCache.pending;
+    }, { force });
   }
 
   return { getOverview };

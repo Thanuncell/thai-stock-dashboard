@@ -37,6 +37,9 @@ test('failed loads clear pending state and market policy never serves stale data
 
   await assert.rejects(cache.get('market:PTT', PROVIDER_POLICIES.market, async () => { throw Error('upstream down'); }), /upstream down/);
   assert.equal(cache.pendingSize(), 0);
+  let repeatedLoads = 0;
+  await assert.rejects(cache.get('market:PTT', PROVIDER_POLICIES.market, async () => { repeatedLoads += 1; return { value: 2 }; }), /upstream down/);
+  assert.equal(repeatedLoads, 0);
 });
 
 test('SETTRADE stale fallback is bounded and explicitly marked', async () => {
@@ -49,6 +52,11 @@ test('SETTRADE stale fallback is bounded and explicitly marked', async () => {
   assert.equal(fallback.meta.status, 'stale');
   assert.equal(fallback.value.stale, true);
   assert.ok(fallback.meta.staleAgeMs > 0);
+
+  let repeatedLoads = 0;
+  const backedOff = await cache.get('settrade', PROVIDER_POLICIES.settrade, async () => { repeatedLoads += 1; return {}; });
+  assert.equal(backedOff.meta.status, 'stale');
+  assert.equal(repeatedLoads, 0);
 
   now += PROVIDER_POLICIES.settrade.staleIfErrorMs + 1;
   await assert.rejects(cache.get('settrade', PROVIDER_POLICIES.settrade, async () => { throw Error('still down'); }), /still down/);

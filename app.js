@@ -225,7 +225,12 @@ function renderSettradeOverview(data) {
   const net = Number(foreign.netMillion);
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(foreign.netMillion)}</strong><small>ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}</small>`;
   setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
-  setText('#settrade-updated', data.stale ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${stamp(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${stamp(data.fetchedAt)}`);
+  const settradeStatus = data.stale
+    ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${stamp(data.fetchedAt)}`
+    : data.errors?.length
+      ? `ข้อมูล SETTRADE บางส่วนไม่พร้อม · ดึงล่าสุด ${stamp(data.fetchedAt)}`
+      : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${stamp(data.fetchedAt)}`;
+  setText('#settrade-updated', settradeStatus);
   setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${data.marketDate}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
 }
 async function getSettradeOverview(force = false) {

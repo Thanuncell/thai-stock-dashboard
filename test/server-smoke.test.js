@@ -96,6 +96,7 @@ test('health and static responses have strict security headers without invalid C
   const health = await request(base, '/healthz');
   assert.equal(health.status, 200);
   assert.equal(JSON.parse(health.body).service, 'setscope');
+  assert.match(health.headers['x-request-id'], /^[0-9a-f-]{36}$/i);
   assert.match(health.headers['content-security-policy'], /default-src 'self'/);
   assert.match(health.headers['content-security-policy'], /connect-src 'self' https:\/\/project\.supabase\.co/);
   assert.match(health.headers['content-security-policy'], /style-src 'self' 'unsafe-inline' https:\/\/fonts\.googleapis\.com/);
