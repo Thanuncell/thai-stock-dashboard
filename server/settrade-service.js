@@ -6,6 +6,7 @@ const {
   parseSettradeMarket,
   parseSettradeNvdr
 } = require('../lib/settrade-parser');
+const { PROVIDER_POLICIES, createMemoryCache } = require('./reliability');
 
 const PATHS = Object.freeze([
   '/th/equities/market-summary/overview?market=SET',
@@ -15,9 +16,7 @@ const PATHS = Object.freeze([
   '/th/equities/market-summary/top-ranking/most-active-value'
 ]);
 
-function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } = {}) {
-  let overviewCache = { data: null, expiresAt: 0, pending: null };
-
+function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now, cache = createMemoryCache({ maxEntries: 2, now }) } = {}) {
   async function fetchPage(pathname) {
     const response = await fetchImpl(`https://www.settrade.com${pathname}`, {
       headers: {
@@ -31,12 +30,9 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } 
   }
 
   async function getOverview(force = false) {
-    if (!force && overviewCache.data && now() < overviewCache.expiresAt) {
-      return { ...overviewCache.data, cached: true };
-    }
-    if (overviewCache.pending) return overviewCache.pending;
-    overviewCache.pending = (async () => {
+    return cache.get('settrade:overview', PROVIDER_POLICIES.settrade, async () => {
       const pages = await Promise.allSettled(PATHS.map(fetchPage));
+      if (pages.every(page => page.status === 'rejected')) throw Error('SETTRADE upstream unavailable');
       const htmlAt = index => pages[index]?.status === 'fulfilled' ? pages[index].value : '';
       const overview = parseSettradeMarket(htmlAt(0));
       const nvdr = parseSettradeNvdr(htmlAt(1));
@@ -45,6 +41,8 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } 
       const nuxtIndex = tfexHtml.indexOf('window.__NUXT__');
       const tfexText = marketHtmlText(tfexHtml.slice(0, nuxtIndex > 0 ? nuxtIndex : undefined));
       const activeHtml = htmlAt(4);
+      const fetchedAt = new Date().toISOString();
+      const errors = pages.map((page, index) => page.status === 'rejected' ? PATHS[index] : null).filter(Boolean);
       const data = {
         ...overview,
         nvdr,
@@ -52,9 +50,14 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } 
         tfex: { available: /Total Market\s*[^-]*\d/i.test(tfexText), delayMinutes: 15 },
         activeValue: [],
         source: 'SETTRADE',
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
+        asOf: null,
+        delayed: true,
+        stale: false,
+        partial: errors.length > 0,
+        dataState: errors.length ? 'partial' : 'delayed',
         marketDate: foreign.date || null,
-        errors: pages.map((page, index) => page.status === 'rejected' ? PATHS[index] : null).filter(Boolean),
+        errors,
         links: {
           overview: 'https://www.settrade.com/th/equities/market-summary/overview?market=SET',
           activeValue: 'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value',
@@ -66,28 +69,8 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now } 
           ? 'SETTRADE โหลดรายการผ่านตารางแบบโต้ตอบ โปรดเปิดดูต้นทาง'
           : 'ไม่สามารถอ่านตารางจัดอันดับจากต้นทางได้'
       };
-      if (overviewCache.data) {
-        for (const key of ['indices', 'breadth', 'closeSummary', 'nvdr', 'foreign']) {
-          const empty = key === 'closeSummary'
-            ? !data[key]
-            : key === 'nvdr'
-              ? Object.values(data[key] || {}).every(value => value == null)
-              : key === 'foreign'
-                ? data[key].netMillion == null
-                : !data[key]?.length;
-          if (empty) data[key] = overviewCache.data[key];
-        }
-      }
-      overviewCache.data = data;
-      overviewCache.expiresAt = now() + 60000;
       return data;
-    })().catch(error => {
-      if (overviewCache.data) {
-        return { ...overviewCache.data, cached: true, stale: true, errors: [error.message] };
-      }
-      throw error;
-    }).finally(() => { overviewCache.pending = null; });
-    return overviewCache.pending;
+    }, { force });
   }
 
   return { getOverview };

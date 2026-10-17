@@ -16,8 +16,11 @@ import {
   normalizeLists,
   pageFromHash,
   pageList,
+  quoteChange,
   sentimentHeadline,
-  stamp
+  stamp,
+  summarizeBreadth,
+  toFiniteNumber
 } from './client/domain.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -191,29 +194,35 @@ function renderSettradeOverview(data) {
     if (symbol === 'TFEX') return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ดูข้อมูลต้นทาง</strong><small>ข้อมูลล่าช้า 15 นาที · อ้างอิงแหล่งข้อมูลด้านล่าง</small></article>`;
     const item = indices.find(row => row.symbol === symbol);
     if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
-    const trend = Number(item.change) > 0 ? 'up' : Number(item.change) < 0 ? 'down' : 'neutral';
-    const arrow = Number(item.change) > 0 ? '▲' : Number(item.change) < 0 ? '▼' : '•';
-    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${arrow} ${number(Math.abs(Number(item.change || 0)))} (${number(item.changePercent)}%) · มูลค่า ${number(item.turnoverMillion)} ลบ.</small></article>`;
+    const change = toFiniteNumber(item.change);
+    const trend = change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
+    const arrow = change > 0 ? '▲' : change < 0 ? '▼' : '•';
+    return `<article class="market-index-card"><span>${symbol}</span><strong>${number(item.last)}</strong><small class="${trend}">${arrow} ${number(change === null ? null : Math.abs(change))} (${number(item.changePercent)}%) · มูลค่า ${number(item.turnoverMillion)} ลบ.</small></article>`;
   }).join('');
   const setIndex = indices.find(row => row.symbol === 'SET');
   if (setIndex) {
-    const change = Number(setIndex.change || 0), pct = Number(setIndex.changePercent || 0);
-    $('#set-index').innerHTML = `${number(setIndex.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
-    setText('#set-volume', `${number(Number(setIndex.volumeThousand || 0) * 1000)} หุ้น`);
+    const change = toFiniteNumber(setIndex.change), pct = toFiniteNumber(setIndex.changePercent);
+    const trend = change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
+    const arrow = change > 0 ? '▲' : change < 0 ? '▼' : '•';
+    const volumeThousand = toFiniteNumber(setIndex.volumeThousand);
+    $('#set-index').innerHTML = `${number(setIndex.last)} <span class="${trend}">${arrow} ${number(change === null ? null : Math.abs(change))} (${number(pct)}%)</span>`;
+    setText('#set-volume', `${number(volumeThousand === null ? null : volumeThousand * 1000)} หุ้น`);
     setText('#set-range', `${number(setIndex.high)} / ${number(setIndex.low)}`);
     setText('#set-turnover', `${number(setIndex.turnoverMillion)} ล้านบาท`);
     $('#set-turnover').title = 'มูลค่าซื้อขายจากหน้า SETTRADE · หน่วยล้านบาท';
   }
   const breadthLabels = { Gainers: 'ปรับขึ้น', Unchanges: 'ไม่เปลี่ยนแปลง', Losers: 'ปรับลง' };
   const breadth = data.breadth || [];
-  const breadthTotals = breadth.flatMap(group => group.items || []).reduce((totals, item) => {
-    if (/gainers/i.test(item.label || '')) totals.up += Number(item.count || 0);
-    if (/losers/i.test(item.label || '')) totals.down += Number(item.count || 0);
-    return totals;
-  }, { up: 0, down: 0 });
-  const condition = breadth.length ? breadthTotals.up > breadthTotals.down ? 'หุ้นปรับขึ้นมากกว่าปรับลง' : breadthTotals.up < breadthTotals.down ? 'หุ้นปรับลงมากกว่าปรับขึ้น' : 'หุ้นปรับขึ้นและลงใกล้เคียงกัน' : 'ยังไม่มีข้อมูล breadth';
+  const breadthTotals = summarizeBreadth(breadth);
+  const condition = breadthTotals.comparable
+    ? breadthTotals.up > breadthTotals.down ? 'หุ้นปรับขึ้นมากกว่าปรับลง' : breadthTotals.up < breadthTotals.down ? 'หุ้นปรับลงมากกว่าปรับขึ้น' : 'หุ้นปรับขึ้นและลงใกล้เคียงกัน'
+    : 'ยังไม่มีข้อมูล breadth ที่เปรียบเทียบได้';
   const conditionNode = $('#market-condition');
-  if (conditionNode) { conditionNode.textContent = `ภาวะตลาด: ${condition}`; conditionNode.className = `market-condition ${breadthTotals.up > breadthTotals.down ? 'up' : breadthTotals.up < breadthTotals.down ? 'down' : ''}`; }
+  if (conditionNode) {
+    const direction = breadthTotals.comparable ? (breadthTotals.up > breadthTotals.down ? 'up' : breadthTotals.up < breadthTotals.down ? 'down' : '') : '';
+    conditionNode.textContent = `ภาวะตลาด: ${condition}`;
+    conditionNode.className = `market-condition ${direction}`;
+  }
   $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<div class="market-breadth-group"><b>${escapeHtml(group.market)}</b>${(group.items || []).map(item => {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
     return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${number(item.volumeThousand)} พันหุ้น</small></div>`;
@@ -222,10 +231,16 @@ function renderSettradeOverview(data) {
   const nvdr = data.nvdr || {};
   $('#nvdr-metrics').innerHTML = `<div><small>มูลค่าตลาด SET + mai</small><strong>${number(nvdr.marketMillion)}</strong><em>ล้านบาท</em></div><div><small>มูลค่าซื้อขาย NVDR</small><strong>${number(nvdr.nvdrMillion)}</strong><em>ล้านบาท</em></div><div><small>สัดส่วน NVDR</small><strong>${number(nvdr.ratioPercent)}</strong><em>%</em></div>`;
   const foreign = data.foreign || {};
-  const net = Number(foreign.netMillion);
+  const net = toFiniteNumber(foreign.netMillion);
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(foreign.netMillion)}</strong><small>ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}</small>`;
   setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
-  setText('#settrade-updated', data.stale ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${stamp(data.fetchedAt)}` : `ข้อมูลจาก SETTRADE · ดึงล่าสุด ${stamp(data.fetchedAt)}`);
+  const timeLabel = data.asOf ? `ข้อมูล ณ ${stamp(data.asOf)}` : `ดึงเมื่อ ${stamp(data.fetchedAt)}`;
+  const settradeStatus = data.dataState === 'stale' || data.stale
+    ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${timeLabel}`
+    : data.dataState === 'partial' || data.errors?.length
+      ? `ข้อมูล SETTRADE บางส่วนไม่พร้อม · ${timeLabel}`
+      : `ข้อมูลจาก SETTRADE · ${timeLabel}`;
+  setText('#settrade-updated', settradeStatus);
   setText('#market-data-date', data.marketDate ? `ข้อมูลนักลงทุน ณ ${data.marketDate}` : 'แสดงเวลาที่ดึงข้อมูลจาก SETTRADE');
 }
 async function getSettradeOverview(force = false) {
@@ -345,7 +360,7 @@ function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars, indicator
   const y = value => top + (max - value) / span * (priceBottom - top);
   const step = plotWidth / rows.length, candleWidth = Math.max(2, Math.min(12, step * .62));
   const x = index => left + step * index + step / 2;
-  const volumeMax = Math.max(...rows.map(row => Number(row.volume) || 0), 1);
+  const volumeMax = Math.max(...rows.map(row => toFiniteNumber(row.volume)).filter(value => value !== null && value >= 0), 1);
   const grid = Array.from({ length: 5 }, (_, index) => {
     const value = max - span * index / 4, py = y(value);
     return `<line class="chart-grid" x1="${left}" y1="${py}" x2="${width - right}" y2="${py}"/><text class="chart-axis-text" x="${left - 9}" y="${py + 3}" text-anchor="end">${number(value)}</text>`;
@@ -353,11 +368,14 @@ function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars, indicator
   const candles = rows.map((bar, index) => {
     const open = Number(bar.open), close = Number(bar.close), high = Number(bar.high), low = Number(bar.low);
     const rising = close >= open, cx = x(index), bodyTop = Math.min(y(open), y(close)), bodyHeight = Math.max(1.4, Math.abs(y(open) - y(close)));
-    const volume = Math.max(0, Number(bar.volume) || 0), volumeHeight = volume / volumeMax * (volumeBottom - priceBottom - 6);
+    const rawVolume = toFiniteNumber(bar.volume);
+    const volume = rawVolume === null ? null : Math.max(0, rawVolume);
+    const volumeHeight = volume === null ? 0 : volume / volumeMax * (volumeBottom - priceBottom - 6);
+    const volumeBar = volume === null ? '' : `<rect class="volume-bar" x="${cx - candleWidth / 2}" y="${volumeBottom - volumeHeight}" width="${candleWidth}" height="${volumeHeight}"/>`;
     const date = new Date(bar.time);
     const dateText = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: currentRange === '1D' || currentRange === '1W' ? '2-digit' : undefined, minute: currentRange === '1D' || currentRange === '1W' ? '2-digit' : undefined });
     const detail = `${dateText} · O ${number(open)} · H ${number(high)} · L ${number(low)} · C ${number(close)} · Vol ${number(volume)}`;
-    return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/><rect class="volume-bar" x="${cx - candleWidth / 2}" y="${volumeBottom - volumeHeight}" width="${candleWidth}" height="${volumeHeight}"/><rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
+    return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/>${volumeBar}<rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
   }).join('');
   const indicators = indicatorSeries.filter(([key]) => chartIndicators.has(key)).map(([, values, className]) => {
     const points = values.map((value, index) => value == null ? '' : `${x(index)},${y(value)}`).filter(Boolean).join(' ');
@@ -529,9 +547,20 @@ function renderMovers(rows = []) {
   const list = $('#mover-list'); if (!list) return;
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   const values = watchlist.map(item => ({ ...item, quote: bySymbol[item.symbol] })).filter(item => item.quote && Number.isFinite(Number(item.quote.last)));
-  const pct = item => Number(item.quote.prior) ? (Number(item.quote.last) - Number(item.quote.prior)) / Number(item.quote.prior) * 100 : 0;
-  values.sort((a, b) => moverMode === 'up' ? pct(b) - pct(a) : moverMode === 'down' ? pct(a) - pct(b) : Number(b.quote.volume || 0) - Number(a.quote.volume || 0));
-  list.innerHTML = values.length ? values.map(item => { const change = Number(item.quote.last) - Number(item.quote.prior || 0); return `<button class="mover-row" type="button" data-mover-symbol="${escapeHtml(item.symbol)}" data-mover-name="${escapeHtml(item.name)}"><span><b>${escapeHtml(item.symbol)}</b><small>${escapeHtml(item.name)}</small></span><span class="mover-quote"><b>${number(item.quote.last)}</b><small class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${pct(item).toFixed(2)}%</small></span></button>`; }).join('') : '<div class="mover-empty">ยังไม่มีข้อมูลหุ้นใน Watchlist นี้</div>';
+  const pct = item => quoteChange(item.quote.last, item.quote.prior).percent;
+  const descending = value => value === null ? Number.NEGATIVE_INFINITY : value;
+  const ascending = value => value === null ? Number.POSITIVE_INFINITY : value;
+  values.sort((a, b) => moverMode === 'up'
+    ? descending(pct(b)) - descending(pct(a))
+    : moverMode === 'down'
+      ? ascending(pct(a)) - ascending(pct(b))
+      : descending(toFiniteNumber(b.quote.volume)) - descending(toFiniteNumber(a.quote.volume)));
+  list.innerHTML = values.length ? values.map(item => {
+    const { change, percent } = quoteChange(item.quote.last, item.quote.prior);
+    const direction = change === null ? '' : change >= 0 ? 'up' : 'down';
+    const changeText = percent === null ? '—' : `${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%`;
+    return `<button class="mover-row" type="button" data-mover-symbol="${escapeHtml(item.symbol)}" data-mover-name="${escapeHtml(item.name)}"><span><b>${escapeHtml(item.symbol)}</b><small>${escapeHtml(item.name)}</small></span><span class="mover-quote"><b>${number(item.quote.last)}</b><small class="${direction}">${changeText}</small></span></button>`;
+  }).join('') : '<div class="mover-empty">ยังไม่มีข้อมูลหุ้นใน Watchlist นี้</div>';
 }
 
 function updateSignalDonut(buy, hold, sell, total) {
@@ -692,11 +721,12 @@ function updateStockCards(rows) {
     setText('#analysis-note', 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้');
     return;
   }
-  const change = Number(quote.last) - Number(quote.prior);
-  const percent = Number(quote.prior) ? change / Number(quote.prior) * 100 : 0;
+  const { change, percent } = quoteChange(quote.last, quote.prior);
   setText('#chart-price', number(quote.last));
-  setText('#chart-change', `${change >= 0 ? '+' : ''}${number(change)} (${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%)`);
-  $('#chart-change').className = change >= 0 ? 'up' : 'down';
+  setText('#chart-change', change === null || percent === null
+    ? '— (ไม่มีราคาปิดก่อนหน้า)'
+    : `${change >= 0 ? '+' : ''}${number(change)} (${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%)`);
+  $('#chart-change').className = change === null ? '' : change >= 0 ? 'up' : 'down';
   if (!activeName || activeName === activeSymbol) activeName = quote.fullName || activeSymbol;
   setText('#chart-name', activeName);
   setText('#chart-meta', `SET:${activeSymbol} · ${activeName} · THB`);
@@ -741,7 +771,14 @@ async function getMarket() {
       $('#set-turnover').title = index.turnoverMillionBaht == null ? 'ต้องตั้งค่า SET_API_KEY ใน Render เพื่อแสดงมูลค่าซื้อขายจากข้อมูลของ SET' : 'ข้อมูลมูลค่าซื้อขายจาก SET API · หน่วยล้านบาท';
     }
     const selected = stocks.find(item => item.symbol === activeSymbol);
-    if (selected) setText('#chart-meta', `SET:${activeSymbol} · ${activeName || selected.fullName} · THB`);
+    if (selected) {
+      const stateLabel = data.dataState === 'partial'
+        ? 'ข้อมูลบางส่วน'
+        : data.dataState === 'stale'
+          ? 'ข้อมูลเก่า'
+          : data.delayed ? `ล่าช้า ${data.delayMinutes || 15} นาที` : 'ข้อมูลล่าสุด';
+      setText('#chart-meta', `SET:${activeSymbol} · ${activeName || selected.fullName} · THB · ${stateLabel} · ${stamp(data.asOf || data.fetchedAt)}`);
+    }
   } catch (error) {
     if (!marketRequestSequence.isCurrent(requestId)) return;
     console.warn('Market data refresh failed', error);
@@ -763,7 +800,9 @@ async function getNews() {
     latestNews = data.items || [];
     renderNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
-    setNewsStatus(`ย้อนหลัง 30 วัน · อัปเดต ${stamp(data.fetchedAt)}`);
+    const state = data.dataState === 'partial' ? 'บางแหล่งข่าวไม่พร้อม' : data.dataState === 'unavailable' ? 'แหล่งข่าวไม่พร้อม' : 'ข้อมูลล่าสุด';
+    const freshness = data.asOf ? `ข่าวล่าสุด ${stamp(data.asOf)}` : 'ยังไม่มีเวลาข่าวที่ยืนยันได้';
+    setNewsStatus(`ย้อนหลัง 30 วัน · ${state} · ${freshness} · ตรวจเมื่อ ${stamp(data.fetchedAt)}`);
   } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน'); }
   finally {
     if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }

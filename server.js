@@ -8,6 +8,14 @@ const { normalizeMarketSymbols, normalizeSymbol, normalizeWatchlistNewsStocks, n
 const { createAuthService } = require('./server/auth-service');
 const { createMarketService } = require('./server/market-service');
 const { createNewsService } = require('./server/news-service');
+const { createObservability } = require('./server/observability');
+const {
+  PROVIDER_POLICIES,
+  createMemoryCache,
+  createWatchlistNewsCacheKey,
+  isTransientProviderError,
+  retryWithBackoff
+} = require('./server/reliability');
 const { createSettradeService } = require('./server/settrade-service');
 const { createWatchlistService } = require('./server/watchlist-service');
 
@@ -56,6 +64,7 @@ const SECURITY_HEADERS = {
 };
 
 function send(res, status, body, headers = {}) {
+  observability.markPayload(res, body);
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -105,22 +114,21 @@ setInterval(() => {
   }
 }, 60000).unref();
 
-const cache = new Map();
-async function cached(key, ttlMs, load) {
-  const hit = cache.get(key);
-  if (hit && hit.exp > Date.now()) return hit.value;
-  const value = await load();
-  cache.set(key, { value, exp: Date.now() + ttlMs });
-  if (cache.size > 200) cache.delete(cache.keys().next().value);
-  return value;
-}
-
-const authService = createAuthService({ send });
-const marketService = createMarketService();
-const newsService = createNewsService();
-const settradeService = createSettradeService();
-const watchlistService = createWatchlistService();
+const observability = createObservability();
+const responseCache = createMemoryCache({ maxEntries: 200 });
+const providerFetch = observability.observedFetch(globalThis.fetch);
+const authService = createAuthService({ send, fetchImpl: providerFetch });
+const marketService = createMarketService({ fetchImpl: providerFetch });
+const newsService = createNewsService({ fetchImpl: providerFetch });
+const settradeService = createSettradeService({ fetchImpl: providerFetch });
+const watchlistService = createWatchlistService({ fetchImpl: providerFetch });
 const newsAnalysisCalls = new Map();
+
+async function loadCached(res, key, policy, load, options) {
+  const result = await responseCache.get(key, policy, load, options);
+  observability.markCache(res, result.meta);
+  return result.value;
+}
 
 async function handleWatchlists(req, res, user) {
   if (req.method === 'GET') {
@@ -197,12 +205,15 @@ function serveStatic(url, res) {
 async function handle(req, res) {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
   const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/healthz' || url.pathname.startsWith('/api/')) {
+    observability.startRequest(req, res, url.pathname);
+  }
   if (url.pathname === '/healthz') {
     return send(res, 200, {
       ok: true,
       service: 'setscope',
       uptimeSec: Math.round(process.uptime()),
-      cacheEntries: cache.size,
+      cacheEntries: responseCache.size(),
       time: new Date().toISOString()
     });
   }
@@ -233,13 +244,21 @@ async function handle(req, res) {
   if (url.pathname === '/api/search') {
     const query = (url.searchParams.get('q') || '').trim().slice(0, 80);
     if (query.length < 1) return send(res, 200, { items: [] });
-    try { return send(res, 200, { items: await marketService.search(query), provider: 'Yahoo Finance' }); }
+    try {
+      const items = await loadCached(res, `search:${query.toLocaleLowerCase('th')}`, PROVIDER_POLICIES.search, () => retryWithBackoff(
+        () => marketService.search(query),
+        { maxAttempts: 2, baseDelayMs: 100, shouldRetry: isTransientProviderError }
+      ));
+      return send(res, 200, { items, provider: 'Yahoo Finance' });
+    }
     catch (error) { return send(res, 502, { error: error.message, items: [] }); }
   }
   if (url.pathname === '/api/settrade-overview') {
     try {
       const force = url.searchParams.get('refresh') === '1' && !limited(`refresh:${user.id}`, 3);
-      return send(res, 200, await settradeService.getOverview(force));
+      const result = await settradeService.getOverview(force);
+      observability.markCache(res, result.meta);
+      return send(res, 200, result.value);
     } catch (error) {
       return send(res, 502, { error: 'ดึงข้อมูล SETTRADE ไม่สำเร็จ', detail: error.message });
     }
@@ -253,9 +272,10 @@ async function handle(req, res) {
       if (!active) return send(res, 400, { error: 'ชื่อย่อหุ้นไม่ถูกต้อง' });
       if (!symbols.includes(active)) symbols.push(active);
       const range = url.searchParams.get('range') || '1D';
-      return send(res, 200, await cached(
+      return send(res, 200, await loadCached(
+        res,
         `market:${symbols.join(',')}|${active}|${range}`,
-        30000,
+        PROVIDER_POLICIES.market,
         () => marketService.getMarket(symbols, active, range)
       ));
     } catch (error) {
@@ -263,15 +283,15 @@ async function handle(req, res) {
     }
   }
   if (url.pathname === '/api/news') {
-    try { return send(res, 200, await cached('news', 300000, () => newsService.getNews())); }
+    try { return send(res, 200, await loadCached(res, 'news', PROVIDER_POLICIES.news, () => newsService.getNews())); }
     catch (error) { return send(res, 502, { error: error.message }); }
   }
   if (url.pathname === '/api/watchlist-news') {
     try {
       const raw = url.searchParams.get('stocks') || url.searchParams.get('symbols') || '';
       const stocks = normalizeWatchlistNewsStocks(raw);
-      const cacheKey = stocks.map(item => item.symbol).join(',');
-      const data = await cached('wn:' + cacheKey, 300000, () => newsService.getWatchlistNews(stocks));
+      const cacheKey = createWatchlistNewsCacheKey(stocks);
+      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks));
       return send(res, 200, data);
     } catch (error) {
       return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ', detail: error.message });

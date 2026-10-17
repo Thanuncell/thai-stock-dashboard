@@ -25,7 +25,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch }
       headers: {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36',
         accept: 'application/json'
-      }
+      },
+      signal: AbortSignal.timeout(9000)
     });
     if (!response.ok) throw Error(`Yahoo Finance ${symbol}: HTTP ${response.status}`);
     const body = await response.json(), result = body?.chart?.result?.[0];
@@ -64,7 +65,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch }
       low: quote.low?.[index] ?? null,
       close: quote.close?.[index] ?? null,
       volume: quote.volume?.[index] ?? null
-    })).filter(row => row.close !== null);
+    })).filter(row => [row.open, row.high, row.low, row.close]
+      .every(value => value !== null && value !== '' && Number.isFinite(Number(value)) && Number(value) > 0));
     const meta = result.meta || {};
     const last = meta.regularMarketPrice ?? bars.at(-1)?.close ?? null;
     const prior = meta.chartPreviousClose ?? meta.previousClose ?? null;
@@ -153,15 +155,25 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch }
         }
       } catch (error) { errors.push(`ข้อมูลย้อนหลังสำหรับการวิเคราะห์: ${error.message}`); }
     }
+    const fetchedAt = new Date().toISOString();
+    const latestProviderTime = [...stocks, index].filter(Boolean)
+      .map(item => Number(item.time)).filter(Number.isFinite).reduce((latest, value) => Math.max(latest, value), 0);
+    const partial = errors.length > 0;
     return {
       stocks,
       indices: index ? [index] : [],
       history,
       levelsHistory,
       indicatorHistory,
-      fetchedAt: new Date().toISOString(),
+      fetchedAt,
+      asOf: latestProviderTime ? new Date(latestProviderTime).toISOString() : fetchedAt,
       provider: 'Yahoo Finance',
+      source: 'Yahoo Finance',
       delayMinutes: 15,
+      delayed: true,
+      stale: false,
+      partial,
+      dataState: partial ? 'partial' : 'delayed',
       errors
     };
   }

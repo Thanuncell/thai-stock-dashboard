@@ -48,7 +48,8 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const settled = await Promise.allSettled(FEEDS.map(async ([source, sourceName, query]) => {
       const url = 'https://news.google.com/rss/search?q=' + encodeURIComponent(`${query} when:30d`) + '&hl=th&gl=TH&ceid=TH:th';
       const response = await fetchImpl(url, {
-        headers: { 'user-agent': 'SETscope/1.0 news reader (local prototype)', accept: 'application/rss+xml, application/xml, text/xml' }
+        headers: { 'user-agent': 'SETscope/1.0 news reader (local prototype)', accept: 'application/rss+xml, application/xml, text/xml' },
+        signal: AbortSignal.timeout(12000)
       });
       if (!response.ok) throw Error(`${sourceName} RSS HTTP ${response.status}`);
       const xml = await response.text();
@@ -77,10 +78,20 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     }));
     const items = settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])
       .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
+    const errors = settled.map((result, index) => result.status === 'rejected' ? FEEDS[index][0] : null).filter(Boolean);
+    const fetchedAt = new Date().toISOString();
+    const asOfMs = items.map(item => Date.parse(item.pubDate)).filter(Number.isFinite)
+      .reduce((latest, value) => Math.max(latest, value), 0);
+    const unavailable = !items.length && errors.length === FEEDS.length;
     return {
       items,
-      errors: settled.map((result, index) => result.status === 'rejected' ? FEEDS[index][0] : null).filter(Boolean),
-      fetchedAt: new Date().toISOString(),
+      errors,
+      fetchedAt,
+      asOf: asOfMs ? new Date(asOfMs).toISOString() : null,
+      source: 'Google News',
+      stale: false,
+      partial: errors.length > 0 && !unavailable,
+      dataState: unavailable ? 'unavailable' : errors.length ? 'partial' : 'fresh',
       maxAgeDays: 30
     };
   }
@@ -227,7 +238,10 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
 
   async function getWatchlistNews(rawStocks = '') {
     const requested = normalizeWatchlistNewsStocks(rawStocks);
-    if (!requested.length) return { items: [], fetchedAt: new Date().toISOString(), maxAgeDays: 30 };
+    if (!requested.length) {
+      const fetchedAt = new Date().toISOString();
+      return { items: [], fetchedAt, asOf: null, source: 'Google News', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30 };
+    }
     const terms = requested.flatMap(item => [`"${item.symbol}"`, ...(item.name.length > 3 ? [`"${item.name}"`] : [])]).join(' OR ');
     const url = 'https://news.google.com/rss/search?q=' + encodeURIComponent(`(${terms}) when:30d`) + '&hl=th&gl=TH&ceid=TH:th';
     const response = await fetchImpl(url, {
@@ -265,7 +279,10 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
       && Number.isFinite(Date.parse(item.pubDate)) && Date.parse(item.pubDate) >= cutoff
       && item.matchedSymbols.length && item.source !== 'other')
       .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).slice(0, 30);
-    return { items, fetchedAt: new Date().toISOString(), maxAgeDays: 30 };
+    const fetchedAt = new Date().toISOString();
+    const asOfMs = items.map(item => Date.parse(item.pubDate)).filter(Number.isFinite)
+      .reduce((latest, value) => Math.max(latest, value), 0);
+    return { items, fetchedAt, asOf: asOfMs ? new Date(asOfMs).toISOString() : null, source: 'Google News', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30 };
   }
 
   return { analyse, getNews, getWatchlistNews };
