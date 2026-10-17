@@ -1,0 +1,37 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+let domain;
+test.before(async () => { domain = await import('../client/domain.mjs'); });
+
+test('workspace routing preserves canonical and legacy hashes', () => {
+  assert.equal(domain.pageFromHash('#overview'), 'overview');
+  assert.equal(domain.pageFromHash('#chart-section'), 'chart');
+  assert.equal(domain.pageFromHash('#news-section'), 'news');
+  assert.equal(domain.pageFromHash('#top'), 'overview');
+  assert.equal(domain.pageFromHash('#unknown'), 'overview');
+});
+
+test('watchlists stay bounded and reject invalid symbols without inventing items', () => {
+  const normalized = domain.normalizeLists([{
+    id: 'list-1',
+    name: ' Main ',
+    items: [{ symbol: 'PTT', name: 'ปตท.' }, { symbol: '../BAD' }, null]
+  }]);
+  assert.equal(normalized[0].name, 'Main');
+  assert.deepEqual(normalized[0].items, [{ symbol: 'PTT', name: 'ปตท.' }]);
+  assert.equal(domain.mergeWatchlists(normalized, []), normalized);
+});
+
+test('news search includes an analysis summary but does not fabricate a match', () => {
+  const item = { title: 'PTT update', sourceName: 'SET News', snippet: '' };
+  assert.equal(domain.matchesNewsQuery(item, 'กำไร', 'กำไรเติบโต'), true);
+  assert.equal(domain.matchesNewsQuery(item, 'ขาดทุน', ''), false);
+});
+
+test('pagination and escaping preserve frontend output contracts', () => {
+  assert.deepEqual(domain.pageList(5, 10), [1, 2, '…', 4, 5, 6, '…', 9, 10]);
+  assert.equal(domain.escapeHtml('<script>"x"</script>'), '&lt;script&gt;&quot;x&quot;&lt;/script&gt;');
+});
