@@ -3,13 +3,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const {
-  analyseTechnicals,
-  computeEma,
-  computeSmaSeries,
-  createRequestSequence,
-  findPriceLevels
-} = require('../lib/indicators');
+let analyseTechnicals;
+let computeEma;
+let computeSmaSeries;
+let createRequestSequence;
+let findPriceLevels;
+
+test.before(async () => {
+  ({
+    analyseTechnicals,
+    computeEma,
+    computeSmaSeries,
+    createRequestSequence,
+    findPriceLevels
+  } = await import('../client/domain.mjs'));
+});
 
 test('a slower stale response cannot overwrite the newest request state', async () => {
   const sequence = createRequestSequence();

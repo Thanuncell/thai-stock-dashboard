@@ -15,9 +15,12 @@ test('polling intervals remain at the baseline request budget', () => {
   assert.equal((appSource.match(/setInterval\(getWatchlistNews, 300000\)/g) || []).length, 1);
 });
 
-test('main page adds only the tested indicator module to the static request budget', () => {
-  const scripts = [...indexSource.matchAll(/<script\s+src="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(scripts, ['auth.js', 'lib/indicators.js', 'app.js']);
+test('ES module split preserves the six-request main-page static budget', () => {
+  const scripts = [...indexSource.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(match => match[1]);
+  const moduleImports = [...appSource.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(match => match[1]);
+  assert.deepEqual(scripts, ['auth.js', 'app.js']);
+  assert.deepEqual(moduleImports, ['./client/domain.mjs']);
+  assert.equal(scripts.length + moduleImports.length + 3, 6);
 });
 
 test('cache keys include every public input and never cache watchlist responses globally', () => {

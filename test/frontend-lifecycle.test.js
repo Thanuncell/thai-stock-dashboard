@@ -9,6 +9,7 @@ const appSource = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 
 test('frontend setup remains single-shot and global listeners are not duplicated', () => {
   assert.equal((appSource.match(/addEventListener\('setscope:authenticated',\s*setup,\s*\{\s*once:\s*true\s*\}\)/g) || []).length, 1);
+  assert.match(appSource, /if\s*\(document\.body\.classList\.contains\('authenticated'\)\)\s*setup\(\)/);
   assert.equal((appSource.match(/window\.addEventListener\('resize'/g) || []).length, 1);
   assert.equal((appSource.match(/window\.addEventListener\('orientationchange'/g) || []).length, 1);
   assert.equal((appSource.match(/document\.addEventListener\('fullscreenchange'/g) || []).length, 1);
