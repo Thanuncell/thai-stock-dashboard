@@ -105,7 +105,9 @@ test('health and static responses have strict security headers without invalid C
   const page = await request(base, '/index.html');
   assert.equal(page.status, 200);
   assert.match(page.headers['content-security-policy'], /script-src 'self'/);
-  assert.equal((await request(base, '/lib/indicators.js')).status, 200);
+  const domain = await request(base, '/client/domain.mjs');
+  assert.equal(domain.status, 200);
+  assert.match(domain.headers['content-type'], /^text\/javascript/);
   assert.equal((await request(base, '/theme-init.js')).status, 200);
 });
 

@@ -18,10 +18,11 @@ const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.ico': 'image/x-icon'
 };
 const PUBLIC_FILES = new Set([
-  '/index.html', '/app.js', '/auth.js', '/theme-init.js', '/lib/indicators.js',
+  '/index.html', '/app.js', '/auth.js', '/theme-init.js', '/client/domain.mjs',
   '/style.css', '/analysis.css', '/about.html', '/privacy.html', '/terms.html', '/disclaimer.html'
 ]);
 
