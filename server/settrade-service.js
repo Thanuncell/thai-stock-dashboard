@@ -17,8 +17,6 @@ const PATHS = Object.freeze([
 ]);
 
 function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now, cache = createMemoryCache({ maxEntries: 2, now }) } = {}) {
-  let lastData = null;
-
   async function fetchPage(pathname) {
     const response = await fetchImpl(`https://www.settrade.com${pathname}`, {
       headers: {
@@ -43,6 +41,8 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now, c
       const nuxtIndex = tfexHtml.indexOf('window.__NUXT__');
       const tfexText = marketHtmlText(tfexHtml.slice(0, nuxtIndex > 0 ? nuxtIndex : undefined));
       const activeHtml = htmlAt(4);
+      const fetchedAt = new Date().toISOString();
+      const errors = pages.map((page, index) => page.status === 'rejected' ? PATHS[index] : null).filter(Boolean);
       const data = {
         ...overview,
         nvdr,
@@ -50,9 +50,14 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now, c
         tfex: { available: /Total Market\s*[^-]*\d/i.test(tfexText), delayMinutes: 15 },
         activeValue: [],
         source: 'SETTRADE',
-        fetchedAt: new Date().toISOString(),
+        fetchedAt,
+        asOf: null,
+        delayed: true,
+        stale: false,
+        partial: errors.length > 0,
+        dataState: errors.length ? 'partial' : 'delayed',
         marketDate: foreign.date || null,
-        errors: pages.map((page, index) => page.status === 'rejected' ? PATHS[index] : null).filter(Boolean),
+        errors,
         links: {
           overview: 'https://www.settrade.com/th/equities/market-summary/overview?market=SET',
           activeValue: 'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value',
@@ -64,19 +69,6 @@ function createSettradeService({ fetchImpl = globalThis.fetch, now = Date.now, c
           ? 'SETTRADE โหลดรายการผ่านตารางแบบโต้ตอบ โปรดเปิดดูต้นทาง'
           : 'ไม่สามารถอ่านตารางจัดอันดับจากต้นทางได้'
       };
-      if (lastData) {
-        for (const key of ['indices', 'breadth', 'closeSummary', 'nvdr', 'foreign']) {
-          const empty = key === 'closeSummary'
-            ? !data[key]
-            : key === 'nvdr'
-              ? Object.values(data[key] || {}).every(value => value == null)
-              : key === 'foreign'
-                ? data[key].netMillion == null
-                : !data[key]?.length;
-          if (empty) data[key] = lastData[key];
-        }
-      }
-      lastData = data;
       return data;
     }, { force });
   }

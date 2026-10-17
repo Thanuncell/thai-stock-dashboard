@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const {
   PROVIDER_POLICIES,
   createMemoryCache,
+  createWatchlistNewsCacheKey,
   retryWithBackoff
 } = require('../server/reliability');
 const { createObservability } = require('../server/observability');
@@ -51,6 +52,8 @@ test('SETTRADE stale fallback is bounded and explicitly marked', async () => {
 
   assert.equal(fallback.meta.status, 'stale');
   assert.equal(fallback.value.stale, true);
+  assert.equal(fallback.value.dataState, 'stale');
+  assert.equal(fallback.value.fetchedAt, new Date(5_000).toISOString());
   assert.ok(fallback.meta.staleAgeMs > 0);
 
   let repeatedLoads = 0;
@@ -106,4 +109,11 @@ test('structured logs contain operational fields but never accept credentials', 
     cacheStatus: 'hit', staleAgeMs: 10
   });
   assert.doesNotMatch(JSON.stringify(lines), /secret-token|authorization|token/i);
+});
+
+test('watchlist news cache keys cover every normalized provider input', () => {
+  const first = createWatchlistNewsCacheKey([{ symbol: 'PTT', name: 'ปตท.' }]);
+  const renamed = createWatchlistNewsCacheKey([{ symbol: 'PTT', name: 'PTT Public Company' }]);
+  assert.notEqual(first, renamed);
+  assert.equal(first, createWatchlistNewsCacheKey([{ symbol: 'PTT', name: 'ปตท.' }]));
 });

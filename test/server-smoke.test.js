@@ -153,6 +153,9 @@ test('partial provider outages degrade independently without fabricating zero va
   assert.deepEqual(market.stocks.map(stock => stock.symbol), ['PTT']);
   assert.ok(market.errors.some(error => error.includes('AOT')));
   assert.equal(market.stocks[0].last, 35.25);
+  assert.equal(market.dataState, 'partial');
+  assert.equal(market.partial, true);
+  assert.ok(market.asOf);
 
   const settradeResponse = await request(base, '/api/settrade-overview', { headers });
   assert.equal(settradeResponse.status, 200);
@@ -162,12 +165,17 @@ test('partial provider outages degrade independently without fabricating zero va
   assert.equal(settrade.tfex.available, false);
   assert.equal(settrade.errors.length, 2);
   assert.ok(settrade.fetchedAt);
+  assert.equal(settrade.dataState, 'partial');
+  assert.equal(settrade.partial, true);
+  assert.equal(settrade.asOf, null);
 
   const newsResponse = await request(base, '/api/news', { headers });
   assert.equal(newsResponse.status, 200);
   const news = JSON.parse(newsResponse.body);
   assert.ok(news.items.length > 0);
   assert.deepEqual(news.errors, ['kaohoon']);
+  assert.equal(news.dataState, 'partial');
+  assert.equal(news.partial, true);
 });
 
 test('backend API response contracts remain stable before service extraction', async () => {
@@ -183,22 +191,23 @@ test('backend API response contracts remain stable before service extraction', a
 
   const market = JSON.parse((await request(base, '/api/market?symbols=PTT&symbol=PTT&range=1D', { headers })).body);
   assert.deepEqual(Object.keys(market).sort(), [
-    'delayMinutes', 'errors', 'fetchedAt', 'history', 'indicatorHistory', 'indices',
-    'levelsHistory', 'provider', 'stocks'
+    'asOf', 'dataState', 'delayMinutes', 'delayed', 'errors', 'fetchedAt', 'history',
+    'indicatorHistory', 'indices', 'levelsHistory', 'partial', 'provider', 'source', 'stale', 'stocks'
   ]);
 
   const overview = JSON.parse((await request(base, '/api/settrade-overview', { headers })).body);
   assert.deepEqual(Object.keys(overview).sort(), [
-    'activeValue', 'activeValueStatus', 'breadth', 'cached', 'closeSummary', 'errors', 'fetchedAt',
-    'foreign', 'indices', 'links', 'marketDate', 'nvdr', 'source', 'tfex'
+    'activeValue', 'activeValueStatus', 'asOf', 'breadth', 'cached', 'closeSummary', 'dataState',
+    'delayed', 'errors', 'fetchedAt', 'foreign', 'indices', 'links', 'marketDate', 'nvdr',
+    'partial', 'source', 'stale', 'tfex'
   ]);
   assert.equal(overview.cached, true);
 
   const news = JSON.parse((await request(base, '/api/news', { headers })).body);
-  assert.deepEqual(Object.keys(news).sort(), ['errors', 'fetchedAt', 'items', 'maxAgeDays']);
+  assert.deepEqual(Object.keys(news).sort(), ['asOf', 'dataState', 'errors', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
 
   const watchlistNews = JSON.parse((await request(base, '/api/watchlist-news?stocks=%5B%7B%22symbol%22%3A%22PTT%22%7D%5D', { headers })).body);
-  assert.deepEqual(Object.keys(watchlistNews).sort(), ['fetchedAt', 'items', 'maxAgeDays']);
+  assert.deepEqual(Object.keys(watchlistNews).sort(), ['asOf', 'dataState', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
 
   const analysis = JSON.parse((await request(base, '/api/news-analysis', {
     method: 'POST',

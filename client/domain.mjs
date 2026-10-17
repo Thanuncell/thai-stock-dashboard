@@ -14,6 +14,32 @@ export const THAI_NAMES = Object.fromEntries(DEFAULT_WATCHLIST.map(item => [item
 const formatNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
 
+export function toFiniteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+export function quoteChange(last, prior) {
+  const current = toFiniteNumber(last);
+  const previous = toFiniteNumber(prior);
+  if (current === null || previous === null) return { change: null, percent: null };
+  const change = current - previous;
+  return { change, percent: previous === 0 ? null : change / previous * 100 };
+}
+
+export function summarizeBreadth(groups = []) {
+  let up = null;
+  let down = null;
+  for (const item of groups.flatMap(group => group.items || [])) {
+    const count = toFiniteNumber(item.count);
+    if (count === null) continue;
+    if (/gainers/i.test(item.label || '')) up = (up ?? 0) + count;
+    if (/losers/i.test(item.label || '')) down = (down ?? 0) + count;
+  }
+  return { up, down, comparable: up !== null && down !== null };
+}
+
 export function pageFromHash(hash = '') {
   const key = String(hash || '').replace(/^#/, '');
   if (['overview', 'chart', 'news', 'watchlist'].includes(key)) return key;

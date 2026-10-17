@@ -13,10 +13,15 @@ const PROVIDER_POLICIES = Object.freeze({
       return { ...value, cached: true };
     },
     markStale(value, error) {
-      return { ...value, cached: true, stale: true, errors: [error.message] };
+      const errors = [...new Set([...(Array.isArray(value.errors) ? value.errors : []), error.message])];
+      return { ...value, cached: true, stale: true, partial: Boolean(value.partial), dataState: 'stale', errors };
     }
   })
 });
+
+function createWatchlistNewsCacheKey(stocks = []) {
+  return `wn:${JSON.stringify(stocks.map(item => [String(item.symbol || ''), String(item.name || '')]))}`;
+}
 
 function createMemoryCache({ maxEntries = 200, now = Date.now } = {}) {
   const entries = new Map();
@@ -118,4 +123,10 @@ function isTransientProviderError(error) {
     || /(?:HTTP\s+(?:429|502|503|504)|timeout|timed out|fetch failed)/i.test(String(error?.message || ''));
 }
 
-module.exports = { PROVIDER_POLICIES, createMemoryCache, isTransientProviderError, retryWithBackoff };
+module.exports = {
+  PROVIDER_POLICIES,
+  createMemoryCache,
+  createWatchlistNewsCacheKey,
+  isTransientProviderError,
+  retryWithBackoff
+};

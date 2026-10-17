@@ -9,7 +9,13 @@ const { createAuthService } = require('./server/auth-service');
 const { createMarketService } = require('./server/market-service');
 const { createNewsService } = require('./server/news-service');
 const { createObservability } = require('./server/observability');
-const { PROVIDER_POLICIES, createMemoryCache, isTransientProviderError, retryWithBackoff } = require('./server/reliability');
+const {
+  PROVIDER_POLICIES,
+  createMemoryCache,
+  createWatchlistNewsCacheKey,
+  isTransientProviderError,
+  retryWithBackoff
+} = require('./server/reliability');
 const { createSettradeService } = require('./server/settrade-service');
 const { createWatchlistService } = require('./server/watchlist-service');
 
@@ -284,8 +290,8 @@ async function handle(req, res) {
     try {
       const raw = url.searchParams.get('stocks') || url.searchParams.get('symbols') || '';
       const stocks = normalizeWatchlistNewsStocks(raw);
-      const cacheKey = stocks.map(item => item.symbol).join(',');
-      const data = await loadCached(res, 'wn:' + cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks));
+      const cacheKey = createWatchlistNewsCacheKey(stocks);
+      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks));
       return send(res, 200, data);
     } catch (error) {
       return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ', detail: error.message });

@@ -68,11 +68,12 @@ function createObservability({ logger = console, now = Date.now, requestId = ran
     const context = contexts.get(res);
     if (!context || !body || typeof body !== 'object') return;
     context.provider = body.provider || body.source || context.provider;
-    const fetchedAt = Date.parse(body.fetchedAt);
-    if (Number.isFinite(fetchedAt)) context.staleAgeMs = Math.max(0, now() - fetchedAt);
-    if (body.stale) context.dataState = 'stale';
+    const asOf = Date.parse(body.asOf || body.fetchedAt);
+    if (Number.isFinite(asOf)) context.staleAgeMs = Math.max(0, now() - asOf);
+    if (typeof body.dataState === 'string') context.dataState = body.dataState;
+    else if (body.stale) context.dataState = 'stale';
     else if (Array.isArray(body.errors) && body.errors.length) context.dataState = 'partial';
-    else if (Number.isFinite(fetchedAt)) context.dataState = 'fresh';
+    else if (Number.isFinite(asOf)) context.dataState = 'fresh';
   }
 
   function observedFetch(fetchImpl = globalThis.fetch) {
