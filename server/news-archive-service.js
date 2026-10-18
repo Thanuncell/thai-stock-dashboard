@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto');
 const { allowedNewsUrl } = require('../lib/news-policy');
 const { newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
+const { classifyNewsItem } = require('../lib/news-quality');
 
 const RETENTION_DAYS = 365;
 const MAX_PAGE_SIZE = 50;
@@ -29,7 +30,7 @@ function createNewsArchiveService({ env = process.env, fetchImpl = globalThis.fe
     const safeUrl = allowedNewsUrl(item?.url);
     const publishedAt = Date.parse(item?.pubDate);
     const timestamp = Number(now());
-    if (!safeUrl || !String(item?.title || '').trim() || !Number.isFinite(publishedAt)) return null;
+    if (!safeUrl || !String(item?.title || '').trim() || !Number.isFinite(publishedAt) || !classifyNewsItem(item).accepted) return null;
     if (publishedAt < timestamp - RETENTION_DAYS * 24 * 60 * 60 * 1000 || publishedAt > timestamp + 10 * 60 * 1000) return null;
     return {
       fingerprint: archiveFingerprint(item),
@@ -103,9 +104,13 @@ function createNewsArchiveService({ env = process.env, fetchImpl = globalThis.fe
     const contentRange = response.headers.get('content-range') || '';
     const totalMatch = contentRange.match(/\/(\d+|\*)$/);
     const total = totalMatch && totalMatch[1] !== '*' ? Number(totalMatch[1]) : rows.length;
+    const acceptedRows = rows.filter(row => classifyNewsItem({
+      title: row.title, url: row.url, source: row.source, sourceName: row.source_name,
+      snippet: row.snippet, pubDate: row.published_at, brokerCategory: Boolean(row.broker_firms?.length)
+    }).accepted);
     return {
       configured: true,
-      items: rows.map(row => ({
+      items: acceptedRows.map(row => ({
         fingerprint: row.fingerprint,
         title: row.title,
         url: row.url,
@@ -124,6 +129,7 @@ function createNewsArchiveService({ env = process.env, fetchImpl = globalThis.fe
       page: safePage,
       pageSize: safePageSize,
       total,
+      qualityFiltered: rows.length - acceptedRows.length,
       maxAgeDays: RETENTION_DAYS,
       coverage: 'up-to-365-days-subject-to-source-availability'
     };

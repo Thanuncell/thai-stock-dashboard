@@ -44,3 +44,15 @@ test('archive pagination validates filters and never returns an unbounded year',
   assert.match(requested.url, /source=eq\.infoquest/);
   assert.match(requested.url, /matched_symbols=cs\./);
 });
+
+test('archive ingestion rejects non-news records before persistence', async () => {
+  const calls = [];
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-18T00:00:00.000Z'),
+    fetchImpl: async (url, init) => { calls.push({ url: String(url), init }); return new Response(null, { status: 204 }); }
+  });
+  const result = await service.ingest([{ source: 'settrade', sourceName: 'SET', title: '- SET', url: 'https://news.google.com/articles/bad', pubDate: '2026-10-17T00:00:00.000Z' }]);
+  assert.equal(result.ingested, 0);
+  assert.equal(calls.length, 0);
+});
