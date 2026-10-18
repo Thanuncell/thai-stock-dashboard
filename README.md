@@ -26,6 +26,31 @@ The main chart is rendered by SETscope as an OHLC candlestick chart with volume 
 
 The SET Index banner uses Yahoo Finance for price, volume, high, and low. To display the SET market's accumulated trading value in million baht, configure the `SET_API_KEY` environment variable in Render. The backend requests the delayed index endpoint from SET's Market Data API. The value remains unavailable when this key is not configured or the API cannot return it; it is not estimated from volume.
 
+## Coverage truth and preventive data guard (v1.5.2 acceptance candidate)
+
+Market payloads pass through one server-side data guard before SETscope treats them as usable. The guard validates the requested Yahoo symbol and Thai market identity, finite numeric values, OHLC invariants, non-negative volume, ordered/unique timestamps, future and regular-session stale timestamps, last/close and change consistency, and configurable price-move anomalies. Suspect or quarantined payloads never update the in-memory last-known-good value and never feed RSI, MACD, EMA, support, resistance, mover ranking, or alerts. A context-isolated last-known-good value may be shown only as explicitly stale, with its original `asOf`, for at most 24 hours by default; otherwise the value is unavailable. The guard performs no network request of its own.
+
+Guard policy is configurable at the server boundary with `DATA_GUARD_FUTURE_TOLERANCE_MS`, `DATA_GUARD_REGULAR_STALE_MS`, `DATA_GUARD_MAX_PRICE_MOVE_RATIO`, `DATA_GUARD_LAST_KNOWN_TTL_MS`, and `DATA_GUARD_LAST_CLOSE_MISMATCH_RATIO`. These settings change validation thresholds only; they do not enable real-time delivery or add a corroboration provider.
+
+`supabase/coverage.sql` is an additive, service-role-only persistence migration for `security_coverage` and `coverage_runs`. Browser roles and `PUBLIC` receive no direct privileges, RLS is enabled and forced, and no existing Watchlist, News Archive, Auth, or default-privilege object is changed. Apply it only after review. Seed only an authoritative, authorized symbol registry through `COVERAGE_SYMBOLS`; a symbol list, search result, or historical planning number is not proof of working coverage.
+
+The bounded runner is `node scripts/run-coverage-verification.js`:
+
+- `COVERAGE_BATCH_SIZE` defaults to 125 and is clamped to 1–200.
+- `COVERAGE_CONCURRENCY` defaults to 4 and is clamped to 1–10.
+- Oldest `last_checked_at` values are checked first. Each symbol is isolated, transient failures receive at most one bounded retry, and a completed daily run is idempotent.
+- Current Verified Coverage counts active rows where both `symbol_verified` and `chart_ready` are true. `technical_ready` remains a separate health count.
+- A single transient failure, anomaly, or quarantined payload preserves the prior verified state. A symbol becomes inactive or unsupported only when an adapter supplies explicit confirmed lifecycle evidence.
+- The recommended schedule is once daily around 19:00 Asia/Bangkok (12:00 UTC), configured in the scheduler rather than hard-coded in the application. No production scheduler is created by this repository change because activating new shared/paid infrastructure requires a separate owner decision.
+
+The authenticated `/api/coverage` summary is cached for five minutes and is requested once, lazily, on the first Chart visit. It has no browser polling and causes no Yahoo request. The UI remains hidden until a completed persisted run exists; it then displays only the verified count, completion time, and Yahoo Finance attribution. A saved summary older than 36 hours is classified stale instead of being relabelled fresh.
+
+Production gate evidence recorded on 2026-10-18 uses an authorized 191-symbol SET100+sSET registry. The persisted result is Current Verified Coverage 129 and technical-ready 129 after a five-symbol canary plus one bounded 125-symbol batch. One symbol (BANPU) remains `temporary_failed` because invalid numeric rows were quarantined, and 61 symbols remain pending for a later rolling batch. These values are a timestamped audit result, not a hard-coded product limit or a whole-market claim. The daily scheduler remains OFF.
+
+The owner-approved Production Coverage UI verification deployed commit `9eebefdb5903aa220e1f4be5ae3afbc09356a163` as Render deploy `dep-dbaedhjrjlhs739upt80`. The deploy became live, `/healthz` returned HTTP 200, and the authenticated Chart UI displayed persisted Current Verified Coverage 129, Last Checked 18 Oct 2026 22:24:19 Asia/Bangkok, and Yahoo Finance attribution. Chart, News, Watchlist, Reload, Back/Forward, canonical URL state, and breadcrumb smoke checks passed. Render Auto-Deploy was restored to its original On Commit setting after the smoke test. The branch remains unmerged and the daily Coverage scheduler remains OFF.
+
+For rollback, first disable the external schedule and revert the v1.5.2 application commits; the additive tables can remain safely unused. `supabase/coverage_rollback.sql` is destructive and must only be run manually after a backup and explicit approval. Do not remove the shared server-side Supabase secret solely to disable Coverage because News Archive also uses it; a missing table or completed run already keeps the Coverage UI hidden.
+
 ## Real-time readiness (production delivery remains off)
 
 `server/realtime-readiness.js` defines an inactive boundary for a future licensed provider. It separates latest-price, chart, and market-snapshot methods; normalizes provider/source/as-of and delayed/stale/partial state; keeps a bounded in-memory last-known store; coalesces duplicate reads; enforces an in-flight request limit; and exposes an injectable fanout boundary without creating sockets, listeners, timers, queues, or database tables.

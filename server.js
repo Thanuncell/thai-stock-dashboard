@@ -6,6 +6,7 @@ const path = require('node:path');
 const { URL } = require('node:url');
 const { normalizeMarketSymbols, normalizeSymbol, normalizeWatchlistNewsStocks, normalizeWatchlistsPayload } = require('./lib/validation');
 const { createAuthService } = require('./server/auth-service');
+const { createCoverageRepository } = require('./server/coverage-service');
 const { createMarketService } = require('./server/market-service');
 const { createNewsArchiveService } = require('./server/news-archive-service');
 const { createNewsService } = require('./server/news-service');
@@ -119,6 +120,7 @@ const observability = createObservability();
 const responseCache = createMemoryCache({ maxEntries: 200 });
 const providerFetch = observability.observedFetch(globalThis.fetch);
 const authService = createAuthService({ send, fetchImpl: providerFetch });
+const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
 const newsService = createNewsService({ fetchImpl: providerFetch });
 const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch });
@@ -249,6 +251,21 @@ async function handle(req, res) {
   if (req.method !== 'GET') {
     res.writeHead(405);
     return res.end('Method Not Allowed');
+  }
+  if (url.pathname === '/api/coverage') {
+    try {
+      const data = await loadCached(res, 'coverage-summary', PROVIDER_POLICIES.coverage, () => coverageRepository.summary());
+      return send(res, 200, data);
+    } catch (_) {
+      return send(res, 200, {
+        configured: coverageRepository.configured,
+        currentVerified: null,
+        technicalReady: null,
+        lastChecked: null,
+        provider: 'Yahoo Finance',
+        dataState: 'unavailable'
+      });
+    }
   }
   if (url.pathname === '/api/search') {
     const query = (url.searchParams.get('q') || '').trim().slice(0, 80);

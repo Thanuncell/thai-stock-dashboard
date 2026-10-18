@@ -8,6 +8,7 @@ let computeEma;
 let computeSmaSeries;
 let createRequestSequence;
 let findPriceLevels;
+let trustedMarketBars;
 
 test.before(async () => {
   ({
@@ -15,7 +16,8 @@ test.before(async () => {
     computeEma,
     computeSmaSeries,
     createRequestSequence,
-    findPriceLevels
+    findPriceLevels,
+    trustedMarketBars
   } = await import('../client/domain.mjs'));
 });
 
@@ -85,6 +87,43 @@ test('invalid market rows never become chart or indicator values', () => {
   const result = analyseTechnicals(bars);
   assert.equal(result.values.length, 35);
   assert.ok(result.values.every(Number.isFinite));
+});
+
+test('Technical Analysis rejects invalid OHLC and duplicate or out-of-order timestamps', () => {
+  const valid = Array.from({ length: 35 }, (_, index) => ({
+    time: 1_760_000_000_000 + index * 86_400_000,
+    open: 10 + index,
+    high: 12 + index,
+    low: 9 + index,
+    close: 11 + index,
+    volume: 1_000
+  }));
+  const badTime = valid[10].time;
+  const guarded = trustedMarketBars([
+    ...valid,
+    { time: badTime, open: 20, high: 22, low: 19, close: 21, volume: 100 },
+    { time: valid[5].time - 1, open: 30, high: 20, low: 25, close: 28, volume: -1 }
+  ]);
+  assert.equal(guarded.length, 35);
+  assert.ok(guarded.every((bar, index) => index === 0 || bar.time > guarded[index - 1].time));
+  assert.equal(analyseTechnicals(guarded).values.length, 35);
+});
+
+test('Technical Analysis rejects explicitly suspect bars and sanitizes level history', () => {
+  const valid = Array.from({ length: 35 }, (_, index) => ({
+    time: 1_760_000_000_000 + index * 86_400_000,
+    open: 10 + index,
+    high: 12 + index,
+    low: 9 + index,
+    close: 11 + index,
+    volume: 1_000
+  }));
+  const suspect = { ...valid[0], time: valid.at(-1).time + 86_400_000, close: 500, high: 510, guardStatus: 'suspect' };
+  const invalidLevel = { time: suspect.time + 1, open: 50, high: 40, low: 45, close: 48, volume: -1 };
+  const result = analyseTechnicals([...valid, suspect], [...valid, invalidLevel]);
+  assert.equal(result.values.length, 35);
+  assert.equal(result.last, valid.at(-1).close);
+  assert.ok([...result.levels.supports, ...result.levels.resistances].every(value => value !== 48));
 });
 
 test('price levels reject missing last price instead of fabricating zero', () => {

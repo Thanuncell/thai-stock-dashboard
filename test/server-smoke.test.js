@@ -197,6 +197,13 @@ test('backend API response contracts remain stable before service extraction', a
     'indicatorHistory', 'indices', 'levelsHistory', 'partial', 'provider', 'source', 'stale', 'stocks'
   ]);
 
+  const coverage = JSON.parse((await request(base, '/api/coverage', { headers })).body);
+  assert.deepEqual(Object.keys(coverage).sort(), [
+    'configured', 'currentVerified', 'dataState', 'lastChecked', 'provider', 'technicalReady'
+  ]);
+  assert.equal(coverage.configured, false);
+  assert.equal(coverage.currentVerified, null);
+
   const overview = JSON.parse((await request(base, '/api/settrade-overview', { headers })).body);
   assert.deepEqual(Object.keys(overview).sort(), [
     'activeValue', 'activeValueStatus', 'asOf', 'breadth', 'cached', 'closeSummary', 'dataState',

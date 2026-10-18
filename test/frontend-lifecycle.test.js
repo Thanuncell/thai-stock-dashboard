@@ -90,3 +90,31 @@ test('Technical Analysis wording and Overview anchors remain at baseline', () =>
   assert.match(indexSource, /id="market-overview"/);
   assert.match(indexSource, /id="market-data-overview"/);
 });
+
+test('Coverage UI uses persisted summary fields without a hard-coded count', () => {
+  assert.match(indexSource, /id="coverage-summary"/);
+  assert.match(indexSource, /id="coverage-count">—<\/b>/);
+  assert.match(indexSource, /id="coverage-checked">—<\/b>/);
+  assert.match(indexSource, /แหล่งข้อมูล Yahoo Finance/);
+  assert.match(appSource, /apiFetch\('\/api\/coverage'\)/);
+  assert.match(appSource, /data\.currentVerified/);
+  assert.match(appSource, /!data\.lastChecked \|\| data\.dataState === 'unavailable'/);
+  assert.doesNotMatch(indexSource, /หลักทรัพย์ที่ตรวจสอบแล้ว\s*(?:291|500|900)/);
+});
+
+test('Chart freshness uses the selected provider timestamp and exposes guarded state', () => {
+  assert.match(appSource, /activeQuote\?\.time/);
+  assert.match(appSource, /activeQuote\?\.dataState/);
+  assert.match(appSource, /latestMarket\?\.history\?\.at\(-1\)\?\.time/);
+  assert.match(appSource, /\['stale', 'suspect', 'quarantined', 'unavailable'\]\.includes\(latestMarket\?\.dataState\)/);
+  assert.doesNotMatch(appSource, /renderPriceChart\([^\n]*latestMarket\?\.fetchedAt/);
+  assert.match(appSource, /ข้อมูลเก่า/);
+  assert.match(appSource, /ข้อมูลต้องสงสัย/);
+});
+
+test('suspect or stale market rows cannot drive alerts or mover rankings as fresh data', () => {
+  assert.match(appSource, /if \(row\.guardStatus !== 'accepted'\) return;/);
+  assert.match(appSource, /item\.quote\?\.guardStatus === 'accepted'/);
+  assert.match(appSource, /quoteState === 'stale' \? 'ข้อมูลเก่า'/);
+  assert.match(appSource, /quoteState === 'suspect' \|\| quoteState === 'quarantined' \? 'ข้อมูลต้องสงสัย'/);
+});
