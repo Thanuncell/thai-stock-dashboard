@@ -1,3 +1,23 @@
+# SETscope v1.5.2 acceptance-candidate verification
+
+- Source of truth and base: latest fetched `origin/main` at `5c58d8a78ad87481dc6d8e2babf1e51e35885b73` (merge commit of PR #30).
+- Working branch: `codex/v1.5.2-stability`, created from that exact commit. `main` was not edited.
+- v1.5.1 repository state was complete at baseline. Baseline verification on 2026-10-18 (Asia/Bangkok) passed 72/72 tests, 18/18 syntax targets, and `git diff --check`.
+- The v1.5.2 full suite passes 99/99 when loopback access is allowed. The same sandboxed run passes 94 assertions and reports exactly five `EACCES 127.0.0.1` environment failures in `server-smoke.test.js`; no application assertion fails. Rerunning the identical suite with local loopback permission passes all five smoke checks.
+- Targeted Coverage/Data Guard/UI/network/security verification passes 55/55.
+- Production true real-time remains OFF. Existing market polling remains one minute; News and Watchlist News remain five minutes. The guard adds zero upstream requests. Coverage adds one lazy, cached database-summary request on the first Chart visit and no interval.
+- `supabase/coverage.sql` and `supabase/coverage_rollback.sql` are repository artifacts only at this gate. Neither migration has been applied to production and the destructive rollback has not been run.
+- Current Verified Coverage is UNVERIFIED, not zero: no reviewed production Coverage migration, authoritative registry seed, completed persisted run, or approved scheduler activation exists yet. The UI stays hidden in that state.
+- Supabase Log Query Conservation Policy was followed. Local source inspection, deterministic fixtures, API smoke tests, and schema-policy tests were sufficient; no Supabase production log query or broad scan was performed.
+- Existing untracked user documents, CSV files, lockfile, and screenshots remain preserved and excluded.
+
+### v1.5.2 rollback order
+
+1. Disable any future external Coverage schedule, then revert the v1.5.2 commits to remove the guard, Coverage API/UI, and runner while preserving the frozen v1.5.1 behavior.
+2. Leave the additive Coverage tables in place if an application-only rollback is sufficient; browser roles have no direct access.
+3. Use `supabase/coverage_rollback.sql` only after a backup and explicit destructive-migration approval. It drops only `coverage_runs` and `security_coverage`.
+4. No Watchlist, News Archive, Auth, Render environment, existing RLS policy, or production real-time setting needs to change for rollback.
+
 # Phase 1 Pre-flight Baseline
 
 ## v1.5.1 News / URL State baseline and execution record
