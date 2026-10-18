@@ -78,7 +78,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
 
   async function verifySymbol(symbol) {
     const canonical = String(symbol || '').trim().toUpperCase().replace(/\.BK$/, '');
-    const value = shapeChart(await yahooChart(`${canonical}.BK`, '1mo', '1d'), canonical, 'chart:1mo:1d');
+    const value = shapeChart(await yahooChart(`${canonical}.BK`, '3mo', '1d'), canonical, 'chart:3mo:1d');
     const trusted = value.guardStatus === 'accepted';
     return {
       symbolVerified: trusted,

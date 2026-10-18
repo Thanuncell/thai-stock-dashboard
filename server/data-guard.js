@@ -15,6 +15,21 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+const bangkokDateKey = value => new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit'
+}).format(new Date(value));
+
+function previousSessionClose(history = []) {
+  const latest = history.at(-1);
+  if (!latest?.time) return null;
+  const latestDate = bangkokDateKey(latest.time);
+  for (let index = history.length - 2; index >= 0; index -= 1) {
+    const bar = history[index];
+    if (bar?.time && bangkokDateKey(bar.time) !== latestDate) return finiteNumber(bar.close);
+  }
+  return null;
+}
+
 function expectedProviderSymbol(symbol) {
   const canonical = normalizeSymbol(symbol);
   return canonical === 'SET' ? '^SET.BK' : `${canonical}.BK`;
@@ -136,28 +151,33 @@ function createMarketDataGuard({
     const normalized = normalizeHistory(result, { now: timestamp, futureToleranceMs });
     normalized.reasons.forEach(reason => reasons.add(reason));
     const latestBar = normalized.history.at(-1);
-    const rawLast = meta.regularMarketPrice;
-    const metaLast = finiteNumber(rawLast);
-    if (rawLast !== null && rawLast !== undefined && rawLast !== '' && (metaLast === null || metaLast <= 0)) reasons.add('INVALID_NUMERIC');
-    const last = metaLast && metaLast > 0 ? metaLast : latestBar?.close ?? null;
-    const rawPrior = meta.chartPreviousClose ?? meta.previousClose;
-    const metaPrior = finiteNumber(rawPrior);
-    if (rawPrior !== null && rawPrior !== undefined && rawPrior !== '' && (metaPrior === null || metaPrior <= 0)) reasons.add('INVALID_NUMERIC');
-    const prior = metaPrior && metaPrior > 0 ? metaPrior : null;
     const rawProviderTime = meta.regularMarketTime;
     const providerTime = finiteNumber(rawProviderTime);
     if (rawProviderTime !== null && rawProviderTime !== undefined && rawProviderTime !== '' && (providerTime === null || providerTime <= 0)) {
       reasons.add('INVALID_TIMESTAMP');
     }
-    const time = providerTime && providerTime > 0 ? providerTime * 1000 : latestBar?.time ?? null;
+    const providerTimeMs = providerTime && providerTime > 0 ? providerTime * 1000 : null;
+    const quoteMetaOlderThanHistory = Boolean(providerTimeMs && latestBar?.time && providerTimeMs < latestBar.time);
+    const rawLast = meta.regularMarketPrice;
+    const metaLast = finiteNumber(rawLast);
+    if (rawLast !== null && rawLast !== undefined && rawLast !== '' && (metaLast === null || metaLast <= 0)) reasons.add('INVALID_NUMERIC');
+    const last = quoteMetaOlderThanHistory
+      ? latestBar?.close ?? null
+      : metaLast && metaLast > 0 ? metaLast : latestBar?.close ?? null;
+    const sessionPrior = previousSessionClose(normalized.history);
+    const rawPrior = meta.previousClose ?? sessionPrior ?? meta.chartPreviousClose;
+    const metaPrior = finiteNumber(rawPrior);
+    if (rawPrior !== null && rawPrior !== undefined && rawPrior !== '' && (metaPrior === null || metaPrior <= 0)) reasons.add('INVALID_NUMERIC');
+    const prior = metaPrior && metaPrior > 0 ? metaPrior : null;
+    const time = quoteMetaOlderThanHistory ? latestBar?.time ?? null : providerTimeMs ?? latestBar?.time ?? null;
     const providerTimeFuture = Boolean(time && time > timestamp + futureToleranceMs);
     if (providerTimeFuture) reasons.add('FUTURE_TIMESTAMP');
     if (time && String(meta.marketState || '').toUpperCase() === 'REGULAR' && timestamp - time > regularMarketStaleMs) {
       reasons.add('STALE_TIMESTAMP');
     }
 
-    const rawChange = meta.regularMarketChange;
-    const rawChangePercent = meta.regularMarketChangePercent;
+    const rawChange = quoteMetaOlderThanHistory ? null : meta.regularMarketChange;
+    const rawChangePercent = quoteMetaOlderThanHistory ? null : meta.regularMarketChangePercent;
     const change = finiteNumber(rawChange);
     const changePercent = finiteNumber(rawChangePercent);
     if (rawChange !== null && rawChange !== undefined && rawChange !== '' && change === null) reasons.add('INVALID_NUMERIC');

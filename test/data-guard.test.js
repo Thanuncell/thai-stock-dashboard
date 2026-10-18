@@ -101,6 +101,54 @@ test('out-of-order bars are normalized and price/change mismatches are quarantin
   assert.equal(mismatch.value.stale, true);
 });
 
+test('range-start chartPreviousClose cannot cause a false price-change quarantine', () => {
+  const guard = createMarketDataGuard({ now: () => NOW });
+  const day = 24 * 60 * 60;
+  const latest = Math.floor((NOW - 2 * 60 * 60 * 1000) / 1000);
+  const result = guard.assess(yahooResult({
+    timestamp: [latest - day, latest],
+    indicators: { quote: [{
+      open: [40.5, 40.75], high: [41, 41.25], low: [40.25, 40.5], close: [40.75, 41], volume: [1000, 1200]
+    }] },
+    meta: {
+      regularMarketPrice: 41,
+      chartPreviousClose: 42.5,
+      regularMarketChange: 0.25,
+      regularMarketChangePercent: 0.613
+    }
+  }), 'PTT');
+
+  assert.equal(result.guardStatus, 'accepted');
+  assert.equal(result.value.prior, 40.75);
+  assert.ok(!result.guardReasons.includes('PRICE_CHANGE_MISMATCH'));
+});
+
+test('newer validated chart history supersedes stale quote metadata', () => {
+  const guard = createMarketDataGuard({ now: () => NOW });
+  const day = 24 * 60 * 60;
+  const latest = Math.floor((NOW - 2 * 60 * 60 * 1000) / 1000);
+  const result = guard.assess(yahooResult({
+    timestamp: [latest - day, latest],
+    indicators: { quote: [{
+      open: [9.8, 9.7], high: [10, 9.8], low: [9.7, 9.6], close: [9.75, 9.65], volume: [1000, 1200]
+    }] },
+    meta: {
+      regularMarketPrice: 9.95,
+      chartPreviousClose: 9.95,
+      regularMarketTime: latest - 10 * day,
+      regularMarketChange: 0,
+      regularMarketChangePercent: 0
+    }
+  }), 'PTT');
+
+  assert.equal(result.guardStatus, 'accepted');
+  assert.equal(result.value.last, 9.65);
+  assert.equal(result.value.prior, 9.75);
+  assert.equal(result.value.time, latest * 1000);
+  assert.ok(!result.guardReasons.includes('LAST_CLOSE_MISMATCH'));
+  assert.ok(!result.guardReasons.includes('PRICE_CHANGE_MISMATCH'));
+});
+
 test('stale or future provider time cannot masquerade as fresh', () => {
   const guard = createMarketDataGuard({ now: () => NOW, regularMarketStaleMs: 60 * 60 * 1000 });
   const stale = guard.assess(yahooResult({ meta: {

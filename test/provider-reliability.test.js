@@ -28,6 +28,41 @@ test('every Yahoo chart request has a bounded abort signal', async () => {
   assert.equal(requestInit.signal.aborted, false);
 });
 
+test('coverage verification requests enough daily history to measure technical readiness', async () => {
+  const now = Date.UTC(2026, 9, 18, 9);
+  const day = 24 * 60 * 60;
+  const timestamps = Array.from({ length: 31 }, (_, index) => Math.floor((now - (31 - index) * day * 1000) / 1000));
+  const closes = timestamps.map((_, index) => 35 + index * 0.01);
+  let requestedUrl;
+  const service = createMarketService({
+    now: () => now,
+    fetchImpl: async input => {
+      requestedUrl = new URL(String(input));
+      return new Response(JSON.stringify({ chart: { result: [{
+        meta: {
+          symbol: 'PTT.BK', currency: 'THB', exchangeName: 'SET', marketState: 'CLOSED',
+          regularMarketPrice: closes.at(-1), previousClose: closes.at(-2),
+          regularMarketChange: closes.at(-1) - closes.at(-2),
+          regularMarketChangePercent: (closes.at(-1) - closes.at(-2)) / closes.at(-2) * 100,
+          regularMarketTime: Math.floor((now - 30 * 60 * 1000) / 1000)
+        },
+        timestamp: timestamps,
+        indicators: { quote: [{
+          open: closes, high: closes.map(value => value + 0.1), low: closes.map(value => value - 0.1),
+          close: closes, volume: closes.map(() => 1000)
+        }] }
+      }], error: null } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+  });
+
+  const result = await service.verifySymbol('PTT');
+  assert.equal(requestedUrl.searchParams.get('range'), '3mo');
+  assert.equal(requestedUrl.searchParams.get('interval'), '1d');
+  assert.equal(result.symbolVerified, true);
+  assert.equal(result.chartReady, true);
+  assert.equal(result.technicalReady, true);
+});
+
 test('Yahoo chart shaping rejects incomplete candles and preserves missing volume', () => {
   const service = createMarketService();
   const shaped = service.shapeChart({
