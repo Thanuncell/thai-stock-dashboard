@@ -10,13 +10,14 @@ import {
   createRequestSequence,
   escapeHtml,
   findPriceLevels,
-  matchesNewsQuery,
   mergeWatchlists,
+  navigationUrl,
   newsKey,
   normalizeLists,
-  pageFromHash,
   pageList,
+  parseNavigationState,
   quoteChange,
+  selectNewsForDisplay,
   sentimentHeadline,
   stamp,
   summarizeBreadth,
@@ -28,30 +29,40 @@ const apiFetch = (url, options) => window.setscopeAuth.authorizedFetch(url, opti
 const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
 const marketRequestSequence = createRequestSequence();
+const NAVIGATION_FALLBACK_KEY = 'setscope-navigation-fallback-v1';
+const navigationFallback = (() => {
+  try { return JSON.parse(sessionStorage.getItem(NAVIGATION_FALLBACK_KEY) || '{}'); } catch (_) { return {}; }
+})();
+const initialNavigation = parseNavigationState(location.href, navigationFallback);
 let watchlists = loadWatchlists();
-let activeWatchlistId = localStorage.getItem('setscope-active-watchlist') || 'list-1';
-if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
+const requestedWatchlistId = initialNavigation.route === 'watchlist' ? initialNavigation.watchlistId : '';
+let activeWatchlistId = requestedWatchlistId
+  ? requestedWatchlistId
+  : localStorage.getItem('setscope-active-watchlist') || 'list-1';
+if (!requestedWatchlistId && !watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
 let watchlist = currentWatchlist().items;
-let activeSymbol = watchlist[0]?.symbol || 'PTT';
-let activeName = watchlist[0]?.name || 'ปตท.';
+let activeSymbol = initialNavigation.route === 'chart' ? initialNavigation.symbol : watchlist[0]?.symbol || 'PTT';
+let activeName = initialNavigation.route === 'chart'
+  ? watchlist.find(item => item.symbol === activeSymbol)?.name || activeSymbol
+  : watchlist[0]?.name || 'ปตท.';
 let latestMarket = null;
 let latestMarketSymbol = '';
 let latestMarketRange = '';
-let activeSource = 'all';
+let activeSource = initialNavigation.route === 'news' ? initialNavigation.source : 'all';
 let latestNews = [];
 let latestWatchlistNews = [];
 const PAGE_SIZE = 10;
 const FEATURED_COUNT = 5;
 const SOURCE_TIER = { official: 4, settrade: 3, infoquest: 2, efinance: 2, thunhoon: 2, kaohoon: 2, broker: 1 };
-let newsPage = 1;
-let newsQuery = '';
-let watchNewsPage = 1;
+let newsPage = initialNavigation.route === 'news' ? initialNavigation.newsPage : 1;
+let newsQuery = initialNavigation.route === 'news' ? initialNavigation.query : '';
+let watchNewsPage = initialNavigation.route === 'watchlist' ? initialNavigation.watchPage : 1;
 const newsAnalyses = new Map();
 let newsAnalysisPending = false;
 let watchlistNewsRequestId = 0;
 let searchTimer;
 let searchSequence = 0;
-let currentRange = '1D';
+let currentRange = initialNavigation.route === 'chart' ? initialNavigation.range : '1D';
 const chartIndicators = new Set(['sma20', 'ema20', 'ema50', 'macd']);
 let chartLoadState = 'loading';
 let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
@@ -71,12 +82,31 @@ function setWatchlistSyncStatus(text, state = '') {
   });
 }
 const workspaceRoutes = {
-  overview: { nodes: ['#market-overview', '#market-data-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย' },
-  chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ' },
-  news: { nodes: ['#activity-section', '#news-section'], title: 'ข่าวและ<span>บทวิเคราะห์</span>', description: 'ติดตามข่าวหุ้นไทยจากแหล่งข่าวที่เลือกได้' },
-  watchlist: { nodes: ['#watchlist-page', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูข่าวของหุ้นในรายการที่เลือก' }
+  overview: { nodes: ['#market-overview', '#market-data-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย', breadcrumb: 'ภาพรวม' },
+  chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ', breadcrumb: 'กราฟเทคนิค' },
+  news: { nodes: ['#activity-section', '#news-section'], title: 'ข่าวและ<span>บทวิเคราะห์</span>', description: 'ติดตามข่าวหุ้นไทยจากแหล่งข่าวที่เลือกได้', breadcrumb: 'ข่าวและบทวิเคราะห์' },
+  watchlist: { nodes: ['#watchlist-page', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูข่าวของหุ้นในรายการที่เลือก', breadcrumb: 'รายการติดตาม' }
 };
-function setWorkspacePage(page, updateHash = true) {
+function currentNavigationState(route = document.body.dataset.workspacePage || initialNavigation.route || 'overview') {
+  if (route === 'chart') return { route, symbol: activeSymbol, range: currentRange };
+  if (route === 'news') return { route, query: newsQuery, source: activeSource, newsPage };
+  if (route === 'watchlist') return { route, watchlistId: activeWatchlistId, watchPage: watchNewsPage };
+  return { route: 'overview' };
+}
+function writeNavigation(mode = 'push', route) {
+  const state = currentNavigationState(route);
+  const target = navigationUrl(state, location.pathname === '/login' || location.pathname === '/register' ? '/' : location.pathname);
+  const current = `${location.pathname}${location.search}${location.hash}`;
+  try { sessionStorage.setItem(NAVIGATION_FALLBACK_KEY, JSON.stringify(state)); } catch (_) {}
+  if (target === current || mode === 'none') return;
+  history[mode === 'replace' ? 'replaceState' : 'pushState'](null, '', target);
+}
+function syncNavigationControls() {
+  const search = $('#news-search'); if (search) search.value = newsQuery;
+  document.querySelectorAll('.source-chip').forEach(button => button.classList.toggle('active', button.dataset.source === activeSource));
+  document.querySelectorAll('.range-tabs button').forEach(button => button.classList.toggle('selected', button.dataset.range === currentRange));
+}
+function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   if (!workspaceRoutes[page]) page = 'overview';
   const visible = new Set(workspaceRoutes[page].nodes);
   ['#market-overview', '#market-data-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page'].forEach(selector => {
@@ -92,16 +122,48 @@ function setWorkspacePage(page, updateHash = true) {
   const heading = workspaceRoutes[page];
   $('#workspace-title').innerHTML = heading.title;
   $('#workspace-description').textContent = heading.description;
-  if (updateHash && location.hash !== `#${page}`) history.pushState(null, '', `#${page}`);
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  setText('#breadcrumb-current', heading.breadcrumb);
+  if (historyMode !== 'none') writeNavigation(historyMode, page);
+  if (scroll) window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+let lastRestoredLocation = '';
+function restoreNavigationFromLocation() {
+  const locationKey = `${location.pathname}${location.search}${location.hash}`;
+  if (locationKey === lastRestoredLocation) return;
+  lastRestoredLocation = locationKey;
+  const state = parseNavigationState(location.href, currentNavigationState());
+  const previousRoute = document.body.dataset.workspacePage;
+  const previousSymbol = activeSymbol, previousRange = currentRange, previousWatchlist = activeWatchlistId;
+  if (state.route === 'chart') {
+    activeSymbol = state.symbol;
+    activeName = watchlist.find(item => item.symbol === activeSymbol)?.name || activeSymbol;
+    currentRange = state.range;
+  }
+  if (state.route === 'news') { newsQuery = state.query; activeSource = state.source; newsPage = state.newsPage; }
+  if (state.route === 'watchlist') {
+    if (watchlists.some(list => list.id === state.watchlistId)) activeWatchlistId = state.watchlistId;
+    watchlist = currentWatchlist().items;
+    watchNewsPage = state.watchPage;
+  }
+  syncNavigationControls();
+  syncTechnicalSearch();
+  renderWatchlistPicker();
+  setWorkspacePage(state.route, { historyMode: 'none', scroll: false });
+  renderNews(); renderWatchlistNews(); renderWatchlist(latestMarket?.stocks || []); renderMovers(latestMarket?.stocks || []);
+  if (state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== currentRange || previousRoute !== 'chart')) getMarket();
+  if (state.route === 'watchlist' && (previousWatchlist !== activeWatchlistId || previousRoute !== 'watchlist')) getWatchlistNews({ reason: 'restore' });
+  writeNavigation('replace', state.route);
 }
 function setupWorkspaceNavigation() {
   document.querySelectorAll('.nav-item[data-workspace-route]').forEach(link => link.addEventListener('click', event => {
-    event.preventDefault(); setWorkspacePage(link.dataset.workspaceRoute);
+    event.preventDefault(); setWorkspacePage(link.dataset.workspaceRoute, { historyMode: 'push' });
   }));
-  window.addEventListener('hashchange', () => setWorkspacePage(pageFromHash(), false));
-  window.addEventListener('popstate', () => setWorkspacePage(pageFromHash(), false));
-  setWorkspacePage(pageFromHash(), false);
+  $('#breadcrumb-home')?.addEventListener('click', event => { event.preventDefault(); setWorkspacePage('overview', { historyMode: 'push' }); });
+  window.addEventListener('hashchange', restoreNavigationFromLocation);
+  window.addEventListener('popstate', restoreNavigationFromLocation);
+  syncNavigationControls();
+  setWorkspacePage(initialNavigation.route, { historyMode: 'none', scroll: false });
+  writeNavigation('replace', initialNavigation.route);
 }
 function persistWatchlistsLocal() {
   currentWatchlist().items = watchlist;
@@ -128,7 +190,7 @@ async function initializeWatchlistCloudSync() {
   watchlistCloudReady = false;
   setWatchlistSyncStatus('กำลังโหลด…', 'pending');
   const localLists = JSON.parse(JSON.stringify(watchlists));
-  const localActive = activeWatchlistId;
+  const localActive = requestedWatchlistId || activeWatchlistId;
   try {
     const response = await apiFetch('/api/watchlists');
     const data = await response.json();
@@ -180,12 +242,15 @@ function renderWatchlistPicker() {
   const count = document.querySelector('.nav-item[data-workspace-route="watchlist"] .nav-count');
   if (count) count.textContent = String(watchlist.length);
 }
-function switchWatchlist(id) {
+function switchWatchlist(id, { historyMode = 'push', resetPage = true } = {}) {
   const chosen = watchlists.find(list => list.id === id); if (!chosen) return;
   activeWatchlistId = id; watchlist = chosen.items; scheduleWatchlistCloudSync();
+  if (resetPage) watchNewsPage = 1;
   if (watchlist.length && !watchlist.some(item => item.symbol === activeSymbol)) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; updateTradingViewChart(); }
   syncTechnicalSearch();
-  renderWatchlistPicker(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateWatchlistAddButton(); getMarket(); getWatchlistNews();
+  renderWatchlistPicker(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateWatchlistAddButton();
+  if (document.body.dataset.workspacePage === 'watchlist') writeNavigation(historyMode, 'watchlist');
+  getMarket(); getWatchlistNews({ reason: 'watchlist-change' });
 }
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
 function renderSettradeOverview(data) {
@@ -508,6 +573,7 @@ async function selectStock(symbol, name = symbol) {
   hideSuggestions();
   renderNews();
   updateTradingViewChart();
+  if (document.body.dataset.workspacePage === 'chart') writeNavigation('push', 'chart');
   await getMarket();
 }
 async function addActiveToWatchlist() {
@@ -521,7 +587,9 @@ async function addActiveToWatchlist() {
   renderWatchlist(latestMarket?.stocks || []);
   renderMovers(latestMarket?.stocks || []);
   renderAlertSettings();
-  getWatchlistNews();
+  watchNewsPage = 1;
+  if (document.body.dataset.workspacePage === 'watchlist') writeNavigation('push', 'watchlist');
+  getWatchlistNews({ reason: 'watchlist-change' });
   await getMarket();
 }
 
@@ -529,7 +597,10 @@ function createWatchlist() {
   if (watchlists.length >= MAX_WATCHLISTS) return;
   const id = `list-${Date.now()}`, name = `Watchlist ${watchlists.length + 1}`;
   watchlists.push({ id, name, items: [] }); activeWatchlistId = id; watchlist = currentWatchlist().items;
-  saveWatchlist(); renderWatchlistPicker(); renderWatchlist(); renderAlertSettings(); renderMovers([]); getMarket(); getWatchlistNews();
+  watchNewsPage = 1;
+  saveWatchlist(); renderWatchlistPicker(); renderWatchlist(); renderAlertSettings(); renderMovers([]); getMarket();
+  if (document.body.dataset.workspacePage === 'watchlist') writeNavigation('push', 'watchlist');
+  getWatchlistNews({ reason: 'watchlist-change' });
 }
 function renameActiveWatchlist() {
   const current = currentWatchlist();
@@ -789,7 +860,11 @@ async function getMarket() {
   }
 }
 
-async function getNews() {
+async function getNews({ reason = 'refresh', resetPage = false } = {}) {
+  if (resetPage) {
+    newsPage = 1;
+    if (document.body.dataset.workspacePage === 'news') writeNavigation('push', 'news');
+  }
   const refreshButton = $('#refresh-news');
   if (refreshButton?.disabled) return;
   if (refreshButton) { refreshButton.disabled = true; refreshButton.classList.add('is-loading'); refreshButton.textContent = 'กำลังอัปเดตข่าว…'; }
@@ -808,7 +883,11 @@ async function getNews() {
     if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }
   }
 }
-async function getWatchlistNews() {
+async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) {
+  if (resetPage) {
+    watchNewsPage = 1;
+    if (document.body.dataset.workspacePage === 'watchlist') writeNavigation('push', 'watchlist');
+  }
   const requestId = ++watchlistNewsRequestId;
   const root = $('#watchlist-news-list');
   const symbols = watchlist.map(item => item.symbol).filter(Boolean);
@@ -830,7 +909,6 @@ async function getWatchlistNews() {
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
     if (requestId !== watchlistNewsRequestId) return;
     latestWatchlistNews = data.items || [];
-    watchNewsPage = 1;
     renderWatchlistNews();
     setText('#watchlist-news-status', `${currentWatchlist().name} · ${latestWatchlistNews.length} ข่าว · อัปเดต ${stamp(data.fetchedAt)}`);
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
@@ -896,7 +974,7 @@ function renderNewsItem(item, options = {}) {
   impact.title = 'ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม';
   impact.textContent = mood;
   tags.append(source, impact);
-  if (item.source === 'broker') {
+  if (item.brokerCategory || item.source === 'broker') {
     const promo = document.createElement('span');
     promo.className = 'promo-tag';
     promo.textContent = 'จากผู้ให้บริการ อาจมีเนื้อหาส่งเสริมการขาย';
@@ -950,7 +1028,9 @@ function renderWatchlistNews() {
   watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
-  renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => { watchNewsPage = page; renderWatchlistNews(); });
+  renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
+    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist');
+  });
 }
 function renderPagerInto(bar, current, total, count, onPick) {
   if (!bar) return;
@@ -975,16 +1055,13 @@ function renderPagerInto(bar, current, total, count, onPick) {
 }
 function renderNews() {
   const query = newsQuery.trim().toLocaleLowerCase('th');
-  const all = latestNews.filter(item => (activeSource === 'all' || item.source === activeSource)
-    && matchesNewsQuery(item, query, newsAnalyses.get(newsKey(item))?.summary));
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const featured = activeSource === 'all'
-    ? all.filter(item => Date.parse(item.pubDate) >= cutoff)
-      .sort((a, b) => (SOURCE_TIER[b.source] || 0) - (SOURCE_TIER[a.source] || 0) || Date.parse(b.pubDate) - Date.parse(a.pubDate))
-      .slice(0, FEATURED_COUNT)
-    : [];
-  const featuredKeys = new Set(featured.map(newsKey));
-  const rest = all.filter(item => !featuredKeys.has(newsKey(item)));
+  const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || '' }));
+  const { filtered: all, featured, latest: rest } = selectNewsForDisplay(prepared, {
+    source: activeSource,
+    query,
+    featuredCount: FEATURED_COUNT,
+    sourceTier: SOURCE_TIER
+  });
   const featuredBox = $('#featured-news');
   if (featuredBox) {
     featuredBox.replaceChildren(...featured.map(item => renderNewsItem(item)));
@@ -996,13 +1073,17 @@ function renderNews() {
   const items = rest.slice((newsPage - 1) * PAGE_SIZE, newsPage * PAGE_SIZE);
   const emptyText = query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่พบข่าวในช่วง 30 วันที่ผ่านมา ลองรีเฟรชอีกครั้ง';
   renderNewsItemsInto($('#news-list'), items, emptyText);
-  renderPagerInto($('#news-pager'), newsPage, total, rest.length, page => { newsPage = page; renderNews(); });
+  renderPagerInto($('#news-pager'), newsPage, total, rest.length, page => {
+    newsPage = page; renderNews(); writeNavigation('push', 'news');
+  });
   const counter = $('#news-count');
   if (counter) counter.textContent = query ? `พบ ${all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
 }
 
 async function setup() {
   await initializeWatchlistCloudSync();
+  if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
+  watchlist = currentWatchlist().items;
   setupWorkspaceNavigation();
   renderWatchlistPicker();
   setTheme(localStorage.getItem('setscope-theme') || 'light');
@@ -1016,7 +1097,10 @@ async function setup() {
       const symbol = remove.dataset.remove;
       watchlist = watchlist.filter(item => item.symbol !== symbol);
       if (activeSymbol === symbol && watchlist.length) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; syncTechnicalSearch(); }
-      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateTradingViewChart(); getMarket(); getWatchlistNews(); return;
+      watchNewsPage = 1;
+      saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateTradingViewChart(); getMarket();
+      if (document.body.dataset.workspacePage === 'watchlist') writeNavigation('push', 'watchlist');
+      getWatchlistNews({ reason: 'watchlist-change' }); return;
     }
     const row = event.target.closest('.watch-item');
     if (row) { activeSymbol = row.dataset.sym; activeName = row.dataset.name || activeSymbol; syncTechnicalSearch(); renderWatchlist(latestMarket?.stocks || []); renderNews(); updateTradingViewChart(); getMarket(); }
@@ -1091,7 +1175,7 @@ async function setup() {
   $('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
   document.querySelectorAll('.range-tabs button').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.range-tabs button').forEach(item => item.classList.remove('selected'));
-    button.classList.add('selected'); currentRange = button.dataset.range; updateTradingViewChart(); getMarket();
+    button.classList.add('selected'); currentRange = button.dataset.range; writeNavigation('push', 'chart'); updateTradingViewChart(); getMarket();
   }));
   $('#chart-indicators').addEventListener('click', event => {
     const button = event.target.closest('[data-indicator]');
@@ -1116,15 +1200,15 @@ async function setup() {
   window.addEventListener('orientationchange', scheduleChartRedraw, { passive: true });
   document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.source-chip').forEach(item => item.classList.remove('active'));
-    button.classList.add('active'); activeSource = button.dataset.source; newsPage = 1; getNews();
+    button.classList.add('active'); activeSource = button.dataset.source; newsPage = 1; renderNews(); writeNavigation('push', 'news');
   }));
-  $('#news-search').addEventListener('input', event => { newsQuery = event.target.value; newsPage = 1; renderNews(); });
-  $('#refresh-news').addEventListener('click', getNews);
-  $('#refresh-watchlist-news').addEventListener('click', getWatchlistNews);
+  $('#news-search').addEventListener('input', event => { newsQuery = event.target.value; newsPage = 1; renderNews(); writeNavigation('replace', 'news'); });
+  $('#refresh-news').addEventListener('click', () => getNews({ reason: 'manual', resetPage: true }));
+  $('#refresh-watchlist-news').addEventListener('click', () => getWatchlistNews({ reason: 'manual', resetPage: true }));
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
-  updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews(); getWatchlistNews();
-  setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(getNews, 300000); setInterval(getWatchlistNews, 300000);
+  updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews({ reason: 'startup' }); getWatchlistNews({ reason: 'startup' });
+  setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(() => getNews({ reason: 'poll' }), 300000); setInterval(() => getWatchlistNews({ reason: 'poll' }), 300000);
 }
 if (document.body.classList.contains('authenticated')) setup();
 else window.addEventListener('setscope:authenticated', setup, { once: true });

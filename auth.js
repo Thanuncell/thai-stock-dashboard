@@ -2,12 +2,31 @@
   const STORAGE_KEY = 'setscope-auth-session-v1';
   const THEME_KEY = 'setscope-theme';
   const APP_TITLE = 'SETscope — หุ้นไทยและกราฟเทคนิค';
+  const APP_RETURN_KEY = 'setscope-auth-return-v1';
   let config = null;
   let session = readSession();
   let user = null;
   let refreshTimer;
   const AUTH_ROUTES = { login: '/login', signup: '/register' };
   const $ = selector => document.querySelector(selector);
+  function appRouteFromLocation() {
+    if (location.hash.includes('access_token=')) return '';
+    const route = location.hash.replace(/^#/, '');
+    if (!['overview', 'chart', 'news', 'watchlist'].includes(route)) return '';
+    const pathname = location.pathname === AUTH_ROUTES.login || location.pathname === AUTH_ROUTES.signup ? '/' : location.pathname;
+    return `${pathname || '/'}${location.search}${location.hash}`;
+  }
+  function rememberAppRoute() {
+    const route = appRouteFromLocation();
+    if (route) sessionStorage.setItem(APP_RETURN_KEY, route);
+  }
+  function restoreAppRoute() {
+    const route = sessionStorage.getItem(APP_RETURN_KEY);
+    if (!route || !/^\/(?:\?[^#]*)?#(?:overview|chart|news|watchlist)$/.test(route)) return false;
+    sessionStorage.removeItem(APP_RETURN_KEY);
+    history.replaceState(null, '', route);
+    return true;
+  }
   function setAuthTheme(theme) {
     const next = theme === 'dark' ? 'dark' : 'light';
     document.documentElement.dataset.theme = next;
@@ -60,7 +79,9 @@
     document.body.classList.remove('auth-checking');
     $('#auth-gate').removeAttribute('aria-busy');
     const pathname = location.pathname.replace(/\/+$/, '') || '/';
-    if (pathname === AUTH_ROUTES.login || pathname === AUTH_ROUTES.signup) history.replaceState(null, '', `/${location.hash}`);
+    if (pathname === AUTH_ROUTES.login || pathname === AUTH_ROUTES.signup) {
+      if (!restoreAppRoute()) history.replaceState(null, '', '/#overview');
+    }
     document.body.classList.add('authenticated');
     $('#auth-gate').hidden = true;
     $('#app-shell').setAttribute('aria-hidden', 'false');
@@ -78,6 +99,7 @@
     $('#app-shell')?.setAttribute('aria-hidden', 'true');
     const pathname = location.pathname.replace(/\/+$/, '') || '/';
     const onAuthRoute = pathname === AUTH_ROUTES.login || pathname === AUTH_ROUTES.signup;
+    if (!onAuthRoute) rememberAppRoute();
     setMode(onAuthRoute ? modeFromPath() : 'login', { updateUrl: !onAuthRoute, replace: true });
     message(text, type);
   }
@@ -122,6 +144,7 @@
     finally { submit.disabled = false; }
   }
   async function logout() {
+    rememberAppRoute();
     try { if (await ensureFresh()) await authRequest('logout', { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}` } }); } catch (_) {}
     clearTimeout(refreshTimer); saveSession(null); user = null; setMode('login', { replace: true }); window.location.reload();
   }
@@ -149,6 +172,7 @@
     document.body.classList.add('auth-checking');
     $('#auth-gate').setAttribute('aria-busy', 'true');
   } else {
+    rememberAppRoute();
     setMode(modeFromPath(), { replace: true });
   }
 

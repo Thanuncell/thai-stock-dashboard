@@ -13,8 +13,8 @@ const realtimeSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'rea
 test('polling intervals remain at the baseline request budget', () => {
   assert.equal((appSource.match(/setInterval\(getMarket, 60000\)/g) || []).length, 1);
   assert.equal((appSource.match(/setInterval\(getSettradeOverview, 300000\)/g) || []).length, 1);
-  assert.equal((appSource.match(/setInterval\(getNews, 300000\)/g) || []).length, 1);
-  assert.equal((appSource.match(/setInterval\(getWatchlistNews, 300000\)/g) || []).length, 1);
+  assert.equal((appSource.match(/setInterval\(\(\) => getNews\(\{ reason: 'poll' \}\), 300000\)/g) || []).length, 1);
+  assert.equal((appSource.match(/setInterval\(\(\) => getWatchlistNews\(\{ reason: 'poll' \}\), 300000\)/g) || []).length, 1);
 });
 
 test('ES module split preserves the six-request main-page static budget', () => {
