@@ -300,8 +300,33 @@ export function findPriceLevels(bars, last) {
   };
 }
 
+export function trustedMarketBars(bars = []) {
+  const byTime = new Map();
+  const withoutTime = [];
+  for (const bar of bars || []) {
+    if (!bar || (bar.guardStatus && bar.guardStatus !== 'accepted')) continue;
+    const close = toFiniteNumber(bar.close);
+    if (close === null || close <= 0) continue;
+    const suppliedOhlc = [bar.open, bar.high, bar.low].some(value => value !== null && value !== undefined && value !== '');
+    if (suppliedOhlc) {
+      const open = toFiniteNumber(bar.open), high = toFiniteNumber(bar.high), low = toFiniteNumber(bar.low);
+      const volume = toFiniteNumber(bar.volume);
+      if ([open, high, low].some(value => value === null || value <= 0)) continue;
+      if (high < low || open < low || open > high || close < low || close > high) continue;
+      if (bar.volume !== null && bar.volume !== undefined && bar.volume !== '' && (volume === null || volume < 0)) continue;
+    }
+    const time = toFiniteNumber(bar.time);
+    const normalized = { ...bar, close };
+    if (time === null || time <= 0) withoutTime.push(normalized);
+    else if (!byTime.has(time)) byTime.set(time, { ...normalized, time });
+  }
+  if (!byTime.size) return withoutTime;
+  return [...byTime.values()].sort((left, right) => left.time - right.time);
+}
+
 export function analyseTechnicals(bars, levelBars = bars) {
-  const usable = (bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
+  const usable = trustedMarketBars(bars);
+  const usableLevels = trustedMarketBars(levelBars || usable);
   const values = usable.map(bar => Number(bar.close));
   if (values.length < 30) return null;
   const period = 14;
@@ -348,6 +373,6 @@ export function analyseTechnicals(bars, levelBars = bars) {
   const buy = Object.values(signals).filter(value => value === 'ซื้อ').length;
   const sell = Object.values(signals).filter(value => value === 'ขาย').length;
   const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
-  const levels = findPriceLevels(levelBars || usable, last);
+  const levels = findPriceLevels(usableLevels, last);
   return { values, rsi, sma20, emas, macd: macdLast, macdSignal: macdSignalLast, macdSeries: macd, signalSeries: signalLine, macdHistogram: histogram, last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 7 };
 }

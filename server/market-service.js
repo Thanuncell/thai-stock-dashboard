@@ -1,5 +1,7 @@
 'use strict';
 
+const { createMarketDataGuard } = require('./data-guard');
+
 const PERIODS = Object.freeze({
   '1D': ['1d', '1m'],
   '1W': ['5d', '15m'],
@@ -15,7 +17,15 @@ const LEVEL_FALLBACK_PERIODS = Object.freeze({
   '1Y': ['2y', '1d']
 });
 
-function createMarketService({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
+function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now } = {}) {
+  const dataGuard = createMarketDataGuard({
+    now,
+    futureToleranceMs: Number(env.DATA_GUARD_FUTURE_TOLERANCE_MS) || undefined,
+    regularMarketStaleMs: Number(env.DATA_GUARD_REGULAR_STALE_MS) || undefined,
+    maxPriceMoveRatio: Number(env.DATA_GUARD_MAX_PRICE_MOVE_RATIO) || undefined,
+    lastKnownGoodTtlMs: Number(env.DATA_GUARD_LAST_KNOWN_TTL_MS) || undefined,
+    lastCloseMismatchRatio: Number(env.DATA_GUARD_LAST_CLOSE_MISMATCH_RATIO) || undefined
+  });
   async function yahooChart(symbol, range, interval) {
     const endpoint = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
     endpoint.searchParams.set('range', range);
@@ -56,33 +66,27 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch }
       }));
   }
 
-  function shapeChart(result, symbol) {
-    const quote = result.indicators?.quote?.[0] || {}, timestamps = result.timestamp || [];
-    const bars = timestamps.map((time, index) => ({
-      time: time * 1000,
-      open: quote.open?.[index] ?? null,
-      high: quote.high?.[index] ?? null,
-      low: quote.low?.[index] ?? null,
-      close: quote.close?.[index] ?? null,
-      volume: quote.volume?.[index] ?? null
-    })).filter(row => [row.open, row.high, row.low, row.close]
-      .every(value => value !== null && value !== '' && Number.isFinite(Number(value)) && Number(value) > 0));
-    const meta = result.meta || {};
-    const last = meta.regularMarketPrice ?? bars.at(-1)?.close ?? null;
-    const prior = meta.chartPreviousClose ?? meta.previousClose ?? null;
+  function shapeChart(result, symbol, contextKey = 'default') {
+    const assessed = dataGuard.assess(result, symbol, { contextKey });
+    if (assessed.value) return assessed.value;
+    const error = Error(`Data Guard ${symbol}: ${assessed.guardReasons.join(',') || 'UNAVAILABLE'}`);
+    error.code = assessed.guardReasons[0] || 'DATA_GUARD_REJECTED';
+    error.guardStatus = assessed.guardStatus;
+    error.guardReasons = assessed.guardReasons;
+    throw error;
+  }
+
+  async function verifySymbol(symbol) {
+    const canonical = String(symbol || '').trim().toUpperCase().replace(/\.BK$/, '');
+    const value = shapeChart(await yahooChart(`${canonical}.BK`, '1mo', '1d'), canonical, 'chart:1mo:1d');
+    const trusted = value.guardStatus === 'accepted';
     return {
-      symbol,
-      last,
-      prior,
-      time: (meta.regularMarketTime ? meta.regularMarketTime * 1000 : bars.at(-1)?.time) || null,
-      fullName: meta.longName || meta.shortName || symbol,
-      currency: meta.currency || 'THB',
-      high: meta.regularMarketDayHigh ?? null,
-      low: meta.regularMarketDayLow ?? null,
-      volume: meta.regularMarketVolume ?? null,
-      exchange: meta.fullExchangeName || 'SET',
-      marketState: meta.marketState || 'UNKNOWN',
-      history: bars
+      symbolVerified: trusted,
+      chartReady: trusted && value.history.length > 0,
+      technicalReady: trusted && value.history.length >= 30,
+      guardStatus: value.guardStatus,
+      guardReason: value.guardReasons[0] || null,
+      asOf: value.time ? new Date(value.time).toISOString() : null
     };
   }
 
@@ -119,15 +123,19 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch }
 
   async function getMarket(symbols, active, range) {
     const [rangeName, interval] = PERIODS[range] || PERIODS['1D'];
-    const base = await Promise.allSettled(symbols.map(async symbol => shapeChart(await yahooChart(`${symbol}.BK`, '1d', '5m'), symbol)));
+    const base = await Promise.allSettled(symbols.map(async symbol => shapeChart(await yahooChart(`${symbol}.BK`, '1d', '5m'), symbol, 'quote:1d:5m')));
     const stocks = base.filter(result => result.status === 'fulfilled').map(result => result.value);
     const errors = base.filter(result => result.status === 'rejected').map(result => result.reason.message);
+    stocks.filter(stock => stock.guardStatus !== 'accepted')
+      .forEach(stock => errors.push(`${stock.symbol}: ${stock.guardReasons.join(',') || stock.guardStatus}`));
     if (!stocks.length) throw Error(errors.join(' · ') || 'Yahoo Finance ยังไม่คืนข้อมูลหุ้นไทย');
 
     const indexTry = await Promise.allSettled([yahooChart('^SET.BK', '1d', '5m')]);
     let index = null;
-    if (indexTry[0].status === 'fulfilled') index = shapeChart(indexTry[0].value, 'SET');
-    else errors.push(indexTry[0].reason.message);
+    if (indexTry[0].status === 'fulfilled') {
+      try { index = shapeChart(indexTry[0].value, 'SET', 'quote:1d:5m'); }
+      catch (error) { errors.push(error.message); }
+    } else errors.push(indexTry[0].reason.message);
 
     let turnoverMillionBaht = null;
     if (env.SET_API_KEY) {
@@ -139,16 +147,35 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch }
     let selected = stocks.find(stock => stock.symbol === active);
     if (selected && (rangeName !== '1d' || interval !== '5m')) {
       try {
-        const historyResult = shapeChart(await yahooChart(`${active}.BK`, rangeName, interval), active);
-        selected = { ...selected, history: historyResult.history };
-      } catch (error) { errors.push(error.message); }
+        const historyResult = shapeChart(await yahooChart(`${active}.BK`, rangeName, interval), active, `chart:${rangeName}:${interval}`);
+        selected = {
+          ...selected,
+          history: historyResult.history,
+          guardStatus: historyResult.guardStatus,
+          guardReasons: historyResult.guardReasons,
+          dataState: historyResult.dataState,
+          stale: historyResult.stale
+        };
+      } catch (error) {
+        errors.push(error.message);
+        selected = {
+          ...selected,
+          history: [],
+          guardStatus: 'unavailable',
+          guardReasons: error.guardReasons || [error.code || 'RANGE_UNAVAILABLE'],
+          dataState: 'unavailable',
+          stale: false
+        };
+      }
     }
     const history = selected?.history || [];
-    let levelsHistory = history, indicatorHistory = history;
-    if (selected && history.length < 40) {
+    const trustedTechnicalHistory = selected?.guardStatus === 'accepted';
+    let levelsHistory = trustedTechnicalHistory ? history : [];
+    let indicatorHistory = trustedTechnicalHistory ? history : [];
+    if (trustedTechnicalHistory && history.length < 40) {
       const [fallbackRange, fallbackInterval] = LEVEL_FALLBACK_PERIODS[range] || LEVEL_FALLBACK_PERIODS['1M'];
       try {
-        const fallback = shapeChart(await yahooChart(`${active}.BK`, fallbackRange, fallbackInterval), active);
+        const fallback = shapeChart(await yahooChart(`${active}.BK`, fallbackRange, fallbackInterval), active, `chart:${fallbackRange}:${fallbackInterval}`);
         if (fallback.history.length > history.length) {
           levelsHistory = fallback.history;
           indicatorHistory = fallback.history;
@@ -159,6 +186,14 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch }
     const latestProviderTime = [...stocks, index].filter(Boolean)
       .map(item => Number(item.time)).filter(Number.isFinite).reduce((latest, value) => Math.max(latest, value), 0);
     const partial = errors.length > 0;
+    const selectedDataState = selected?.dataState;
+    const dataState = selectedDataState === 'stale'
+      ? 'stale'
+      : selectedDataState === 'unavailable'
+        ? 'unavailable'
+      : selectedDataState === 'suspect' || selectedDataState === 'quarantined'
+        ? 'suspect'
+        : partial ? 'partial' : 'delayed';
     return {
       stocks,
       indices: index ? [index] : [],
@@ -171,14 +206,14 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch }
       source: 'Yahoo Finance',
       delayMinutes: 15,
       delayed: true,
-      stale: false,
+      stale: dataState === 'stale',
       partial,
-      dataState: partial ? 'partial' : 'delayed',
+      dataState,
       errors
     };
   }
 
-  return { getMarket, search, shapeChart, yahooChart };
+  return { getMarket, search, shapeChart, verifySymbol, yahooChart };
 }
 
 module.exports = { LEVEL_FALLBACK_PERIODS, PERIODS, createMarketService };
