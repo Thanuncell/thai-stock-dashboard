@@ -11,6 +11,13 @@ const PROVIDER_POLICIES = Object.freeze({
     markHit(value) { return { ...value, cached: true }; },
     markStale(value) { return { ...value, cached: true, stale: true, dataState: 'stale' }; }
   }),
+  coverage: Object.freeze({
+    ttlMs: 300_000,
+    staleIfErrorMs: 86_400_000,
+    errorBackoffMs: 30_000,
+    markHit(value) { return { ...value, cached: true }; },
+    markStale(value) { return { ...value, cached: true, stale: true, dataState: 'stale' }; }
+  }),
   watchlistNews: Object.freeze({ ttlMs: 300_000, staleIfErrorMs: 0, errorBackoffMs: 5_000 }),
   settrade: Object.freeze({
     ttlMs: 60_000,

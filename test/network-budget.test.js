@@ -9,6 +9,7 @@ const appSource = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const realtimeSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'realtime-readiness.js'), 'utf8');
+const guardSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'data-guard.js'), 'utf8');
 
 test('polling intervals remain at the baseline request budget', () => {
   assert.equal((appSource.match(/setInterval\(getMarket, 60000\)/g) || []).length, 1);
@@ -44,4 +45,12 @@ test('archive adds one bounded server-page read without increasing upstream poll
   assert.match(serverSource, /news-archive:\$\{page\}\|\$\{pageSize\}\|\$\{source\}\|\$\{symbol\}/);
   assert.equal((appSource.match(/setInterval\(/g) || []).length, 4);
   assert.doesNotMatch([appSource, indexSource].join('\n'), /SUPABASE_(?:SECRET|SERVICE_ROLE)_KEY/);
+});
+
+test('Preventive Data Guard adds no upstream validation request or browser polling', () => {
+  assert.doesNotMatch(guardSource, /fetch\s*\(|query1\.finance\.yahoo\.com|setInterval|setTimeout/);
+  assert.equal((appSource.match(/apiFetch\('\/api\/coverage'\)/g) || []).length, 1);
+  assert.match(appSource, /if \(page === 'chart'\) getCoverageSummary\(\)/);
+  assert.match(appSource, /if \(!root \|\| coverageSummaryRequested\) return/);
+  assert.equal((appSource.match(/setInterval\(/g) || []).length, 4);
 });

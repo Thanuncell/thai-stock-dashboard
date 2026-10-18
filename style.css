@@ -251,6 +251,10 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .chart-indicators{gap:7px;flex-wrap:wrap;min-height:26px}
 .chart-data-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:9px;line-height:1.5}
 .chart-source-note{color:var(--muted)}
+.watch-data-state{color:#a56a27;font-size:7px;font-weight:600;white-space:nowrap}
+.coverage-summary{display:flex;gap:6px 16px;flex-wrap:wrap;margin:7px 0 2px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--muted);font-size:9px;line-height:1.45}
+.coverage-summary[hidden]{display:none}
+.coverage-summary b{color:var(--ink);font-weight:600}
 .chart-fullscreen-btn{border:1px solid var(--line);border-radius:6px;background:var(--paper);color:#4d756a;font:600 10px var(--font);padding:7px 10px;cursor:pointer}
 .chart-fullscreen-btn:hover{border-color:#a9cfc2;background:#f0f7f4}
 .indicator-toggle{display:inline-flex;align-items:center;gap:5px;border:1px solid transparent;border-radius:5px;padding:4px 6px;background:transparent;color:#98a2ab;font:500 9px var(--font);cursor:pointer}
@@ -295,6 +299,7 @@ body.chart-fullscreen-open{overflow:hidden}
 html[data-theme="dark"] .own-chart-wrap{background:#111a23}
 html[data-theme="dark"] .indicator-toggle.active{background:#172532}
 html[data-theme="dark"] .chart-fullscreen-btn{background:#172532;color:#9ad6c1}
+html[data-theme="dark"] .coverage-summary{background:#111a23}
 html[data-theme="dark"] .chart-level text{stroke:#111a23}
 @media(max-width:790px){.own-chart-wrap{height:330px}.own-chart-wrap.has-macd{height:470px}.chart-data-meta{display:grid;gap:2px}.chart-fullscreen-btn{min-height:40px}.chart-panel:fullscreen,.chart-panel.chart-fullscreen-fallback{padding:12px}.chart-panel:fullscreen .chart-toolbar,.chart-panel.chart-fullscreen-fallback .chart-toolbar{margin-top:9px}.chart-panel:fullscreen .own-chart-wrap,.chart-panel.chart-fullscreen-fallback .own-chart-wrap{height:max(330px,calc(100dvh - 285px))}}
 @media(max-width:470px){.own-chart-wrap{height:300px}.own-chart-wrap.has-macd{height:440px}.chart-panel:fullscreen .own-chart-wrap,.chart-panel.chart-fullscreen-fallback .own-chart-wrap{height:max(300px,calc(100dvh - 305px))}.chart-panel:fullscreen .price-chart-svg,.chart-panel.chart-fullscreen-fallback .price-chart-svg{min-width:660px}.chart-level text{font-size:8px}}

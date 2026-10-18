@@ -74,6 +74,7 @@ let chartLoadState = 'loading';
 let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
 let chartResizeTimer = null;
 let chartCssFullscreen = false;
+let coverageSummaryRequested = false;
 let alertPrefs = readLocal('setscope-alert-prefs', {});
 let alertStates = readLocal('setscope-alert-states', {});
 let alertHistory = readLocal('setscope-alert-history', []);
@@ -129,6 +130,7 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   $('#workspace-title').innerHTML = heading.title;
   $('#workspace-description').textContent = heading.description;
   setText('#breadcrumb-current', heading.breadcrumb);
+  if (page === 'chart') getCoverageSummary();
   if (historyMode !== 'none') writeNavigation(historyMode, page);
   if (scroll) window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -351,11 +353,13 @@ function renderWatchlist(rows = []) {
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   const markup = watchlist.length ? watchlist.map(item => {
     const quote = bySymbol[item.symbol];
+    const quoteState = quote?.dataState;
+    const quoteStateText = quoteState === 'stale' ? 'ข้อมูลเก่า' : quoteState === 'suspect' || quoteState === 'quarantined' ? 'ข้อมูลต้องสงสัย' : '';
     const change = quote ? Number(quote.last) - Number(quote.prior) : null;
     const percent = quote && Number(quote.prior) ? change / Number(quote.prior) * 100 : null;
     return `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name || item.symbol)}">
       <div class="watch-details"><span class="watch-symbol">${escapeHtml(item.symbol)}</span><span class="watch-name">${escapeHtml(item.name || item.symbol)}</span></div>
-      <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}</div>
+      <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}${quoteStateText ? `<span class="watch-data-state">${quoteStateText}</span>` : ''}</div>
       <button class="watch-remove" type="button" data-remove="${escapeHtml(item.symbol)}" aria-label="ลบ ${escapeHtml(item.symbol)}" title="นำออกจากรายการ">×</button>
     </div>`;
   }).join('') : '<div class="watch-empty">ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist</div>';
@@ -372,7 +376,13 @@ function updateTradingViewChart() {
     renderPriceChart([]);
     return;
   }
-  renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt, latestMarket?.levelsHistory || latestMarket?.history || [], latestMarket?.indicatorHistory || latestMarket?.history || []);
+  const activeQuote = latestMarket?.stocks?.find(item => item.symbol === activeSymbol);
+  const chartBarTime = latestMarket?.history?.at(-1)?.time;
+  const providerTime = chartBarTime ? new Date(chartBarTime).toISOString() : activeQuote?.time ? new Date(activeQuote.time).toISOString() : latestMarket?.asOf;
+  const guardedState = ['stale', 'suspect', 'quarantined', 'unavailable'].includes(latestMarket?.dataState)
+    ? latestMarket.dataState
+    : activeQuote?.dataState || latestMarket?.dataState;
+  renderPriceChart(latestMarket?.history || [], providerTime, latestMarket?.levelsHistory || [], latestMarket?.indicatorHistory || [], guardedState);
 }
 
 function setChartLoadState(state, message = '') {
@@ -387,7 +397,7 @@ function setTechnicalPanelState(state) {
   panel.classList.toggle('no-chart-data', state === 'unavailable' || state === 'error' || state === 'loading');
 }
 
-function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars, indicatorBars = bars) {
+function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indicatorBars = bars, dataState = 'delayed') {
   const host = $('#stock-price-chart');
   if (!host) return;
   const rows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
@@ -484,8 +494,9 @@ function renderPriceChart(bars = [], fetchedAt = '', levelBars = bars, indicator
     const label = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', ...(currentRange === '1D' ? { hour: '2-digit', minute: '2-digit' } : {}) });
     return `<text class="chart-axis-text" x="${x(index)}" y="${showMacd ? 510 : 375}" text-anchor="middle">${escapeHtml(label)}</text>`;
   }).join('');
-  const updated = fetchedAt ? new Date(fetchedAt).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
-  setText('#chart-updated', `อัปเดตล่าสุด: ${updated} น. (เวลาไทย)`);
+  const updated = providerTime ? new Date(providerTime).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+  const stateText = dataState === 'stale' ? ' · ข้อมูลเก่า' : dataState === 'suspect' || dataState === 'quarantined' ? ' · ข้อมูลต้องสงสัย' : '';
+  setText('#chart-updated', `อัปเดตล่าสุด: ${updated} น. (เวลาไทย)${stateText}`);
   host.closest('.own-chart-wrap')?.classList.toggle('has-macd', showMacd);
   host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" style="width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${dateLabels}</svg></div>`;
 }
@@ -626,7 +637,7 @@ let moverMode = 'up';
 function renderMovers(rows = []) {
   const list = $('#mover-list'); if (!list) return;
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
-  const values = watchlist.map(item => ({ ...item, quote: bySymbol[item.symbol] })).filter(item => item.quote && Number.isFinite(Number(item.quote.last)));
+  const values = watchlist.map(item => ({ ...item, quote: bySymbol[item.symbol] })).filter(item => item.quote?.guardStatus === 'accepted' && Number.isFinite(Number(item.quote.last)));
   const pct = item => quoteChange(item.quote.last, item.quote.prior).percent;
   const descending = value => value === null ? Number.NEGATIVE_INFINITY : value;
   const ascending = value => value === null ? Number.POSITIVE_INFINITY : value;
@@ -766,6 +777,7 @@ function evaluateWatchlistAlerts(rows) {
   const current = new Set(watchlist.map(item => item.symbol));
   const now = Date.now();
   rows.filter(row => current.has(row.symbol)).forEach(row => {
+    if (row.guardStatus !== 'accepted') return;
     const analysis = analyseTechnicals(row.history || []);
     const price = Number(row.last);
     const previous = alertStates[row.symbol];
@@ -785,7 +797,13 @@ function evaluateWatchlistAlerts(rows) {
   localStorage.setItem('setscope-alert-states', JSON.stringify(alertStates));
 }
 function updateStockCards(rows) {
-  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], latestMarket?.fetchedAt, latestMarket?.levelsHistory || latestMarket?.history || [], latestMarket?.indicatorHistory || latestMarket?.history || []);
+  const activeQuote = rows.find(row => row.symbol === activeSymbol);
+  const chartBarTime = latestMarket?.history?.at(-1)?.time;
+  const providerTime = chartBarTime ? new Date(chartBarTime).toISOString() : activeQuote?.time ? new Date(activeQuote.time).toISOString() : latestMarket?.asOf;
+  const guardedState = ['stale', 'suspect', 'quarantined', 'unavailable'].includes(latestMarket?.dataState)
+    ? latestMarket.dataState
+    : activeQuote?.dataState || latestMarket?.dataState;
+  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], providerTime, latestMarket?.levelsHistory || [], latestMarket?.indicatorHistory || [], guardedState);
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   renderWatchlist(rows);
   const quote = bySymbol[activeSymbol];
@@ -809,6 +827,25 @@ function updateStockCards(rows) {
   updateWatchlistAddButton();
   setText('#history-count', String(latestMarket?.history?.length || 0));
   drawSignals(latestMarket?.indicatorHistory || latestMarket?.history || [], latestMarket?.levelsHistory || latestMarket?.history || [], latestMarket?.history || []);
+}
+async function getCoverageSummary() {
+  const root = $('#coverage-summary');
+  if (!root || coverageSummaryRequested) return;
+  coverageSummaryRequested = true;
+  try {
+    const response = await apiFetch('/api/coverage');
+    const data = await response.json();
+    const count = Number(data.currentVerified);
+    if (!response.ok || !data.configured || !data.lastChecked || data.dataState === 'unavailable' || !Number.isFinite(count)) {
+      root.hidden = true;
+      return;
+    }
+    setText('#coverage-count', String(count));
+    setText('#coverage-checked', data.lastChecked ? stamp(data.lastChecked) : 'ยังไม่เคยตรวจสอบ');
+    root.hidden = false;
+  } catch (_) {
+    root.hidden = true;
+  }
 }
 async function getMarket() {
   const requestId = marketRequestSequence.begin();
@@ -837,7 +874,7 @@ async function getMarket() {
     updateStockCards(stocks);
     renderMovers(stocks);
     const index = (data.indices || []).find(item => item.symbol === 'SET');
-    if (index && Number(index.last) > 0) {
+    if (index?.guardStatus === 'accepted' && Number(index.last) > 0) {
       const change = Number(index.last) - Number(index.prior);
       const pct = Number(index.prior) ? 100 * change / Number(index.prior) : 0;
       $('#set-index').innerHTML = `${number(index.last)} <span class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${number(Math.abs(change))} (${pct.toFixed(2)}%)</span>`;
@@ -845,6 +882,11 @@ async function getMarket() {
       setText('#set-range', `${number(index.high)} / ${number(index.low)}`);
       setText('#set-turnover', `${number(index.turnoverMillionBaht)} ล้านบาท`);
       $('#set-turnover').title = index.turnoverMillionBaht == null ? 'ต้องตั้งค่า SET_API_KEY ใน Render เพื่อแสดงมูลค่าซื้อขายจากข้อมูลของ SET' : 'ข้อมูลมูลค่าซื้อขายจาก SET API · หน่วยล้านบาท';
+    } else if (index) {
+      $('#set-index').textContent = '—';
+      setText('#set-volume', '—');
+      setText('#set-range', '—');
+      setText('#set-turnover', '—');
     }
   } catch (error) {
     if (!marketRequestSequence.isCurrent(requestId)) return;

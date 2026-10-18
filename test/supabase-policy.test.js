@@ -12,6 +12,7 @@ const archiveHardeningSql = fs.readFileSync(
   'utf8'
 );
 const renderConfig = fs.readFileSync(path.join(__dirname, '..', 'render.yaml'), 'utf8');
+const coverageSql = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'coverage.sql'), 'utf8');
 
 test('watchlist table keeps RLS enabled with per-user SELECT, INSERT and UPDATE policies', () => {
   assert.match(sql, /alter table public\.user_watchlists enable row level security/i);
@@ -52,4 +53,19 @@ test('news archive hardening is object-scoped, non-destructive and least-privile
 test('archive secret is configured by environment name only and never committed as a value', () => {
   assert.match(renderConfig, /key: SUPABASE_SECRET_KEY\s+sync: false/);
   assert.doesNotMatch(renderConfig, /SUPABASE_SECRET_KEY\s*[:=]\s*\S+/);
+});
+
+test('coverage persistence is additive, RLS-forced and service-role only', () => {
+  assert.match(coverageSql, /create table if not exists public\.security_coverage/i);
+  assert.match(coverageSql, /create table if not exists public\.coverage_runs/i);
+  assert.match(coverageSql, /alter table public\.security_coverage enable row level security/i);
+  assert.match(coverageSql, /alter table public\.security_coverage force row level security/i);
+  assert.match(coverageSql, /alter table public\.coverage_runs enable row level security/i);
+  assert.match(coverageSql, /alter table public\.coverage_runs force row level security/i);
+  assert.match(coverageSql, /revoke all on table public\.security_coverage from public, anon, authenticated, service_role/i);
+  assert.match(coverageSql, /revoke all on table public\.coverage_runs from public, anon, authenticated, service_role/i);
+  assert.match(coverageSql, /grant select, insert, update, delete on table public\.security_coverage to service_role/i);
+  assert.match(coverageSql, /grant select, insert, update, delete on table public\.coverage_runs to service_role/i);
+  assert.doesNotMatch(coverageSql, /alter default privileges/i);
+  assert.doesNotMatch(coverageSql, /user_watchlists|news_archive|keepalive|auth\./i);
 });
