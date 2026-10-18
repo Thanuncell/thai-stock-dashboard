@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const styleSource = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
 
 test('frontend setup remains single-shot and global listeners are not duplicated', () => {
   assert.equal((appSource.match(/addEventListener\('setscope:authenticated',\s*setup,\s*\{\s*once:\s*true\s*\}\)/g) || []).length, 1);
@@ -39,6 +40,11 @@ test('news and watchlist UI omit archive-age copy', () => {
   assert.doesNotMatch(appSource, /โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน/);
   assert.doesNotMatch(indexSource, /คัดข่าวย้อนหลัง 30 วันจากชื่อย่อหุ้นใน Watchlist ที่เลือก/);
   assert.match(indexSource, /คัดข่าวจากชื่อย่อหุ้นใน Watchlist ที่เลือก/);
+});
+
+test('latest and featured news headings share the same spacing', () => {
+  assert.match(styleSource, /\.featured-news h3\{margin:12px 0 8px;font-size:12px;font-weight:600\}/);
+  assert.match(styleSource, /\.latest-news-heading\{margin:12px 0 8px;font-size:12px;font-weight:600\}/);
 });
 
 test('source filtering renders loaded data and auto refresh does not write history', () => {
