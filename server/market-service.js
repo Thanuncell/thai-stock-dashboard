@@ -79,11 +79,12 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
   async function verifySymbol(symbol) {
     const canonical = String(symbol || '').trim().toUpperCase().replace(/\.BK$/, '');
     const value = shapeChart(await yahooChart(`${canonical}.BK`, '3mo', '1d'), canonical, 'chart:3mo:1d');
-    const trusted = value.guardStatus === 'accepted';
+    const trusted = value.identityStatus === 'accepted' && value.quoteStatus === 'accepted';
+    const chartReady = ['usable', 'usable_with_warnings'].includes(value.historyStatus) && value.history.length > 0;
     return {
       symbolVerified: trusted,
-      chartReady: trusted && value.history.length > 0,
-      technicalReady: trusted && value.history.length >= 30,
+      chartReady: trusted && chartReady,
+      technicalReady: trusted && chartReady && value.history.length >= 30,
       guardStatus: value.guardStatus,
       guardReason: value.guardReasons[0] || null,
       asOf: value.time ? new Date(value.time).toISOString() : null
@@ -151,6 +152,12 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
         selected = {
           ...selected,
           history: historyResult.history,
+          validatedHistory: historyResult.validatedHistory,
+          rejectedBars: historyResult.rejectedBars,
+          historyReasons: historyResult.historyReasons,
+          historyStatus: historyResult.historyStatus,
+          identityStatus: historyResult.identityStatus,
+          quoteStatus: historyResult.quoteStatus,
           guardStatus: historyResult.guardStatus,
           guardReasons: historyResult.guardReasons,
           dataState: historyResult.dataState,
@@ -161,6 +168,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
         selected = {
           ...selected,
           history: [],
+          validatedHistory: [],
+          historyStatus: 'blocked',
           guardStatus: 'unavailable',
           guardReasons: error.guardReasons || [error.code || 'RANGE_UNAVAILABLE'],
           dataState: 'unavailable',
@@ -169,14 +178,14 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       }
     }
     const history = selected?.history || [];
-    const trustedTechnicalHistory = selected?.guardStatus === 'accepted';
+    const trustedTechnicalHistory = ['usable', 'usable_with_warnings'].includes(selected?.historyStatus);
     let levelsHistory = trustedTechnicalHistory ? history : [];
     let indicatorHistory = trustedTechnicalHistory ? history : [];
     if (trustedTechnicalHistory && history.length < 40) {
       const [fallbackRange, fallbackInterval] = LEVEL_FALLBACK_PERIODS[range] || LEVEL_FALLBACK_PERIODS['1M'];
       try {
         const fallback = shapeChart(await yahooChart(`${active}.BK`, fallbackRange, fallbackInterval), active, `chart:${fallbackRange}:${fallbackInterval}`);
-        if (fallback.history.length > history.length) {
+        if (['usable', 'usable_with_warnings'].includes(fallback.historyStatus) && fallback.history.length > history.length) {
           levelsHistory = fallback.history;
           indicatorHistory = fallback.history;
         }

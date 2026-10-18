@@ -5,6 +5,7 @@ import {
   THAI_NAMES,
   analyseTechnicals,
   alignIndicatorSeries,
+  chartGeometry,
   computeEma,
   computeSmaSeries,
   createRequestSequence,
@@ -418,12 +419,11 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   const macdHistogram = analysis ? alignToChart(analysis.macdHistogram) : [];
   const showMacd = chartIndicators.has('macd') && macdSeries.some(Number.isFinite);
   const hostWidth = Math.max(320, Math.floor(host.clientWidth || host.parentElement?.clientWidth || 640));
-  const minCandleSpace = currentRange === '1Y' ? 4.8 : currentRange === '3M' ? 6 : 7;
-  const left = hostWidth < 520 ? 52 : 66, right = hostWidth < 520 ? 10 : 16, top = 22;
-  const width = Math.max(hostWidth, Math.ceil(left + right + rows.length * minCandleSpace));
+  const geometry = chartGeometry({ rowCount: rows.length, hostWidth, range: currentRange });
+  const { left, right, width, plotWidth, step, candleWidth, x } = geometry;
+  const top = 22;
   const height = showMacd ? 520 : 390;
   const priceBottom = 280, volumeBottom = 340, macdTop = 375, macdBottom = 475;
-  const plotWidth = width - left - right;
   const closes = rows.map(row => Number(row.close));
   const calculationCloses = calculationRows.map(row => Number(row.close));
   const smaValues = alignToChart(computeSmaSeries(calculationCloses, 20));
@@ -445,8 +445,6 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   const pad = Math.max((maxPrice - minPrice) * .08, maxPrice * .003, .01);
   const min = minPrice - pad, max = maxPrice + pad, span = max - min || 1;
   const y = value => top + (max - value) / span * (priceBottom - top);
-  const step = plotWidth / rows.length, candleWidth = Math.max(2, Math.min(12, step * .62));
-  const x = index => left + step * index + step / 2;
   const volumeMax = Math.max(...rows.map(row => toFiniteNumber(row.volume)).filter(value => value !== null && value >= 0), 1);
   const grid = Array.from({ length: 5 }, (_, index) => {
     const value = max - span * index / 4, py = y(value);

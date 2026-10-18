@@ -117,6 +117,35 @@ test('quarantined anomaly cannot overwrite last-known-good or feed Technical Ana
   assert.deepEqual(second.levelsHistory, []);
 });
 
+test('rejected incomplete bars do not zero valid chart or Technical Analysis history', async () => {
+  const now = Date.UTC(2026, 9, 18, 9);
+  const day = 24 * 60 * 60;
+  const service = createMarketService({
+    now: () => now,
+    fetchImpl: async input => {
+      const url = new URL(String(input));
+      const isIndex = decodeURIComponent(url.pathname).includes('^SET.BK');
+      const isDailyRange = url.searchParams.get('range') === '1mo';
+      const count = isDailyRange ? 45 : 2;
+      const timestamps = Array.from({ length: count }, (_, index) => Math.floor((now - (count - index) * day * 1000) / 1000));
+      const closes = timestamps.map((_, index) => isDailyRange && index < 5 ? null : 35 + index * 0.01);
+      const last = closes.filter(value => value !== null).at(-1);
+      return new Response(JSON.stringify({ chart: { result: [{
+        meta: { symbol: isIndex ? '^SET.BK' : 'PTT.BK', currency: 'THB', exchangeName: 'SET', marketState: 'CLOSED', regularMarketPrice: last, regularMarketTime: timestamps.at(-1) },
+        timestamp: timestamps,
+        indicators: { quote: [{
+          open: closes, high: closes.map(value => value === null ? null : value + 0.1), low: closes.map(value => value === null ? null : value - 0.1), close: closes, volume: closes.map(value => value === null ? null : 1000)
+        }] }
+      }], error: null } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+  });
+  const result = await service.getMarket(['PTT'], 'PTT', '1M');
+  assert.equal(result.history.length, 40);
+  assert.equal(result.indicatorHistory.length, 40);
+  assert.equal(result.levelsHistory.length, 40);
+  assert.ok(result.history.every(bar => Number.isFinite(bar.close)));
+});
+
 test('a guarded index identity failure does not wipe a valid selected stock', async () => {
   const now = Date.UTC(2026, 9, 18, 9);
   const service = createMarketService({
