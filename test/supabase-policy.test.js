@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 
 const sql = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'watchlists.sql'), 'utf8');
 const archiveSql = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'news_archive.sql'), 'utf8');
+const renderConfig = fs.readFileSync(path.join(__dirname, '..', 'render.yaml'), 'utf8');
 
 test('watchlist table keeps RLS enabled with per-user SELECT, INSERT and UPDATE policies', () => {
   assert.match(sql, /alter table public\.user_watchlists enable row level security/i);
@@ -25,4 +26,9 @@ test('news archive is additive, indexed, RLS-locked and cleaned in bounded batch
   assert.match(archiveSql, /using gin \(matched_symbols\)/i);
   assert.match(archiveSql, /limit greatest\(1, least\(coalesce\(p_limit, 500\), 2000\)\)/i);
   assert.match(archiveSql, /for update skip locked/i);
+});
+
+test('archive secret is configured by environment name only and never committed as a value', () => {
+  assert.match(renderConfig, /key: SUPABASE_SECRET_KEY\s+sync: false/);
+  assert.doesNotMatch(renderConfig, /SUPABASE_SECRET_KEY\s*[:=]\s*\S+/);
 });

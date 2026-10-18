@@ -1,5 +1,32 @@
 # Phase 1 Pre-flight Baseline
 
+## v1.5.1 News / URL State baseline and execution record
+
+- Frozen v1.5.0 baseline: `f1aa7c10bf3b99c9944b9ce12f1a583fafe1f71a` (merge commit of PR #25).
+- Source branch: `codex/v1.5.1-news-url-state`, created directly from the fetched `origin/main` baseline. `main` was not edited.
+- Pre-implementation gate on 2026-10-18 (Asia/Bangkok): 53/53 deterministic tests passed, 16/16 syntax targets passed, and `git diff --check` passed.
+- The first sandboxed smoke-test attempt was blocked from loopback access with `EACCES`; rerunning the same suite with local loopback permission passed 53/53. No application assertion failed.
+- Existing untracked local documents, CSV files, and screenshots were preserved and excluded.
+- Production real-time delivery remains OFF. v1.5.1 adds no realtime provider, socket, listener, queue, or shorter polling interval.
+
+### v1.5.1 implementation boundaries
+
+- Live RSS ingestion remains five minutes and never fetches a full year per cycle.
+- The News Archive is additive and requires `supabase/news_archive.sql` plus a server-only `SUPABASE_SECRET_KEY`; RLS stays enabled and browser roles have no direct archive privileges.
+- Archive coverage means up to 365 days from successful incremental ingestion, subject to source availability. It is not a completeness or backfill guarantee.
+- Workspace URL state contains only route, validated chart symbol/range, News query/source/page, or Watchlist ID/page. It never contains a full Watchlist, user identity, token, or credential.
+- Source changes render loaded live data immediately. The optional archive page read is database-backed and does not trigger upstream ingestion.
+- Supabase Log Query Conservation Policy was followed: local tests and source inspection were sufficient, so no Supabase production log query was made.
+- Post-implementation gate on 2026-10-18: 65/65 deterministic tests passed, 18/18 syntax targets passed, and `git diff --check` passed. Local-only visual smoke checks passed at 1440x1000 and 390x844 with no horizontal overflow or top-bar collision, a 44x44 SVG Bell target, synchronized News breadcrumb text, and the required `โบรกเกอร์` / `ข่าวล่าสุด` labels.
+
+### Rollback order
+
+1. Revert `5bcd56d` to remove archive API/UI integration while retaining Watchlist, broker, Featured, URL, breadcrumb, and bell fixes. The additive database table may remain safely in place.
+2. Revert `5ea89c6` to remove URL navigation state and News UI changes.
+3. Revert `6824fcc` to remove the isolated Watchlist/broker reliability fix.
+4. `supabase/news_archive_rollback.sql` drops archive data and is destructive; back up the table and use it only when an explicit database rollback is required.
+5. Removing `SUPABASE_SECRET_KEY` disables archive persistence/read availability without exposing or deleting data. Do not print the key during diagnosis.
+
 ## Repository baseline
 
 - Repository: `Thanuncell/thai-stock-dashboard`
