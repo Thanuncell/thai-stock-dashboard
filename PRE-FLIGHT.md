@@ -18,6 +18,7 @@
 - Source changes render loaded live data immediately. The optional archive page read is database-backed and does not trigger upstream ingestion.
 - Supabase Log Query Conservation Policy was followed: local tests and source inspection were sufficient, so no Supabase production log query was made.
 - Final UI Cleanup pre-merge gate on 2026-10-18: 72/72 deterministic tests passed, 18/18 syntax targets passed, and `git diff --check` passed. The scoped patch removes the obsolete News footer and Watchlist status/footer, prevents the old generic News selector from writing into Watchlist, preserves the existing `ข่าวล่าสุด` spacing, changes the saved-chart action to `ติดตามแล้ว`, removes the visible chart metadata row, and uses the approved Yahoo Finance source line while retaining the updated timestamp and PTT default. News and Watchlist pagination keep their existing state and request flow, then scroll only the relevant list heading with reduced-motion support. Overview, Technical Analysis wording/calculations, backend APIs, Supabase, Auth, polling, provider logic, secrets, and Render configuration are unchanged.
+- Pagination top hotfix pre-merge gate on 2026-10-18: 72/72 deterministic tests passed, 18/18 syntax targets passed, and `git diff --check` passed. News and Watchlist News now scroll to the top of the page (`top: 0`) after a page change while preserving reduced-motion behavior, all page/filter/query/watchlist/URL state, the existing request flow, and the polling/network budget.
 
 ### Rollback order
 

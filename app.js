@@ -1036,11 +1036,9 @@ function renderNewsItemsInto(root, items, emptyText) {
 function watchlistEmptyText() {
   return watchlist.length ? 'ยังไม่มีข่าวของหุ้นในรายการติดตาม' : 'ยังไม่มีหุ้นในรายการติดตาม';
 }
-function scrollNewsListToTop(selector) {
-  const target = $(selector);
-  if (!target) return;
+function scrollPageToTop() {
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+  window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
 }
 function renderWatchlistNews() {
   const root = $('#watchlist-news-list');
@@ -1050,7 +1048,7 @@ function renderWatchlistNews() {
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
-    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollNewsListToTop('#watchlist-news-list');
+    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollPageToTop();
   });
 }
 function renderPagerInto(bar, current, total, count, onPick) {
@@ -1103,7 +1101,7 @@ function renderNews() {
   renderPagerInto($('#news-pager'), newsPage, total, availableCount, async page => {
     newsPage = page; writeNavigation('push', 'news');
     if (archiveConfigured) await getArchiveNews({ page }); else renderNews();
-    scrollNewsListToTop('#latest-news-heading');
+    scrollPageToTop();
   });
   const counter = $('#news-count');
   if (counter) counter.textContent = query ? `พบ ${all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';

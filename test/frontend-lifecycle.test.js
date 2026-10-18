@@ -74,11 +74,12 @@ test('final UI cleanup preserves exact News and chart contracts', () => {
   assert.match(appSource, /watchlist\[0\]\?\.symbol \|\| 'PTT'/);
 });
 
-test('News pagers preserve state and scroll only their own list with reduced-motion support', () => {
+test('News pagers preserve state and scroll the page to top with reduced-motion support', () => {
   assert.match(appSource, /window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
-  assert.match(appSource, /scrollIntoView\(\{ behavior: reduceMotion \? 'auto' : 'smooth', block: 'start' \}\)/);
-  assert.match(appSource, /watchNewsPage = page; renderWatchlistNews\(\); writeNavigation\('push', 'watchlist'\); scrollNewsListToTop\('#watchlist-news-list'\)/);
-  assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollNewsListToTop\('#latest-news-heading'\)/);
+  assert.match(appSource, /window\.scrollTo\(\{ top: 0, behavior: reduceMotion \? 'auto' : 'smooth' \}\)/);
+  assert.doesNotMatch(appSource, /scrollIntoView/);
+  assert.match(appSource, /watchNewsPage = page; renderWatchlistNews\(\); writeNavigation\('push', 'watchlist'\); scrollPageToTop\(\)/);
+  assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollPageToTop\(\)/);
 });
 
 test('Technical Analysis wording and Overview anchors remain at baseline', () => {
