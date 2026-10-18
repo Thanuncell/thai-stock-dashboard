@@ -25,6 +25,20 @@ test('watchlists stay bounded and reject invalid symbols without inventing items
   assert.equal(domain.mergeWatchlists(normalized, []), normalized);
 });
 
+test('a valid Watchlist URL selection wins over cloud and local active selections', () => {
+  const lists = [{ id: 'list-1' }, { id: 'list-2' }];
+  assert.equal(domain.resolveActiveWatchlistId(lists, {
+    requestedId: 'list-2',
+    cloudId: 'list-1',
+    localId: 'list-1'
+  }), 'list-2');
+  assert.equal(domain.resolveActiveWatchlistId(lists, {
+    requestedId: 'stale-list',
+    cloudId: 'list-1',
+    localId: 'list-2'
+  }), 'list-1');
+});
+
 test('news search includes an analysis summary but does not fabricate a match', () => {
   const item = { title: 'PTT update', sourceName: 'SET News', snippet: '' };
   assert.equal(domain.matchesNewsQuery(item, 'กำไร', 'กำไรเติบโต'), true);

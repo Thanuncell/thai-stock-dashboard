@@ -136,6 +136,12 @@ export function mergeWatchlists(localLists, cloudLists) {
   return localLists;
 }
 
+export function resolveActiveWatchlistId(lists, { requestedId = '', cloudId = '', localId = '' } = {}) {
+  const available = new Set((Array.isArray(lists) ? lists : []).map(list => String(list?.id || '')));
+  return [requestedId, cloudId, localId].map(value => String(value || '')).find(value => available.has(value))
+    || String(lists?.[0]?.id || 'list-1');
+}
+
 export function escapeHtml(value = '') {
   return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 }

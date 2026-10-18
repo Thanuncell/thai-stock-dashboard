@@ -17,6 +17,7 @@ import {
   pageList,
   parseNavigationState,
   quoteChange,
+  resolveActiveWatchlistId,
   selectNewsForDisplay,
   sentimentHeadline,
   stamp,
@@ -203,11 +204,18 @@ async function initializeWatchlistCloudSync() {
     const record = data.record;
     if (record && Array.isArray(record.watchlists)) {
       watchlists = mergeWatchlists(localLists, record.watchlists);
-      activeWatchlistId = watchlists.some(list => list.id === record.active_watchlist_id) ? record.active_watchlist_id : (watchlists.some(list => list.id === localActive) ? localActive : watchlists[0].id);
+      activeWatchlistId = resolveActiveWatchlistId(watchlists, {
+        requestedId: requestedWatchlistId,
+        cloudId: record.active_watchlist_id,
+        localId: localActive
+      });
       watchlist = currentWatchlist().items;
     } else {
       watchlists = localLists;
-      activeWatchlistId = watchlists.some(list => list.id === localActive) ? localActive : watchlists[0].id;
+      activeWatchlistId = resolveActiveWatchlistId(watchlists, {
+        requestedId: requestedWatchlistId,
+        localId: localActive
+      });
       watchlist = currentWatchlist().items;
     }
     persistWatchlistsLocal();

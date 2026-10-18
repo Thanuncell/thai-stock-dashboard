@@ -17,7 +17,7 @@
 - Workspace URL state contains only route, validated chart symbol/range, News query/source/page, or Watchlist ID/page. It never contains a full Watchlist, user identity, token, or credential.
 - Source changes render loaded live data immediately. The optional archive page read is database-backed and does not trigger upstream ingestion.
 - Supabase Log Query Conservation Policy was followed: local tests and source inspection were sufficient, so no Supabase production log query was made.
-- Post-implementation gate on 2026-10-18: 65/65 deterministic tests passed, 18/18 syntax targets passed, and `git diff --check` passed. Local-only visual smoke checks passed at 1440x1000 and 390x844 with no horizontal overflow or top-bar collision, a 44x44 SVG Bell target, synchronized News breadcrumb text, and the required `โบรกเกอร์` / `ข่าวล่าสุด` labels.
+- Post-implementation gate on 2026-10-18: 66/66 deterministic tests passed, 18/18 syntax targets passed, and `git diff --check` passed. Local-only visual smoke checks passed at 1440x1000 and 390x844 with no horizontal overflow or top-bar collision, a 44x44 SVG Bell target, synchronized News breadcrumb text, and the required `โบรกเกอร์` / `ข่าวล่าสุด` labels. A real-browser navigation smoke check also passed chart, News, and Watchlist canonical state across reload, Back, and Forward, including safe canonicalization of malformed chart state and URL precedence over a different cloud active Watchlist.
 
 ### Rollback order
 
