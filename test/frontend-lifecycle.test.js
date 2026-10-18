@@ -33,6 +33,14 @@ test('breadcrumb, bell and broker controls preserve accessible UI contracts', ()
   assert.match(indexSource, /<h3[^>]*id="latest-news-heading"[^>]*>ข่าวล่าสุด<\/h3>/);
 });
 
+test('news and watchlist UI omit archive-age copy', () => {
+  assert.doesNotMatch(appSource, /คลังข่าวย้อนหลังสูงสุด 1 ปี ตามข้อมูลที่ต้นทางมี/);
+  assert.doesNotMatch(appSource, /ข่าวสดย้อนหลัง 30 วัน/);
+  assert.doesNotMatch(appSource, /โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน/);
+  assert.doesNotMatch(indexSource, /คัดข่าวย้อนหลัง 30 วันจากชื่อย่อหุ้นใน Watchlist ที่เลือก/);
+  assert.match(indexSource, /คัดข่าวจากชื่อย่อหุ้นใน Watchlist ที่เลือก/);
+});
+
 test('source filtering renders loaded data and auto refresh does not write history', () => {
   const sourceHandler = appSource.match(/document\.querySelectorAll\('\.source-chip'\)[\s\S]*?\n\s*}\)\);/)?.[0] || '';
   assert.doesNotMatch(sourceHandler, /getNews\(/);

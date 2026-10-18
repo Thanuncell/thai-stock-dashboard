@@ -891,11 +891,9 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
     const state = data.dataState === 'partial' ? 'บางแหล่งข่าวไม่พร้อม' : data.dataState === 'unavailable' ? 'แหล่งข่าวไม่พร้อม' : 'ข้อมูลล่าสุด';
     const freshness = data.asOf ? `ข่าวล่าสุด ${stamp(data.asOf)}` : 'ยังไม่มีเวลาข่าวที่ยืนยันได้';
-    const coverage = archiveConfigured
-      ? 'คลังข่าวย้อนหลังสูงสุด 1 ปี ตามข้อมูลที่ต้นทางมี'
-      : 'ข่าวสดย้อนหลัง 30 วัน · คลังข่าวยังไม่พร้อม';
-    setNewsStatus(`${coverage} · ${state} · ${freshness} · ตรวจเมื่อ ${stamp(data.fetchedAt)}`);
-  } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน'); }
+    const archiveStatus = archiveConfigured ? '' : 'คลังข่าวยังไม่พร้อม · ';
+    setNewsStatus(`${archiveStatus}${state} · ${freshness} · ตรวจเมื่อ ${stamp(data.fetchedAt)}`);
+  } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ'); }
   finally {
     if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }
   }
