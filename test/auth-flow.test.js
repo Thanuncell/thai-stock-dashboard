@@ -119,15 +119,21 @@ test('login, signup and refresh flows keep session behavior without refresh loop
     querySelectorAll: () => []
   };
   const window = {
-    location: { origin: 'https://setscope.example' },
+    location: { origin: 'https://setscope.example', reload: () => { window.reloadCalled = true; } },
     addEventListener: (type, listener) => windowListeners.set(type, listener),
     dispatchEvent: event => { window.lastEvent = event; },
     setscopeAuth: null
   };
-  const location = { pathname: '/', search: '', hash: '' };
+  const location = { pathname: '/', search: '?s=PTT&source=infoquest&newsPage=12', hash: '#news' };
+  const applyHistoryUrl = value => {
+    const parsed = new URL(String(value), 'https://setscope.example');
+    location.pathname = parsed.pathname;
+    location.search = parsed.search;
+    location.hash = parsed.hash;
+  };
   const history = {
-    pushState: (_state, _title, url) => { location.pathname = String(url).split('#')[0]; },
-    replaceState: (_state, _title, url) => { location.pathname = String(url).split('#')[0]; }
+    pushState: (_state, _title, url) => applyHistoryUrl(url),
+    replaceState: (_state, _title, url) => applyHistoryUrl(url)
   };
   class FakeFormData {
     constructor(form) { this.fields = form.fields || {}; }
@@ -161,6 +167,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   assert.equal(refreshCount, 1);
   assert.equal(document.body.classList.contains('authenticated'), true);
   assert.equal(window.lastEvent?.type, 'setscope:authenticated');
+  assert.equal(`${location.pathname}${location.search}${location.hash}`, '/?s=PTT&source=infoquest&newsPage=12#news');
   assert.equal(JSON.parse(sessionStorage.getItem('setscope-auth-session-v1')).access_token, 'refreshed-1');
 
   const protectedResponse = await window.setscopeAuth.authorizedFetch('/api/protected');
@@ -168,10 +175,15 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   assert.equal(protectedCalls, 2);
   assert.equal(refreshCount, 2);
 
+  await getNode('#logout-button').listeners.get('click')();
+  assert.equal(location.pathname, '/login');
+  assert.equal(window.reloadCalled, true);
+
   const loginForm = getNode('#login-form');
   loginForm.fields = { email: 'login@example.test', password: 'correct-horse' };
   await loginForm.listeners.get('submit')({ preventDefault() {}, currentTarget: loginForm });
   assert.equal(loginForm.submit.disabled, false);
+  assert.equal(`${location.pathname}${location.search}${location.hash}`, '/?s=PTT&source=infoquest&newsPage=12#news');
   assert.ok(calls.some(call => call.url.includes('grant_type=password')));
 
   const signupForm = getNode('#signup-form');

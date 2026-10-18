@@ -12,7 +12,7 @@ test('archive ingestion is idempotent, bounded and followed by bounded retention
     now: () => Date.parse('2026-10-18T00:00:00.000Z'),
     fetchImpl: async (url, init) => {
       calls.push({ url: String(url), init });
-      return new Response('', { status: 204 });
+      return new Response(null, { status: 204 });
     }
   });
   const item = { source: 'infoquest', sourceName: 'InfoQuest', title: 'PTT update', url: 'https://news.google.com/articles/1', pubDate: '2026-10-17T00:00:00.000Z', snippet: 'รายละเอียด' };

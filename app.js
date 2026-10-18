@@ -51,6 +51,10 @@ let latestMarketRange = '';
 let activeSource = initialNavigation.route === 'news' ? initialNavigation.source : 'all';
 let latestNews = [];
 let latestWatchlistNews = [];
+let archiveNews = [];
+let archiveTotal = 0;
+let archiveConfigured = false;
+let archiveLoaded = false;
 const PAGE_SIZE = 10;
 const FEATURED_COUNT = 5;
 const SOURCE_TIER = { official: 4, settrade: 3, infoquest: 2, efinance: 2, thunhoon: 2, kaohoon: 2, broker: 1 };
@@ -60,6 +64,7 @@ let watchNewsPage = initialNavigation.route === 'watchlist' ? initialNavigation.
 const newsAnalyses = new Map();
 let newsAnalysisPending = false;
 let watchlistNewsRequestId = 0;
+let archiveNewsRequestId = 0;
 let searchTimer;
 let searchSequence = 0;
 let currentRange = initialNavigation.route === 'chart' ? initialNavigation.range : '1D';
@@ -873,14 +878,44 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
     const response = await apiFetch('/api/news'); const data = await response.json();
     if (!response.ok) throw new Error(data.error);
     latestNews = data.items || [];
+    await getArchiveNews({ page: newsPage, reason });
     renderNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
     const state = data.dataState === 'partial' ? 'บางแหล่งข่าวไม่พร้อม' : data.dataState === 'unavailable' ? 'แหล่งข่าวไม่พร้อม' : 'ข้อมูลล่าสุด';
     const freshness = data.asOf ? `ข่าวล่าสุด ${stamp(data.asOf)}` : 'ยังไม่มีเวลาข่าวที่ยืนยันได้';
-    setNewsStatus(`ย้อนหลัง 30 วัน · ${state} · ${freshness} · ตรวจเมื่อ ${stamp(data.fetchedAt)}`);
+    const coverage = archiveConfigured
+      ? 'คลังข่าวย้อนหลังสูงสุด 1 ปี ตามข้อมูลที่ต้นทางมี'
+      : 'ข่าวสดย้อนหลัง 30 วัน · คลังข่าวยังไม่พร้อม';
+    setNewsStatus(`${coverage} · ${state} · ${freshness} · ตรวจเมื่อ ${stamp(data.fetchedAt)}`);
   } catch (_) { setNewsStatus('โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน'); }
   finally {
     if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }
+  }
+}
+async function getArchiveNews({ page = newsPage } = {}) {
+  const requestId = ++archiveNewsRequestId;
+  const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE), source: activeSource });
+  try {
+    const response = await apiFetch(`/api/news-archive?${params}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'โหลดคลังข่าวไม่สำเร็จ');
+    if (requestId !== archiveNewsRequestId) return;
+    archiveConfigured = Boolean(data.configured);
+    archiveLoaded = archiveConfigured;
+    archiveNews = Array.isArray(data.items) ? data.items : [];
+    archiveTotal = Number.isFinite(Number(data.total)) ? Number(data.total) : archiveNews.length;
+    const totalPages = Math.max(1, Math.ceil(archiveTotal / PAGE_SIZE));
+    if (newsPage > totalPages) {
+      newsPage = totalPages;
+      if (document.body.dataset.workspacePage === 'news') writeNavigation('replace', 'news');
+      return getArchiveNews({ page: newsPage });
+    }
+    renderNews();
+  } catch (_) {
+    if (requestId !== archiveNewsRequestId) return;
+    archiveLoaded = false;
+    archiveNews = [];
+    archiveTotal = 0;
   }
 }
 async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) {
@@ -1056,25 +1091,32 @@ function renderPagerInto(bar, current, total, count, onPick) {
 function renderNews() {
   const query = newsQuery.trim().toLocaleLowerCase('th');
   const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || '' }));
-  const { filtered: all, featured, latest: rest } = selectNewsForDisplay(prepared, {
+  const { filtered: all, featured, latest: liveLatest } = selectNewsForDisplay(prepared, {
     source: activeSource,
     query,
     featuredCount: FEATURED_COUNT,
     sourceTier: SOURCE_TIER
   });
+  const featuredKeys = new Set(featured.map(newsKey));
+  const archived = archiveNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || item.analysisSummary || '' }))
+    .filter(item => !featuredKeys.has(newsKey(item)));
+  const archivedSelection = selectNewsForDisplay(archived, { source: activeSource, query, featuredCount: 0 });
+  const rest = archiveLoaded ? archivedSelection.filtered : liveLatest;
   const featuredBox = $('#featured-news');
   if (featuredBox) {
     featuredBox.replaceChildren(...featured.map(item => renderNewsItem(item)));
     const section = featuredBox.closest('.featured-news');
     if (section) section.hidden = !featured.length;
   }
-  const total = Math.max(1, Math.ceil(rest.length / PAGE_SIZE));
+  const availableCount = archiveLoaded ? archiveTotal : rest.length;
+  const total = Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
   newsPage = Math.max(1, Math.min(newsPage, total));
-  const items = rest.slice((newsPage - 1) * PAGE_SIZE, newsPage * PAGE_SIZE);
+  const items = archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((newsPage - 1) * PAGE_SIZE, newsPage * PAGE_SIZE);
   const emptyText = query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่พบข่าวในช่วง 30 วันที่ผ่านมา ลองรีเฟรชอีกครั้ง';
   renderNewsItemsInto($('#news-list'), items, emptyText);
-  renderPagerInto($('#news-pager'), newsPage, total, rest.length, page => {
-    newsPage = page; renderNews(); writeNavigation('push', 'news');
+  renderPagerInto($('#news-pager'), newsPage, total, availableCount, page => {
+    newsPage = page; writeNavigation('push', 'news');
+    if (archiveConfigured) getArchiveNews({ page }); else renderNews();
   });
   const counter = $('#news-count');
   if (counter) counter.textContent = query ? `พบ ${all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
@@ -1201,6 +1243,7 @@ async function setup() {
   document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.source-chip').forEach(item => item.classList.remove('active'));
     button.classList.add('active'); activeSource = button.dataset.source; newsPage = 1; renderNews(); writeNavigation('push', 'news');
+    if (archiveConfigured) getArchiveNews({ page: 1 });
   }));
   $('#news-search').addEventListener('input', event => { newsQuery = event.target.value; newsPage = 1; renderNews(); writeNavigation('replace', 'news'); });
   $('#refresh-news').addEventListener('click', () => getNews({ reason: 'manual', resetPage: true }));
