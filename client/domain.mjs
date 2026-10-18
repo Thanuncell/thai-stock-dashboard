@@ -10,6 +10,9 @@ export const DEFAULT_WATCHLIST = [
 export const MAX_WATCHLIST = 30;
 export const MAX_WATCHLISTS = 5;
 export const THAI_NAMES = Object.fromEntries(DEFAULT_WATCHLIST.map(item => [item.symbol, item.name]));
+export const NEWS_SOURCES = Object.freeze(['all', 'thunhoon', 'kaohoon', 'settrade', 'official', 'infoquest', 'efinance', 'broker']);
+export const CHART_RANGES = Object.freeze(['1D', '1W', '1M', '3M', '1Y']);
+const ROUTES = Object.freeze(['overview', 'chart', 'news', 'watchlist']);
 
 const formatNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
@@ -49,6 +52,75 @@ export function pageFromHash(hash = '') {
   return 'overview';
 }
 
+function positivePage(value) {
+  const page = Number.parseInt(String(value || ''), 10);
+  return Number.isSafeInteger(page) && page > 0 ? Math.min(page, 100000) : 1;
+}
+
+function validSymbol(value) {
+  const symbol = String(value || '').trim().toUpperCase().replace(/\.BK$/, '');
+  return /^[A-Z0-9&.-]{1,20}$/.test(symbol) ? symbol : 'PTT';
+}
+
+function validWatchlistId(value) {
+  const id = String(value || '').trim();
+  return /^[A-Za-z0-9_-]{1,40}$/.test(id) ? id : '';
+}
+
+export function parseNavigationState(value, fallback = {}) {
+  let url;
+  try { url = new URL(String(value || ''), 'https://setscope.local/'); }
+  catch (_) { url = new URL('https://setscope.local/#overview'); }
+  const route = pageFromHash(url.hash);
+  if (route === 'overview') return { route };
+  if (route === 'chart') {
+    const range = String(url.searchParams.get('range') || fallback.range || '1D').toUpperCase();
+    return {
+      route,
+      symbol: validSymbol(url.searchParams.get('symbol') || fallback.symbol || 'PTT'),
+      range: CHART_RANGES.includes(range) ? range : '1D'
+    };
+  }
+  if (route === 'news') {
+    const source = String(url.searchParams.get('source') || fallback.source || 'all').toLowerCase();
+    return {
+      route,
+      query: String(url.searchParams.get('s') ?? fallback.query ?? '').trim().slice(0, 80),
+      source: NEWS_SOURCES.includes(source) ? source : 'all',
+      newsPage: positivePage(url.searchParams.get('newsPage') || fallback.newsPage)
+    };
+  }
+  return {
+    route,
+    watchlistId: validWatchlistId(url.searchParams.get('watchlist') || fallback.watchlistId),
+    watchPage: positivePage(url.searchParams.get('watchPage') || fallback.watchPage)
+  };
+}
+
+export function navigationUrl(state = {}, pathname = '/') {
+  const route = ROUTES.includes(state.route) ? state.route : 'overview';
+  const params = new URLSearchParams();
+  if (route === 'chart') {
+    params.set('symbol', validSymbol(state.symbol));
+    const range = String(state.range || '1D').toUpperCase();
+    params.set('range', CHART_RANGES.includes(range) ? range : '1D');
+  } else if (route === 'news') {
+    const query = String(state.query || '').trim().slice(0, 80);
+    const source = String(state.source || 'all').toLowerCase();
+    const page = positivePage(state.newsPage);
+    if (query) params.set('s', query);
+    if (NEWS_SOURCES.includes(source) && source !== 'all') params.set('source', source);
+    if (page > 1) params.set('newsPage', String(page));
+  } else if (route === 'watchlist') {
+    const watchlistId = validWatchlistId(state.watchlistId);
+    const page = positivePage(state.watchPage);
+    if (watchlistId) params.set('watchlist', watchlistId);
+    if (page > 1) params.set('watchPage', String(page));
+  }
+  const base = String(pathname || '/').startsWith('/') ? String(pathname || '/') : '/';
+  return `${base}${params.size ? `?${params}` : ''}#${route}`;
+}
+
 export function normalizeLists(lists) {
   return lists.slice(0, MAX_WATCHLISTS).map((list, index) => ({
     id: String(list.id || `list-${index + 1}`).slice(0, 40),
@@ -64,6 +136,12 @@ export function mergeWatchlists(localLists, cloudLists) {
   return localLists;
 }
 
+export function resolveActiveWatchlistId(lists, { requestedId = '', cloudId = '', localId = '' } = {}) {
+  const available = new Set((Array.isArray(lists) ? lists : []).map(list => String(list?.id || '')));
+  return [requestedId, cloudId, localId].map(value => String(value || '')).find(value => available.has(value))
+    || String(lists?.[0]?.id || 'list-1');
+}
+
 export function escapeHtml(value = '') {
   return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 }
@@ -77,7 +155,7 @@ export function stamp(value) {
 }
 
 export function newsKey(item) {
-  return `${item.source || ''}|${item.title || ''}`;
+  return String(item.fingerprint || item.url || `${item.title || ''}|${item.pubDate || ''}`);
 }
 
 export function sentimentHeadline(headline) {
@@ -99,6 +177,26 @@ export function pageList(current, total) {
   const pages = [];
   sorted.forEach((page, index) => { if (index && page - sorted[index - 1] > 1) pages.push('…'); pages.push(page); });
   return pages;
+}
+
+export function selectNewsForDisplay(items = [], {
+  source = 'all',
+  query = '',
+  now = Date.now(),
+  featuredCount = 5,
+  sourceTier = {}
+} = {}) {
+  const normalizedQuery = String(query || '').trim().toLocaleLowerCase('th');
+  const filtered = items.filter(item => {
+    const sourceMatch = source === 'all' || (source === 'broker' ? Boolean(item.brokerCategory) : item.source === source);
+    return sourceMatch && matchesNewsQuery(item, normalizedQuery, item.analysisSummary || '');
+  }).sort((left, right) => Date.parse(right.pubDate) - Date.parse(left.pubDate));
+  const cutoff = Number(now) - 7 * 24 * 60 * 60 * 1000;
+  const featured = filtered.filter(item => Number.isFinite(Date.parse(item.pubDate)) && Date.parse(item.pubDate) >= cutoff)
+    .sort((left, right) => (sourceTier[right.source] || 0) - (sourceTier[left.source] || 0) || Date.parse(right.pubDate) - Date.parse(left.pubDate))
+    .slice(0, featuredCount);
+  const featuredKeys = new Set(featured.map(newsKey));
+  return { filtered, featured, latest: filtered.filter(item => !featuredKeys.has(newsKey(item))) };
 }
 
 export function computeSmaSeries(values, period) {

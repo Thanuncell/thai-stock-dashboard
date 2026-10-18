@@ -13,8 +13,8 @@ const realtimeSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'rea
 test('polling intervals remain at the baseline request budget', () => {
   assert.equal((appSource.match(/setInterval\(getMarket, 60000\)/g) || []).length, 1);
   assert.equal((appSource.match(/setInterval\(getSettradeOverview, 300000\)/g) || []).length, 1);
-  assert.equal((appSource.match(/setInterval\(getNews, 300000\)/g) || []).length, 1);
-  assert.equal((appSource.match(/setInterval\(getWatchlistNews, 300000\)/g) || []).length, 1);
+  assert.equal((appSource.match(/setInterval\(\(\) => getNews\(\{ reason: 'poll' \}\), 300000\)/g) || []).length, 1);
+  assert.equal((appSource.match(/setInterval\(\(\) => getWatchlistNews\(\{ reason: 'poll' \}\), 300000\)/g) || []).length, 1);
 });
 
 test('ES module split preserves the six-request main-page static budget', () => {
@@ -37,4 +37,11 @@ test('cache keys include every public input and never cache watchlist responses 
   assert.match(serverSource, /loadCached\(res,\s*cacheKey,\s*PROVIDER_POLICIES\.watchlistNews/);
   const watchlistHandler = serverSource.match(/async function handleWatchlists[\s\S]*?\n}\r?\n\r?\nasync function handleNewsAnalysis/)?.[0] || '';
   assert.doesNotMatch(watchlistHandler, /loadCached|responseCache/);
+});
+
+test('archive adds one bounded server-page read without increasing upstream polling', () => {
+  assert.equal((appSource.match(/apiFetch\(`\/api\/news-archive\?\$\{params\}`\)/g) || []).length, 1);
+  assert.match(serverSource, /news-archive:\$\{page\}\|\$\{pageSize\}\|\$\{source\}\|\$\{symbol\}/);
+  assert.equal((appSource.match(/setInterval\(/g) || []).length, 4);
+  assert.doesNotMatch([appSource, indexSource].join('\n'), /SUPABASE_(?:SECRET|SERVICE_ROLE)_KEY/);
 });

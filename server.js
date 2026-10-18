@@ -7,6 +7,7 @@ const { URL } = require('node:url');
 const { normalizeMarketSymbols, normalizeSymbol, normalizeWatchlistNewsStocks, normalizeWatchlistsPayload } = require('./lib/validation');
 const { createAuthService } = require('./server/auth-service');
 const { createMarketService } = require('./server/market-service');
+const { createNewsArchiveService } = require('./server/news-archive-service');
 const { createNewsService } = require('./server/news-service');
 const { createObservability } = require('./server/observability');
 const {
@@ -120,6 +121,7 @@ const providerFetch = observability.observedFetch(globalThis.fetch);
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
 const newsService = createNewsService({ fetchImpl: providerFetch });
+const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch });
 const settradeService = createSettradeService({ fetchImpl: providerFetch });
 const watchlistService = createWatchlistService({ fetchImpl: providerFetch });
 const newsAnalysisCalls = new Map();
@@ -128,6 +130,13 @@ async function loadCached(res, key, policy, load, options) {
   const result = await responseCache.get(key, policy, load, options);
   observability.markCache(res, result.meta);
   return result.value;
+}
+
+async function loadNewsAndArchive() {
+  const data = await newsService.getNews();
+  try { await newsArchiveService.ingest(data.items); }
+  catch (error) { console.warn('News archive write unavailable:', error.message); }
+  return data;
 }
 
 async function handleWatchlists(req, res, user) {
@@ -283,8 +292,21 @@ async function handle(req, res) {
     }
   }
   if (url.pathname === '/api/news') {
-    try { return send(res, 200, await loadCached(res, 'news', PROVIDER_POLICIES.news, () => newsService.getNews())); }
+    try { return send(res, 200, await loadCached(res, 'news', PROVIDER_POLICIES.news, loadNewsAndArchive)); }
     catch (error) { return send(res, 502, { error: error.message }); }
+  }
+  if (url.pathname === '/api/news-archive') {
+    try {
+      const page = url.searchParams.get('page') || '1';
+      const pageSize = url.searchParams.get('pageSize') || '10';
+      const source = url.searchParams.get('source') || 'all';
+      const symbol = url.searchParams.get('symbol') || '';
+      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}`;
+      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({ page, pageSize, source, symbol }));
+      return send(res, 200, { ...data, dataState: data.stale ? 'stale' : data.configured ? 'fresh' : 'unavailable' });
+    } catch (error) {
+      return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable', detail: error.message });
+    }
   }
   if (url.pathname === '/api/watchlist-news') {
     try {

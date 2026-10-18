@@ -161,6 +161,7 @@ html[data-theme="dark"] .watchlist-label select,html[data-theme="dark"] .mobile-
 
 /* Workspace navigation now opens focused, independent dashboard pages. */
 .workspace-hidden { display: none !important; }
+.breadcrumb a{color:inherit;text-decoration:none;border-radius:4px}.breadcrumb a:hover{color:#27866e}.breadcrumb a:focus-visible{outline:3px solid #59aa9030;outline-offset:3px}.alerts-toggle{display:grid;place-items:center;min-width:44px;min-height:44px;border-radius:8px}.alerts-toggle:hover{background:var(--bg);color:#27866e}.alerts-toggle:active{transform:translateY(1px)}.alerts-toggle:focus-visible{outline:3px solid #59aa9030;outline-offset:2px}.bell-icon{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.alerts-toggle .alert-badge{right:1px;top:1px}.latest-news-heading{margin:15px 0 2px;font-size:12px;font-weight:600}
 .bottom-grid.workspace-single { grid-template-columns: minmax(0, 1fr); }
 .workspace-page-intro { margin: 0 0 13px; }
 .workspace-page-intro h2 { margin: 0 0 3px; font-size: 15px; font-weight: 600; }

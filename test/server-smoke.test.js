@@ -8,6 +8,8 @@ const assert = require('node:assert/strict');
 
 process.env.SUPABASE_URL = 'https://project.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test-publishable-key';
+delete process.env.SUPABASE_SECRET_KEY;
+delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 delete process.env.OPENAI_API_KEY;
 
 const NativeResponse = globalThis.Response;
@@ -205,6 +207,12 @@ test('backend API response contracts remain stable before service extraction', a
 
   const news = JSON.parse((await request(base, '/api/news', { headers })).body);
   assert.deepEqual(Object.keys(news).sort(), ['asOf', 'dataState', 'errors', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
+
+  const archive = JSON.parse((await request(base, '/api/news-archive?page=1&pageSize=10', { headers })).body);
+  assert.equal(archive.configured, false);
+  assert.equal(archive.dataState, 'unavailable');
+  assert.deepEqual(archive.items, []);
+  assert.equal(archive.maxAgeDays, 365);
 
   const watchlistNews = JSON.parse((await request(base, '/api/watchlist-news?stocks=%5B%7B%22symbol%22%3A%22PTT%22%7D%5D', { headers })).body);
   assert.deepEqual(Object.keys(watchlistNews).sort(), ['asOf', 'dataState', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);

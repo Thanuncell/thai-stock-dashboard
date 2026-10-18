@@ -4,6 +4,13 @@ const PROVIDER_POLICIES = Object.freeze({
   search: Object.freeze({ ttlMs: 5_000, staleIfErrorMs: 0, errorBackoffMs: 1_000 }),
   market: Object.freeze({ ttlMs: 30_000, staleIfErrorMs: 0, errorBackoffMs: 2_000 }),
   news: Object.freeze({ ttlMs: 300_000, staleIfErrorMs: 0, errorBackoffMs: 5_000 }),
+  newsArchive: Object.freeze({
+    ttlMs: 30_000,
+    staleIfErrorMs: 300_000,
+    errorBackoffMs: 5_000,
+    markHit(value) { return { ...value, cached: true }; },
+    markStale(value) { return { ...value, cached: true, stale: true, dataState: 'stale' }; }
+  }),
   watchlistNews: Object.freeze({ ttlMs: 300_000, staleIfErrorMs: 0, errorBackoffMs: 5_000 }),
   settrade: Object.freeze({
     ttlMs: 60_000,

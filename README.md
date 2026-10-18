@@ -38,6 +38,33 @@ Alert settings are created only for symbols in the currently selected Watchlist.
 
 ## News
 
-The news panel reads Google News RSS search feeds for Thunhoon, Kaohoon, SETTRADE and SET and refreshes every 5 minutes. Headlines link to the publisher story. A lightweight Thai headline keyword heuristic labels each item positive, negative, or neutral; it marks whether the headline mentions the currently viewed stock. This is a headline-level hint, not full-article sentiment or investment advice. Feed availability and update timing depend on the publishers and feed service.
+The news panel reads Google News RSS search feeds and refreshes every 5 minutes. Changing the publisher filter or typing a search uses already loaded data and does not trigger another upstream feed request. Featured News remains limited to the latest 7 days and follows the active source filter. Watchlist News keeps relevant stories from unknown publishers as `other` instead of treating an unknown publisher as an irrelevant story.
+
+The visible broker filter is **โบรกเกอร์**. Broker attribution is separate from the actual publisher, so an InfoQuest, efinance, or other publisher card can remain credited to that publisher while also being discoverable under the broker filter. The initial mapping covers KS, INVX, BLS, FSS, KKPS, KGI, YUANTA, KSS, KTX, and LIB. Acronyms alone are intentionally not treated as attribution.
+
+### News Archive (up to 365 days)
+
+Run `supabase/news_archive.sql` once, then set `SUPABASE_SECRET_KEY` only in the Render server environment. The legacy `SUPABASE_SERVICE_ROLE_KEY` remains a temporary server-side fallback, but the current Supabase secret key is preferred. Never place either elevated key in browser code, a URL, source control, or logs. The archive table has RLS enabled and direct `anon`/`authenticated` access revoked; the browser reads it only through the authenticated SETscope API.
+
+Each five-minute live refresh performs one existing set of upstream feed reads, then batch-upserts normalized, HTTPS-validated, deduplicated items. It never refetches a full year. Archive reads are server-paginated at 10 items in the UI and capped at 50 items per API request. Retention cleanup runs at most once per day per server process and deletes no more than 500 expired rows per call. The archive is **up to one year and subject to available source data**: it grows from successful incremental ingestion and does not claim historical completeness or backfill content the upstream source cannot provide.
+
+If archive persistence is not configured or is temporarily unavailable, current 30-day live News remains available and is labelled honestly; missing archive data is not converted to zero or presented as fresh. `supabase/news_archive_rollback.sql` is a destructive manual rollback and should only be used after a backup. The safer application rollback is to revert the archive commit or remove `SUPABASE_SECRET_KEY`, which leaves the additive table intact.
+
+### Shareable workspace URLs
+
+The URL is the canonical source for workspace navigation. Reload, Ctrl+F5, bookmarks, and Back/Forward preserve these states:
+
+- `#overview`
+- `?symbol=PTT&range=1M#chart`
+- `?s=PTT&source=infoquest&newsPage=12#news`
+- `?watchlist=list-2&watchPage=4#watchlist`
+
+Only a Watchlist identifier and page are stored in the URL; stock lists, account identifiers, email addresses, tokens, and credentials are never serialized. Invalid or stale parameters are safely replaced with canonical defaults. Auto refresh does not add browser-history entries or change the current page.
+
+### News request budget
+
+The upstream budget is unchanged: the main News feed and Watchlist News each refresh at the existing five-minute cadence, with server cache/single-flight protection. When the archive is configured, the browser adds one bounded `/api/news-archive` database-page request at News startup/refresh and on archive-page navigation. Source filter clicks may read a different server-side archive page but never initiate a new upstream RSS ingestion. No polling interval is shorter than five minutes.
+
+Headlines link to the publisher story. A lightweight Thai headline keyword heuristic labels each item positive, negative, or neutral; it marks whether the headline mentions the currently viewed stock. This is a headline-level hint, not full-article sentiment or investment advice. Feed availability, retention depth, redistribution rights, and update timing depend on the publishers and feed service and must be reviewed before public launch.
 
 Technical signals are for educational purposes, not investment advice. Yahoo Finance data must not be presented as real-time for SET: Yahoo classifies it as delayed. Search results are limited to symbols indexed by Yahoo Finance; Yahoo chart data is also an undocumented service.

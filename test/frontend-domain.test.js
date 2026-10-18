@@ -25,6 +25,20 @@ test('watchlists stay bounded and reject invalid symbols without inventing items
   assert.equal(domain.mergeWatchlists(normalized, []), normalized);
 });
 
+test('a valid Watchlist URL selection wins over cloud and local active selections', () => {
+  const lists = [{ id: 'list-1' }, { id: 'list-2' }];
+  assert.equal(domain.resolveActiveWatchlistId(lists, {
+    requestedId: 'list-2',
+    cloudId: 'list-1',
+    localId: 'list-1'
+  }), 'list-2');
+  assert.equal(domain.resolveActiveWatchlistId(lists, {
+    requestedId: 'stale-list',
+    cloudId: 'list-1',
+    localId: 'list-2'
+  }), 'list-1');
+});
+
 test('news search includes an analysis summary but does not fabricate a match', () => {
   const item = { title: 'PTT update', sourceName: 'SET News', snippet: '' };
   assert.equal(domain.matchesNewsQuery(item, 'กำไร', 'กำไรเติบโต'), true);
@@ -33,7 +47,41 @@ test('news search includes an analysis summary but does not fabricate a match', 
 
 test('pagination and escaping preserve frontend output contracts', () => {
   assert.deepEqual(domain.pageList(5, 10), [1, 2, '…', 4, 5, 6, '…', 9, 10]);
+  assert.deepEqual(domain.pageList(1, 1), [1]);
+  assert.deepEqual(domain.pageList(1, 2), [1, 2]);
+  assert.deepEqual(domain.pageList(3, 5), [1, 2, 3, 4, 5]);
+  assert.deepEqual(domain.pageList(22, 43), [1, 2, '…', 21, 22, 23, '…', 42, 43]);
   assert.equal(domain.escapeHtml('<script>"x"</script>'), '&lt;script&gt;&quot;x&quot;&lt;/script&gt;');
+});
+
+test('featured news is source-aware and excluded from the latest list', () => {
+  const now = Date.parse('2026-10-18T00:00:00.000Z');
+  const items = [
+    { source: 'infoquest', title: 'IQ recent', pubDate: '2026-10-17T00:00:00.000Z' },
+    { source: 'infoquest', title: 'IQ older', pubDate: '2026-10-01T00:00:00.000Z' },
+    { source: 'efinance', title: 'EF recent', pubDate: '2026-10-16T00:00:00.000Z' }
+  ];
+  const selected = domain.selectNewsForDisplay(items, { source: 'infoquest', now });
+  assert.deepEqual(selected.featured.map(item => item.title), ['IQ recent']);
+  assert.deepEqual(selected.latest.map(item => item.title), ['IQ older']);
+});
+
+test('canonical URL state restores all four workspaces and rejects stale input', () => {
+  assert.deepEqual(domain.parseNavigationState('https://setscope.test/#overview'), { route: 'overview' });
+  assert.deepEqual(domain.parseNavigationState('https://setscope.test/?symbol=ptt&range=1M#chart'), {
+    route: 'chart', symbol: 'PTT', range: '1M'
+  });
+  assert.deepEqual(domain.parseNavigationState('https://setscope.test/?s=PTT&source=infoquest&newsPage=12#news'), {
+    route: 'news', query: 'PTT', source: 'infoquest', newsPage: 12
+  });
+  assert.deepEqual(domain.parseNavigationState('https://setscope.test/?watchlist=list-2&watchPage=4#watchlist'), {
+    route: 'watchlist', watchlistId: 'list-2', watchPage: 4
+  });
+  assert.equal(domain.navigationUrl({ route: 'chart', symbol: 'PTT', range: '1M' }), '/?symbol=PTT&range=1M#chart');
+  assert.equal(domain.navigationUrl({ route: 'news', query: '<PTT>', source: 'invalid', newsPage: -2 }), '/?s=%3CPTT%3E#news');
+  assert.deepEqual(domain.parseNavigationState('https://setscope.test/?token=secret&source=bad&newsPage=NaN#news'), {
+    route: 'news', query: '', source: 'all', newsPage: 1
+  });
 });
 
 test('missing market values remain unavailable instead of becoming zero', () => {
