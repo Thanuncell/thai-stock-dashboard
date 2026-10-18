@@ -1,6 +1,7 @@
 'use strict';
 
 const { allowedNewsUrl, resolveAllowedNewsRedirect } = require('../lib/news-policy');
+const { BROKER_FIRMS, decorateBrokerAttribution, dedupeNewsItems, matchBrokerFirms } = require('../lib/broker-news');
 const { decodeXml, marketHtmlText, xmlTag } = require('../lib/settrade-parser');
 const { normalizeWatchlistNewsStocks } = require('../lib/validation');
 
@@ -12,7 +13,7 @@ const FEEDS = Object.freeze([
   ['official', 'ธนาคารแห่งประเทศไทย', 'site:bot.or.th'],
   ['infoquest', 'Infoquest', '"Infoquest"'],
   ['efinance', 'efinance', 'site:efinancethai.com'],
-  ['broker', 'บลจ. (บริษัทหลักทรัพย์ 7 แห่ง)', '"หลักทรัพย์ กสิกรไทย" OR "หลักทรัพย์ อินโนเวสท์" OR "หลักทรัพย์ บัวหลวง" OR "หลักทรัพย์ ลิเบอเรเตอร์" OR "หลักทรัพย์ เอสบีไอ" OR "หลักทรัพย์ หยวนต้า" OR "หลักทรัพย์ พาย"']
+  ['broker', 'โบรกเกอร์', BROKER_FIRMS.map(firm => `"${firm.companyName.replace(/^บริษัท/, '')}"`).join(' OR ')]
 ]);
 
 const OUTLET_SOURCE = Object.freeze([
@@ -21,12 +22,12 @@ const OUTLET_SOURCE = Object.freeze([
   [/SETTRADE|ตลาดหลักทรัพย์/i, 'settrade'],
   [/ธนาคารแห่งประเทศไทย|bot\.or\.th/i, 'official'],
   [/Infoquest|อินโฟเควสท์/i, 'infoquest'],
-  [/efinance|อีไฟแนนซ์/i, 'efinance'],
-  [/(หลักทรัพย์\s*กสิกรไทย|KSecurities|K Securities|อินโนเวสท์|InnovestX|หลักทรัพย์\s*บัวหลวง|Bualuang|ลิเบอเรเตอร์|Liberator|เอสบีไอ|SBI Thai Online|SBITO|หยวนต้า|Yuanta|หลักทรัพย์\s*พาย|Pi Securities)/i, 'broker']
+  [/efinance|อีไฟแนนซ์/i, 'efinance']
 ]);
 
 function sourceFromOutlet(name = '') {
-  return (OUTLET_SOURCE.find(([pattern]) => pattern.test(name)) || [null, 'other'])[1];
+  const mapped = (OUTLET_SOURCE.find(([pattern]) => pattern.test(name)) || [null, null])[1];
+  return mapped || (matchBrokerFirms(name).length ? 'broker' : 'other');
 }
 
 function fallbackNewsSummary(title = '') {
@@ -60,23 +61,23 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         const url = decodeXml(xmlTag(block, 'link'));
         const pubDate = decodeXml(xmlTag(block, 'pubDate'));
         const snippet = decodeXml(xmlTag(block, 'description')).slice(0, 1200);
-        const outlet = xmlTag(block, 'source').match(/>([\s\S]*?)<\/source>/i)?.[1];
-        const outletName = outlet ? decodeXml(outlet) : sourceName;
-        return {
-          source: source === 'broker' ? sourceFromOutlet(outletName) : source,
+        const outletName = decodeXml(xmlTag(block, 'source')) || sourceName;
+        const outletSource = sourceFromOutlet(outletName);
+        return decorateBrokerAttribution({
+          source: outletSource === 'other' && source !== 'broker' ? source : outletSource,
           sourceName: outletName,
           title,
           url,
           pubDate,
           snippet
-        };
+        });
       }).filter(item => {
         const published = Date.parse(item.pubDate);
-        return item.title && item.source !== 'other' && /^https:\/\//.test(item.url)
+        return item.title && allowedNewsUrl(item.url)
           && Number.isFinite(published) && published >= cutoff;
       }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).slice(0, 8);
     }));
-    const items = settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])
+    const items = dedupeNewsItems(settled.flatMap(result => result.status === 'fulfilled' ? result.value : []))
       .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
     const errors = settled.map((result, index) => result.status === 'rejected' ? FEEDS[index][0] : null).filter(Boolean);
     const fetchedAt = new Date().toISOString();
@@ -252,21 +253,20 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const xml = await response.text();
     const channel = xml.match(/<channel(?:\s[^>]*)?>([\s\S]*?)<\/channel>/i)?.[1] || xml;
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const items = [...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].map(match => {
+    const parsedItems = [...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].map(match => {
       const block = match[1];
       const title = decodeXml(xmlTag(block, 'title'));
       const url = decodeXml(xmlTag(block, 'link'));
       const pubDate = decodeXml(xmlTag(block, 'pubDate'));
       const snippet = decodeXml(xmlTag(block, 'description')).slice(0, 1200);
-      const outlet = xmlTag(block, 'source').match(/>([\s\S]*?)<\/source>/i)?.[1];
       const haystack = title + ' ' + snippet;
       const matchedSymbols = requested.filter(stock => {
         const escaped = stock.symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         return (stock.symbol.length >= 3 && new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'i').test(haystack))
           || (stock.name.length > 3 && haystack.toLocaleLowerCase('th').includes(stock.name.toLocaleLowerCase('th')));
       }).map(stock => stock.symbol);
-      const outletName = outlet ? decodeXml(outlet) : '';
-      return {
+      const outletName = decodeXml(xmlTag(block, 'source'));
+      return decorateBrokerAttribution({
         source: sourceFromOutlet(outletName),
         sourceName: outletName || 'ข่าวหุ้นไทย',
         title,
@@ -274,10 +274,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         pubDate,
         snippet,
         matchedSymbols
-      };
-    }).filter(item => item.title && /^https:\/\//.test(item.url)
+      });
+    }).filter(item => item.title && allowedNewsUrl(item.url)
       && Number.isFinite(Date.parse(item.pubDate)) && Date.parse(item.pubDate) >= cutoff
-      && item.matchedSymbols.length && item.source !== 'other')
+      && item.matchedSymbols.length);
+    const items = dedupeNewsItems(parsedItems)
       .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).slice(0, 30);
     const fetchedAt = new Date().toISOString();
     const asOfMs = items.map(item => Date.parse(item.pubDate)).filter(Number.isFinite)
