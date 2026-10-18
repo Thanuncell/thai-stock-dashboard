@@ -305,7 +305,6 @@ html[data-theme="dark"] .chart-level text{stroke:#111a23}
 .news-ai-summary{display:grid;gap:2px;margin-top:7px;padding:7px 9px;border-left:2px solid #72bca4;background:#f6faf8;border-radius:0 5px 5px 0;color:#6f7d86;font-size:9px;line-height:1.55}
 .news-ai-summary b{font-size:8px;color:#43806e;font-weight:600}
 .watchlist-news-panel{margin-top:14px}
-.watchlist-news-panel .panel-heading p{margin:4px 0 0;color:#929da5;font-size:9px}
 .watchlist-news-panel .news-list{margin-top:11px}
 .market-data-foot{align-items:flex-end;flex-wrap:wrap}
 .market-data-foot>span{font-size:8px}

@@ -38,8 +38,14 @@ test('news and watchlist UI omit archive-age copy', () => {
   assert.doesNotMatch(appSource, /คลังข่าวย้อนหลังสูงสุด 1 ปี ตามข้อมูลที่ต้นทางมี/);
   assert.doesNotMatch(appSource, /ข่าวสดย้อนหลัง 30 วัน/);
   assert.doesNotMatch(appSource, /โหลดฟีดไม่สำเร็จ · ข่าวย้อนหลัง 30 วัน/);
-  assert.doesNotMatch(indexSource, /คัดข่าวย้อนหลัง 30 วันจากชื่อย่อหุ้นใน Watchlist ที่เลือก/);
-  assert.match(indexSource, /คัดข่าวจากชื่อย่อหุ้นใน Watchlist ที่เลือก/);
+  assert.doesNotMatch(indexSource, /แสดงเฉพาะข่าวย้อนหลัง 30 วัน/);
+  assert.doesNotMatch(indexSource, /ไปที่ SETTRADE/);
+  assert.doesNotMatch(indexSource, /คัดข่าวจากชื่อย่อหุ้นใน Watchlist ที่เลือก/);
+  assert.doesNotMatch(indexSource, /id="watchlist-news-status"/);
+  assert.doesNotMatch(appSource, /#watchlist-news-status/);
+  assert.doesNotMatch(appSource, /setNewsStatus/);
+  assert.doesNotMatch(appSource, /30 วัน|1 ปี/);
+  assert.match(appSource, /watchlist\.length \? 'ยังไม่มีข่าวของหุ้นในรายการติดตาม' : 'ยังไม่มีหุ้นในรายการติดตาม'/);
 });
 
 test('latest and featured news headings share the same spacing', () => {
@@ -53,4 +59,33 @@ test('source filtering renders loaded data and auto refresh does not write histo
   assert.match(sourceHandler, /renderNews\(/);
   assert.match(appSource, /setInterval\(\(\)\s*=>\s*getNews\(\{\s*reason:\s*'poll'/);
   assert.match(appSource, /setInterval\(\(\)\s*=>\s*getWatchlistNews\(\{\s*reason:\s*'poll'/);
+});
+
+test('final UI cleanup preserves exact News and chart contracts', () => {
+  assert.match(appSource, /query \? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่มีข่าวในหมวดที่เลือก'/);
+  assert.match(appSource, /saved \? 'ติดตามแล้ว' : '＋ เพิ่มเข้า Watchlist'/);
+  assert.doesNotMatch(appSource, /✓ อยู่ใน Watchlist/);
+  assert.doesNotMatch(indexSource, /id="chart-meta"/);
+  assert.doesNotMatch(appSource, /#chart-meta/);
+  assert.doesNotMatch(indexSource, /id="chart-name"/);
+  assert.doesNotMatch(appSource, /#chart-name/);
+  assert.match(indexSource, /แหล่งข้อมูล: Yahoo Finance · ล่าช้าประมาณ 15 นาที/);
+  assert.match(indexSource, /id="chart-updated">อัปเดตล่าสุด: —/);
+  assert.match(appSource, /watchlist\[0\]\?\.symbol \|\| 'PTT'/);
+});
+
+test('News pagers preserve state and scroll only their own list with reduced-motion support', () => {
+  assert.match(appSource, /window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
+  assert.match(appSource, /scrollIntoView\(\{ behavior: reduceMotion \? 'auto' : 'smooth', block: 'start' \}\)/);
+  assert.match(appSource, /watchNewsPage = page; renderWatchlistNews\(\); writeNavigation\('push', 'watchlist'\); scrollNewsListToTop\('#watchlist-news-list'\)/);
+  assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollNewsListToTop\('#latest-news-heading'\)/);
+});
+
+test('Technical Analysis wording and Overview anchors remain at baseline', () => {
+  assert.match(indexSource, /<h2>สรุปสัญญาณ<\/h2>/);
+  assert.match(indexSource, /<small>ความเห็นรวม<\/small>/);
+  assert.match(indexSource, /<h3>เหตุผลประกอบสัญญาณ<\/h3>/);
+  assert.match(indexSource, /สัญญาณเป็นเพียงหลักฐานทางเทคนิคย้อนหลัง/);
+  assert.match(indexSource, /id="market-overview"/);
+  assert.match(indexSource, /id="market-data-overview"/);
 });
