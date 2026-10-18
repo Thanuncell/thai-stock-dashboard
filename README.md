@@ -45,7 +45,9 @@ The bounded runner is `node scripts/run-coverage-verification.js`:
 
 The authenticated `/api/coverage` summary is cached for five minutes and is requested once, lazily, on the first Chart visit. It has no browser polling and causes no Yahoo request. The UI remains hidden until a completed persisted run exists; it then displays only the verified count, completion time, and Yahoo Finance attribution. A saved summary older than 36 hours is classified stale instead of being relabelled fresh.
 
-Current production coverage is intentionally **unverified** until the migration is approved and applied, an authoritative registry is seeded, and a completed persisted run is inspected. Do not publish a coverage count from fixtures, search limits, or planning targets.
+Production gate evidence recorded on 2026-10-18 uses an authorized 191-symbol SET100+sSET registry. The persisted result is Current Verified Coverage 129 and technical-ready 129 after a five-symbol canary plus one bounded 125-symbol batch. One symbol (BANPU) remains `temporary_failed` because invalid numeric rows were quarantined, and 61 symbols remain pending for a later rolling batch. These values are a timestamped audit result, not a hard-coded product limit or a whole-market claim. The daily scheduler remains OFF.
+
+The live Render service still runs the v1.5.1 main commit at this Acceptance Gate. Deploying an unmerged specific commit through the Dashboard would disable Auto-Deploy, so live Coverage UI verification is deferred until an owner-approved deployment path is available. The database summary, endpoint/UI contracts, and rendering logic are verified; do not describe the live UI as enabled before that deployment.
 
 For rollback, first disable the external schedule and revert the v1.5.2 application commits; the additive tables can remain safely unused. `supabase/coverage_rollback.sql` is destructive and must only be run manually after a backup and explicit approval. Do not remove the shared server-side Supabase secret solely to disable Coverage because News Archive also uses it; a missing table or completed run already keeps the Coverage UI hidden.
 

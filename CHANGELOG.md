@@ -27,5 +27,6 @@
 
 ### Known limitations
 
-- Production Current Verified Coverage remains unverified until the additive migration, authoritative registry seed, and first completed scheduled run are separately approved and executed.
-- The recommended daily scheduler is documented but intentionally not provisioned because new shared/paid infrastructure requires owner approval.
+- The additive Coverage migration is applied to `setscope-auth`. An authorized 191-symbol SET100+sSET registry, five-symbol canary, and bounded 125-symbol batch produced persisted evidence of 129 Current Verified and 129 technical-ready symbols; BANPU remains quarantined as `temporary_failed`, and 61 symbols remain pending.
+- The recommended daily scheduler remains intentionally OFF. No Render cron service or Supabase cron job was created.
+- Live Coverage UI verification is pending an approved Render deployment path: deploying the unmerged commit by SHA would disable Auto-Deploy, so no Render setting or deployment was changed during the gate.
