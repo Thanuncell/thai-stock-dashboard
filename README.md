@@ -26,6 +26,14 @@ The main chart is rendered by SETscope as an OHLC candlestick chart with volume 
 
 The SET Index banner uses Yahoo Finance for price, volume, high, and low. To display the SET market's accumulated trading value in million baht, configure the `SET_API_KEY` environment variable in Render. The backend requests the delayed index endpoint from SET's Market Data API. The value remains unavailable when this key is not configured or the API cannot return it; it is not estimated from volume.
 
+## Real-time readiness (production delivery remains off)
+
+`server/realtime-readiness.js` defines an inactive boundary for a future licensed provider. It separates latest-price, chart, and market-snapshot methods; normalizes provider/source/as-of and delayed/stale/partial state; keeps a bounded in-memory last-known store; coalesces duplicate reads; enforces an in-flight request limit; and exposes an injectable fanout boundary without creating sockets, listeners, timers, queues, or database tables.
+
+`REALTIME_READY` and `REALTIME_ENABLED` are independent opt-in flags and both default to false. `REALTIME_ENABLED=true` has no effect unless `REALTIME_READY=true`, and the production server does not initialize the readiness runtime or add UI/network activity in this phase. Existing Yahoo Finance behavior remains delayed polling with the same request budget. Disabling the future path is therefore an immediate rollback that leaves the delayed provider unchanged.
+
+Do not connect or enable a live provider until the production Go/No-Go review has separately confirmed data rights and redistribution terms, entitlement enforcement, provider and fanout capacity, monitoring, partial-outage fallback, and operational rollback. Provider credentials must remain server-side and must never enter responses, cache keys, browser code, or logs.
+
 Alert settings are created only for symbols in the currently selected Watchlist. Users can enable technical signal-change alerts and set an upper or lower price threshold. Alert preferences, state, and recent history are stored in that browser's local storage. The dashboard polls once per minute while the page is open; browser notifications require permission. There is no server-side push or background monitoring after closing the page, and Yahoo's Thai quotes are delayed.
 
 ## News
