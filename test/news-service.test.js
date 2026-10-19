@@ -66,6 +66,63 @@ test('news quality rejects slug, generic source and account-service pages but ac
   }).accepted, true);
 });
 
+test('SETTRADE overview and data pages are rejected while real articles and official announcements remain', () => {
+  const date = new Date().toISOString();
+  const overview = {
+    title: 'LHHOTEL - ภาพรวม - Settrade', sourceName: 'Settrade', source: 'settrade',
+    url: 'https://www.settrade.com/th/equities/quote/LHHOTEL/overview', pubDate: date
+  };
+  assert.deepEqual(classifyNewsItem(overview), {
+    accepted: false, classification: 'NON_NEWS', reason: 'SETTRADE_DATA_PAGE_TITLE'
+  });
+  assert.equal(classifyNewsItem({
+    ...overview,
+    title: 'LHHOTEL แจ้งผลการดำเนินงานล่าสุด',
+    url: 'https://news.google.com/rss/articles/opaque',
+    resolvedUrl: 'https://www.settrade.com/th/equities/quote/LHHOTEL/financials'
+  }).reason, 'SETTRADE_NON_ARTICLE_PATH');
+  assert.equal(classifyNewsItem({
+    ...overview,
+    title: 'TFEX จากเรื่องไกลตัว สู่เครื่องมือที่นักลงทุนควรรู้จัก',
+    url: 'https://www.settrade.com/th/news-and-articles/articles/778-piyaporn-tfex-from-distant-to-essential'
+  }).accepted, true);
+  assert.equal(classifyNewsItem({
+    ...overview,
+    title: 'รายงานการจำหน่ายหุ้นที่ซื้อคืนของบริษัทจดทะเบียน',
+    url: 'https://www.settrade.com/th/news-and-articles/news/106526600?symbol=A5'
+  }).accepted, true);
+  assert.equal(classifyNewsItem({
+    ...overview,
+    title: 'บริษัทจดทะเบียนชี้แจงข้อมูลสำคัญต่อตลาดหลักทรัพย์',
+    sourceName: 'ตลาดหลักทรัพย์แห่งประเทศไทย',
+    url: 'https://www.set.or.th/th/market/news-and-alert/newsdetails?id=12345'
+  }).accepted, true);
+});
+
+test('live News API omits opaque SETTRADE overview results before UI delivery', async () => {
+  const recent = new Date().toUTCString();
+  const body = rss([
+    {
+      title: 'LHHOTEL - ภาพรวม - Settrade',
+      url: 'https://news.google.com/rss/articles/opaque-overview',
+      pubDate: recent,
+      sourceName: 'Settrade'
+    },
+    {
+      title: 'บริษัทจดทะเบียนแจ้งความคืบหน้าโครงการลงทุนสำคัญ - SET',
+      url: 'https://news.google.com/rss/articles/genuine-announcement',
+      pubDate: recent,
+      sourceName: 'ตลาดหลักทรัพย์แห่งประเทศไทย',
+      snippet: 'บริษัทเปิดเผยรายละเอียดโครงการและกำหนดการต่อตลาดหลักทรัพย์'
+    }
+  ]);
+  const service = createNewsService({ fetchImpl: async () => new Response(body, { status: 200 }) });
+  const result = await service.getNews();
+  assert.deepEqual(result.items.map(item => item.title), [
+    'บริษัทจดทะเบียนแจ้งความคืบหน้าโครงการลงทุนสำคัญ - SET'
+  ]);
+});
+
 test('watchlist news quality keeps relevant unknown publishers with meaningful content', async () => {
   const recent = new Date().toUTCString();
   const body = rss([

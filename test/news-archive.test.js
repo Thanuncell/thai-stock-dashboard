@@ -56,3 +56,40 @@ test('archive ingestion rejects non-news records before persistence', async () =
   assert.equal(result.ingested, 0);
   assert.equal(calls.length, 0);
 });
+
+test('archive hides existing SETTRADE overview rows and does not ingest them again', async () => {
+  const calls = [];
+  const bad = {
+    fingerprint: 'overview', source: 'settrade', source_name: 'Settrade',
+    title: 'LHHOTEL - ภาพรวม - Settrade',
+    url: 'https://news.google.com/rss/articles/opaque',
+    published_at: '2026-10-17T00:00:00.000Z'
+  };
+  const good = {
+    fingerprint: 'article', source: 'settrade', source_name: 'Settrade',
+    title: 'TFEX จากเรื่องไกลตัว สู่เครื่องมือที่นักลงทุนควรรู้จัก',
+    url: 'https://www.settrade.com/th/news-and-articles/articles/778-piyaporn-tfex-from-distant-to-essential',
+    published_at: '2026-10-17T00:00:00.000Z'
+  };
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-18T00:00:00.000Z'),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (init.method === 'POST') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify([bad, good]), {
+        status: 200,
+        headers: { 'content-range': '0-1/2', 'content-type': 'application/json' }
+      });
+    }
+  });
+  const listed = await service.list({ page: 1, pageSize: 10, source: 'settrade' });
+  assert.deepEqual(listed.items.map(item => item.fingerprint), ['article']);
+  assert.equal(listed.qualityFiltered, 1);
+  const ingested = await service.ingest([{
+    source: 'settrade', sourceName: 'Settrade', title: bad.title, url: bad.url,
+    pubDate: bad.published_at
+  }]);
+  assert.equal(ingested.ingested, 0);
+  assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
+});
