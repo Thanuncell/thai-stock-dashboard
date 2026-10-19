@@ -123,6 +123,16 @@ test('three-state news quality rejects deterministic reference pages generically
       classification: 'QUOTE_DATA_OVERVIEW'
     },
     {
+      title: 'HUMAN - ภาพรวมบริษัท - SETTRADE.COM', sourceName: 'SETTRADE.COM', source: 'other',
+      url: 'https://news.google.com/rss/articles/human-overview', pubDate: date,
+      classification: 'QUOTE_DATA_OVERVIEW'
+    },
+    {
+      title: 'S50V26P990 - ปฏิทินการซื้อขาย - SETTRADE.COM', sourceName: 'SETTRADE.COM', source: 'other',
+      url: 'https://news.google.com/rss/articles/settrade-com-calendar', pubDate: date,
+      classification: 'TRADING_CALENDAR'
+    },
+    {
       title: 'ข่าวล่าสุด', sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', source: 'kaohoon',
       url: 'https://www.kaohoon.com/category/news/page/7712/', pubDate: date,
       classification: 'PAGINATION'
