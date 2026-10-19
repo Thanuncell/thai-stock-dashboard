@@ -112,6 +112,7 @@ test('generic page classification rejects listings, auth, data and ownership pag
     { title: 'ข่าวล่าสุด', url: 'https://www.kaohoon.com/category/news?page=8', sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', pubDate: date },
     { title: 'Reset Password', url: 'https://www.set.or.th/th/account/reset-password', sourceName: 'SET', pubDate: date },
     { title: 'ข้อมูลผู้ถือหุ้นของบริษัทจดทะเบียน', url: 'https://www.set.or.th/th/market/product/stock/quote/PTT/major-shareholders', sourceName: 'SET', pubDate: date },
+    { title: 'BCP - ข้อมูลผู้ถือหุ้น - Settrade', url: 'https://news.google.com/rss/articles/opaque-settrade-shareholders', sourceName: 'Settrade', source: 'settrade', pubDate: date },
     { title: 'ข้อมูลทางการเงินของบริษัทจดทะเบียน', url: 'https://news.google.com/rss/articles/opaque-set-data', resolvedUrl: 'https://www.set.or.th/th/market/product/stock/quote/PTT/financials', sourceName: 'SET', pubDate: date },
     { title: 'ข้อมูลบริษัทจดทะเบียน', url: 'https://www.set.or.th/th/market/product/stock/quote/PTT/profile', sourceName: 'SET', pubDate: date },
     { title: 'บริการสำหรับผู้ลงทุน', url: 'https://www.set.or.th/th/services/investors', sourceName: 'SET', pubDate: date },
@@ -154,6 +155,7 @@ test('live News API removes cross-source non-article records while keeping genui
   const body = rss([
     { title: 'ข่าว - Page 7712 of 7712 - ข่าวหุ้นธุรกิจออนไลน์ - ข่าวหุ้นธุรกิจออนไลน์', url: 'https://news.google.com/rss/articles/kaohoon-list', pubDate: recent, sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', snippet: 'ข่าว - Page 7712 of 7712' },
     { title: 'mmxx-ventures - Thunhoon', url: 'https://news.google.com/rss/articles/thunhoon-slug', pubDate: recent, sourceName: 'Thunhoon' },
+    { title: 'BCP - ข้อมูลผู้ถือหุ้น - Settrade', url: 'https://news.google.com/rss/articles/settrade-shareholders', pubDate: recent, sourceName: 'Settrade' },
     { title: 'ผู้ถือหุ้นอนุมัติแผนลงทุนใหม่ของบริษัท', url: 'https://news.google.com/rss/articles/genuine-shareholder-news', pubDate: recent, sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', snippet: 'ที่ประชุมอนุมัติวงเงินและกรอบเวลาดำเนินการของโครงการใหม่' }
   ]);
   const service = createNewsService({ fetchImpl: async () => new Response(body, { status: 200 }) });

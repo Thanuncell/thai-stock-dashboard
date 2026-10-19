@@ -108,6 +108,11 @@ test('archive hides pagination and cross-source non-news rows and prevents re-in
       fingerprint: 'thunhoon-slug', source: 'thunhoon', source_name: 'Thunhoon',
       title: 'mmxx-ventures - Thunhoon', url: 'https://news.google.com/rss/articles/thunhoon-slug',
       published_at: publishedAt, snippet: ''
+    },
+    {
+      fingerprint: 'settrade-shareholders', source: 'settrade', source_name: 'Settrade',
+      title: 'BCP - ข้อมูลผู้ถือหุ้น - Settrade', url: 'https://news.google.com/rss/articles/settrade-shareholders',
+      published_at: publishedAt, snippet: ''
     }
   ];
   const good = {
@@ -129,7 +134,7 @@ test('archive hides pagination and cross-source non-news rows and prevents re-in
   });
   const listed = await service.list({ page: 1, pageSize: 10, source: 'all' });
   assert.deepEqual(listed.items.map(item => item.fingerprint), ['real-news']);
-  assert.equal(listed.qualityFiltered, 2);
+  assert.equal(listed.qualityFiltered, 3);
 
   for (const bad of badRows) {
     const result = await service.ingest([{
