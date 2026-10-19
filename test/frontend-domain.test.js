@@ -6,6 +6,15 @@ const assert = require('node:assert/strict');
 let domain;
 test.before(async () => { domain = await import('../client/domain.mjs'); });
 
+test('dense intraday chart geometry stays within the viewport and preserves ordering', () => {
+  const geometry = domain.chartGeometry({ rowCount: 292, hostWidth: 640, range: '1D' });
+  assert.equal(geometry.width, 640);
+  assert.ok(geometry.step > 1);
+  assert.ok(geometry.candleWidth >= 1);
+  assert.ok(geometry.x(0) < geometry.x(291));
+  assert.ok(geometry.x(291) <= geometry.width - geometry.right);
+});
+
 test('workspace routing preserves canonical and legacy hashes', () => {
   assert.equal(domain.pageFromHash('#overview'), 'overview');
   assert.equal(domain.pageFromHash('#chart-section'), 'chart');

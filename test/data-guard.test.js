@@ -39,7 +39,7 @@ test('wrong-symbol and wrong-market payloads are quarantined before trust', () =
   assert.ok(wrongMarket.guardReasons.includes('MARKET_MISMATCH'));
 });
 
-test('invalid OHLC, numeric and timestamp rows never become accepted history', () => {
+test('invalid historical rows are rejected without tainting a majority-valid quote', () => {
   const guard = createMarketDataGuard({ now: () => NOW });
   const result = guard.assess(yahooResult({
     timestamp: [1_760_000_000, 1_760_086_400, 1_760_172_800, Math.floor((NOW + 60 * 60 * 1000) / 1000), 1_760_086_400],
@@ -52,12 +52,47 @@ test('invalid OHLC, numeric and timestamp rows never become accepted history', (
     }] }
   }), 'PTT');
 
-  assert.equal(result.guardStatus, 'suspect');
+  assert.equal(result.guardStatus, 'accepted');
+  assert.equal(result.value.identityStatus, 'accepted');
+  assert.equal(result.value.quoteStatus, 'accepted');
+  assert.equal(result.value.historyStatus, 'insufficient');
+  assert.equal(result.value.rejectedBars, 4);
   assert.equal(result.value.history.length, 1);
-  assert.ok(result.guardReasons.includes('INVALID_OHLC'));
-  assert.ok(result.guardReasons.includes('FUTURE_TIMESTAMP'));
-  assert.ok(result.guardReasons.includes('DUPLICATE_TIMESTAMP'));
+  assert.ok(result.value.historyReasons.includes('INVALID_OHLC'));
+  assert.ok(result.value.historyReasons.includes('FUTURE_TIMESTAMP'));
+  assert.ok(result.value.historyReasons.includes('DUPLICATE_TIMESTAMP'));
+  assert.ok(!result.guardReasons.includes('INVALID_OHLC'));
   assert.ok(result.value.history.every(bar => Number.isFinite(bar.close) && bar.high >= bar.low));
+});
+
+test('majority-valid history remains usable with warnings and retains rejected-bar evidence', () => {
+  const guard = createMarketDataGuard({ now: () => NOW });
+  const result = guard.assess(yahooResult({
+    timestamp: [1_760_000_000, 1_760_086_400, 1_760_172_800],
+    indicators: { quote: [{
+      open: [35, null, 35.2], high: [35.5, null, 35.7], low: [34.75, null, 35], close: [35.25, null, 35.4], volume: [1000, null, 1200]
+    }] }
+  }), 'PTT');
+  assert.equal(result.guardStatus, 'accepted');
+  assert.equal(result.value.historyStatus, 'usable_with_warnings');
+  assert.equal(result.value.rejectedBars, 1);
+  assert.equal(result.value.history.length, 2);
+  assert.deepEqual(result.value.historyReasons, ['INVALID_NUMERIC']);
+});
+
+test('an isolated historical price spike is quarantined before chart and Technical Analysis use', () => {
+  const guard = createMarketDataGuard({ now: () => NOW, maxPriceMoveRatio: 0.35 });
+  const result = guard.assess(yahooResult({
+    timestamp: [1_760_000_000, 1_760_086_400, 1_760_172_800],
+    indicators: { quote: [{
+      open: [35, 99, 35.1], high: [35.5, 101, 35.6], low: [34.75, 98, 34.9], close: [35.25, 100, 35.4], volume: [1000, 1000, 1200]
+    }] }
+  }), 'PTT');
+  assert.equal(result.guardStatus, 'accepted');
+  assert.equal(result.value.historyStatus, 'usable_with_warnings');
+  assert.equal(result.value.rejectedBars, 1);
+  assert.deepEqual(result.value.history.map(bar => bar.close), [35.25, 35.4]);
+  assert.ok(result.value.historyReasons.includes('HISTORICAL_ANOMALY'));
 });
 
 test('anomaly quarantine preserves last-known-good as explicitly stale', () => {

@@ -44,3 +44,104 @@ test('archive pagination validates filters and never returns an unbounded year',
   assert.match(requested.url, /source=eq\.infoquest/);
   assert.match(requested.url, /matched_symbols=cs\./);
 });
+
+test('archive ingestion rejects non-news records before persistence', async () => {
+  const calls = [];
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-18T00:00:00.000Z'),
+    fetchImpl: async (url, init) => { calls.push({ url: String(url), init }); return new Response(null, { status: 204 }); }
+  });
+  const result = await service.ingest([{ source: 'settrade', sourceName: 'SET', title: '- SET', url: 'https://news.google.com/articles/bad', pubDate: '2026-10-17T00:00:00.000Z' }]);
+  assert.equal(result.ingested, 0);
+  assert.equal(calls.length, 0);
+});
+
+test('archive hides existing SETTRADE overview rows and does not ingest them again', async () => {
+  const calls = [];
+  const bad = {
+    fingerprint: 'overview', source: 'settrade', source_name: 'Settrade',
+    title: 'LHHOTEL - ภาพรวม - Settrade',
+    url: 'https://news.google.com/rss/articles/opaque',
+    published_at: '2026-10-17T00:00:00.000Z'
+  };
+  const good = {
+    fingerprint: 'article', source: 'settrade', source_name: 'Settrade',
+    title: 'TFEX จากเรื่องไกลตัว สู่เครื่องมือที่นักลงทุนควรรู้จัก',
+    url: 'https://www.settrade.com/th/news-and-articles/articles/778-piyaporn-tfex-from-distant-to-essential',
+    published_at: '2026-10-17T00:00:00.000Z'
+  };
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-18T00:00:00.000Z'),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (init.method === 'POST') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify([bad, good]), {
+        status: 200,
+        headers: { 'content-range': '0-1/2', 'content-type': 'application/json' }
+      });
+    }
+  });
+  const listed = await service.list({ page: 1, pageSize: 10, source: 'settrade' });
+  assert.deepEqual(listed.items.map(item => item.fingerprint), ['article']);
+  assert.equal(listed.qualityFiltered, 1);
+  const ingested = await service.ingest([{
+    source: 'settrade', sourceName: 'Settrade', title: bad.title, url: bad.url,
+    pubDate: bad.published_at
+  }]);
+  assert.equal(ingested.ingested, 0);
+  assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
+});
+
+test('archive hides pagination and cross-source non-news rows and prevents re-ingestion', async () => {
+  const calls = [];
+  const publishedAt = '2026-10-17T00:00:00.000Z';
+  const badRows = [
+    {
+      fingerprint: 'kaohoon-page', source: 'kaohoon', source_name: 'ข่าวหุ้นธุรกิจออนไลน์',
+      title: 'ข่าว - Page 7712 of 7712 - ข่าวหุ้นธุรกิจออนไลน์ - ข่าวหุ้นธุรกิจออนไลน์',
+      url: 'https://news.google.com/rss/articles/kaohoon-page', published_at: publishedAt,
+      snippet: 'ข่าว - Page 7712 of 7712 - ข่าวหุ้นธุรกิจออนไลน์'
+    },
+    {
+      fingerprint: 'thunhoon-slug', source: 'thunhoon', source_name: 'Thunhoon',
+      title: 'mmxx-ventures - Thunhoon', url: 'https://news.google.com/rss/articles/thunhoon-slug',
+      published_at: publishedAt, snippet: ''
+    },
+    {
+      fingerprint: 'settrade-shareholders', source: 'settrade', source_name: 'Settrade',
+      title: 'BCP - ข้อมูลผู้ถือหุ้น - Settrade', url: 'https://news.google.com/rss/articles/settrade-shareholders',
+      published_at: publishedAt, snippet: ''
+    }
+  ];
+  const good = {
+    fingerprint: 'real-news', source: 'kaohoon', source_name: 'ข่าวหุ้นธุรกิจออนไลน์',
+    title: 'ผู้ถือหุ้นอนุมัติแผนลงทุนใหม่ของบริษัท', url: 'https://news.google.com/rss/articles/real-news',
+    published_at: publishedAt, snippet: 'ที่ประชุมอนุมัติวงเงินและกรอบเวลาดำเนินการของโครงการใหม่'
+  };
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-18T00:00:00.000Z'),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (init.method === 'POST') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify([...badRows, good]), {
+        status: 200,
+        headers: { 'content-range': '0-2/3', 'content-type': 'application/json' }
+      });
+    }
+  });
+  const listed = await service.list({ page: 1, pageSize: 10, source: 'all' });
+  assert.deepEqual(listed.items.map(item => item.fingerprint), ['real-news']);
+  assert.equal(listed.qualityFiltered, 3);
+
+  for (const bad of badRows) {
+    const result = await service.ingest([{
+      source: bad.source, sourceName: bad.source_name, title: bad.title, url: bad.url,
+      pubDate: bad.published_at, snippet: bad.snippet
+    }]);
+    assert.equal(result.ingested, 0);
+  }
+  assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
+});

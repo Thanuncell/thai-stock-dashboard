@@ -46,7 +46,7 @@ function validMarket(meta = {}) {
   return !market || /(?:SET|Thailand|BKK)/i.test(market);
 }
 
-function normalizeHistory(result, { now, futureToleranceMs }) {
+function normalizeHistory(result, { now, futureToleranceMs, maxPriceMoveRatio = DEFAULT_MAX_PRICE_MOVE_RATIO }) {
   const quote = result?.indicators?.quote?.[0] || {};
   const timestamps = Array.isArray(result?.timestamp) ? result.timestamp : [];
   const candidates = [];
@@ -93,8 +93,21 @@ function normalizeHistory(result, { now, futureToleranceMs }) {
     candidates.push({ time, open, high, low, close, volume });
   });
 
-  const history = candidates.filter(bar => !duplicates.has(bar.time)).sort((left, right) => left.time - right.time);
-  return { history, reasons: [...reasons] };
+  const ordered = candidates.filter(bar => !duplicates.has(bar.time)).sort((left, right) => left.time - right.time);
+  const history = ordered.filter((bar, index) => {
+    const previous = ordered[index - 1];
+    const next = ordered[index + 1];
+    if (!previous || !next) return true;
+    const jumpFromPrevious = Math.abs(bar.close - previous.close) / previous.close;
+    const jumpToNext = Math.abs(bar.close - next.close) / next.close;
+    const neighborsAgree = Math.abs(previous.close - next.close) / previous.close <= 0.1;
+    if (jumpFromPrevious > maxPriceMoveRatio && jumpToNext > maxPriceMoveRatio && neighborsAgree) {
+      reasons.add('HISTORICAL_ANOMALY');
+      return false;
+    }
+    return true;
+  });
+  return { history, reasons: [...reasons], rejectedBars: Math.max(0, timestamps.length - history.length) };
 }
 
 function createMarketDataGuard({
@@ -125,9 +138,13 @@ function createMarketDataGuard({
     return {
       ...previous,
       history: previous.history.map(bar => ({ ...bar })),
+      validatedHistory: previous.history.map(bar => ({ ...bar })),
       stale: true,
       dataState: 'stale',
       guardStatus: 'quarantined',
+      quoteStatus: 'quarantined',
+      historyStatus: 'blocked',
+      identityStatus: 'quarantined',
       guardReasons,
       lastCheckedAt: checkedAt,
       anomalyCount: Number(previous.anomalyCount || 0) + 1,
@@ -148,8 +165,7 @@ function createMarketDataGuard({
     else if (providerSymbol !== expectedSymbol) reasons.add('SYMBOL_MISMATCH');
     if (!validMarket(meta)) reasons.add('MARKET_MISMATCH');
 
-    const normalized = normalizeHistory(result, { now: timestamp, futureToleranceMs });
-    normalized.reasons.forEach(reason => reasons.add(reason));
+    const normalized = normalizeHistory(result, { now: timestamp, futureToleranceMs, maxPriceMoveRatio });
     const latestBar = normalized.history.at(-1);
     const rawProviderTime = meta.regularMarketTime;
     const providerTime = finiteNumber(rawProviderTime);
@@ -216,6 +232,17 @@ function createMarketDataGuard({
     if (previous?.last > 0 && last > 0 && Math.abs(last - previous.last) / previous.last > maxPriceMoveRatio) reasons.add('DATA_ANOMALY');
 
     const guardReasons = [...reasons];
+    const identityStatus = guardReasons.some(reason => ['SYMBOL_MISMATCH', 'MARKET_MISMATCH'].includes(reason))
+      ? 'quarantined' : providerSymbol ? 'accepted' : 'unverified';
+    const historyStatus = identityStatus === 'quarantined'
+      ? 'blocked'
+      : normalized.history.length === 0
+        ? 'insufficient'
+        : normalized.rejectedBars === 0
+          ? 'usable'
+          : normalized.history.length >= normalized.rejectedBars
+            ? 'usable_with_warnings'
+            : 'insufficient';
     const critical = providerTimeFuture || guardReasons.some(reason => [
       'SYMBOL_MISMATCH', 'MARKET_MISMATCH', 'LAST_CLOSE_MISMATCH', 'PRICE_CHANGE_MISMATCH', 'DATA_ANOMALY'
     ].includes(reason));
@@ -254,9 +281,15 @@ function createMarketDataGuard({
       lastCheckedAt: checkedAt,
       anomalyCount: Number(previous?.anomalyCount || 0),
       history: normalized.history,
+      validatedHistory: normalized.history,
+      rejectedBars: normalized.rejectedBars,
+      historyReasons: normalized.reasons,
+      historyStatus,
+      identityStatus,
       stale,
       dataState: stale ? 'stale' : suspect ? 'suspect' : 'delayed',
       guardStatus,
+      quoteStatus: guardStatus,
       guardReasons,
       fallbackFromLastKnown: false
     };

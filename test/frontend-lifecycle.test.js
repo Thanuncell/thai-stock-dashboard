@@ -74,6 +74,11 @@ test('final UI cleanup preserves exact News and chart contracts', () => {
   assert.match(appSource, /watchlist\[0\]\?\.symbol \|\| 'PTT'/);
 });
 
+test('responsive chart CSS does not override calculated viewport width with a fixed minimum', () => {
+  assert.match(styleSource, /\.price-chart-svg\{[^}]*min-width:100%/);
+  assert.doesNotMatch(styleSource, /\.price-chart-svg\{[^}]*min-width:(?:660|720)px/);
+});
+
 test('News pagers preserve state and scroll the page to top with reduced-motion support', () => {
   assert.match(appSource, /window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
   assert.match(appSource, /window\.scrollTo\(\{ top: 0, behavior: reduceMotion \? 'auto' : 'smooth' \}\)/);

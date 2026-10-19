@@ -14,6 +14,17 @@ export const NEWS_SOURCES = Object.freeze(['all', 'thunhoon', 'kaohoon', 'settra
 export const CHART_RANGES = Object.freeze(['1D', '1W', '1M', '3M', '1Y']);
 const ROUTES = Object.freeze(['overview', 'chart', 'news', 'watchlist']);
 
+export function chartGeometry({ rowCount = 0, hostWidth = 640 } = {}) {
+  const count = Math.max(1, Number.parseInt(rowCount, 10) || 1);
+  const width = Math.max(320, Math.floor(Number(hostWidth) || 640));
+  const left = width < 520 ? 52 : 66;
+  const right = width < 520 ? 10 : 16;
+  const plotWidth = Math.max(1, width - left - right);
+  const step = plotWidth / count;
+  const candleWidth = Math.max(1, Math.min(12, step * 0.62));
+  return { width, left, right, plotWidth, step, candleWidth, x: index => left + step * index + step / 2 };
+}
+
 const formatNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
 
