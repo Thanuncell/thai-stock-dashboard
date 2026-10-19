@@ -73,7 +73,7 @@ test('SETTRADE overview and data pages are rejected while real articles and offi
     url: 'https://www.settrade.com/th/equities/quote/LHHOTEL/overview', pubDate: date
   };
   assert.deepEqual(classifyNewsItem(overview), {
-    accepted: false, classification: 'NON_NEWS', reason: 'SETTRADE_DATA_PAGE_TITLE'
+    accepted: false, classification: 'QUOTE_DATA_OVERVIEW', reason: 'SETTRADE_DATA_PAGE_TITLE'
   });
   assert.equal(classifyNewsItem({
     ...overview,
@@ -97,6 +97,68 @@ test('SETTRADE overview and data pages are rejected while real articles and offi
     sourceName: 'ตลาดหลักทรัพย์แห่งประเทศไทย',
     url: 'https://www.set.or.th/th/market/news-and-alert/newsdetails?id=12345'
   }).accepted, true);
+});
+
+test('generic page classification rejects listings, auth, data and ownership pages without hiding real news', () => {
+  const date = new Date().toISOString();
+  const rejected = [
+    {
+      title: 'ข่าว - Page 7712 of 7712 - ข่าวหุ้นธุรกิจออนไลน์ - ข่าวหุ้นธุรกิจออนไลน์',
+      source: 'kaohoon', sourceName: 'ข่าวหุ้นธุรกิจออนไลน์',
+      url: 'https://news.google.com/rss/articles/opaque-kaohoon-page', pubDate: date,
+      snippet: 'ข่าว - Page 7712 of 7712 - ข่าวหุ้นธุรกิจออนไลน์'
+    },
+    { title: 'รวมข่าวหุ้นไทยล่าสุด', url: 'https://www.kaohoon.com/page/7712/', sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', pubDate: date },
+    { title: 'ข่าวล่าสุด', url: 'https://www.kaohoon.com/category/news?page=8', sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', pubDate: date },
+    { title: 'Reset Password', url: 'https://www.set.or.th/th/account/reset-password', sourceName: 'SET', pubDate: date },
+    { title: 'ข้อมูลผู้ถือหุ้นของบริษัทจดทะเบียน', url: 'https://www.set.or.th/th/market/product/stock/quote/PTT/major-shareholders', sourceName: 'SET', pubDate: date },
+    { title: 'ข้อมูลทางการเงินของบริษัทจดทะเบียน', url: 'https://news.google.com/rss/articles/opaque-set-data', resolvedUrl: 'https://www.set.or.th/th/market/product/stock/quote/PTT/financials', sourceName: 'SET', pubDate: date },
+    { title: 'ข้อมูลบริษัทจดทะเบียน', url: 'https://www.set.or.th/th/market/product/stock/quote/PTT/profile', sourceName: 'SET', pubDate: date },
+    { title: 'บริการสำหรับผู้ลงทุน', url: 'https://www.set.or.th/th/services/investors', sourceName: 'SET', pubDate: date },
+    { title: 'ข่าวล่าสุด', url: 'https://news.google.com/rss/articles/generic-title', sourceName: 'Example', pubDate: date },
+    { title: 'mmxx-ventures - Thunhoon', url: 'https://news.google.com/rss/articles/opaque-thunhoon-slug', sourceName: 'Thunhoon', pubDate: date }
+  ];
+  assert.deepEqual(rejected.map(item => classifyNewsItem(item).accepted), Array(rejected.length).fill(false));
+
+  const accepted = [
+    {
+      title: 'ผู้ถือหุ้นอนุมัติแผนลงทุนใหม่ของบริษัท', sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', source: 'kaohoon',
+      url: 'https://www.kaohoon.com/news/999999', pubDate: date,
+      snippet: 'ที่ประชุมผู้ถือหุ้นอนุมัติแผนลงทุน พร้อมเปิดเผยวงเงินและกรอบเวลาดำเนินการ'
+    },
+    {
+      title: 'บริษัทจดทะเบียนแจ้งมติที่ประชุมผู้ถือหุ้น', sourceName: 'ตลาดหลักทรัพย์แห่งประเทศไทย', source: 'settrade',
+      url: 'https://www.set.or.th/th/market/news-and-alert/newsdetails?id=12345', pubDate: date
+    },
+    {
+      title: 'บริษัทเปิดเผยผลประกอบการไตรมาสล่าสุด', sourceName: 'Thunhoon', source: 'thunhoon',
+      url: 'https://thunhoon.com/article/123456', pubDate: date
+    },
+    {
+      title: 'เศรษฐกิจไทยฟื้นตัวตามการส่งออก', sourceName: 'InfoQuest', source: 'infoquest',
+      url: 'https://news.google.com/rss/articles/infoquest-genuine', pubDate: date,
+      snippet: 'รายงานตัวเลขส่งออกและปัจจัยที่มีผลต่อแนวโน้มเศรษฐกิจไทย'
+    },
+    {
+      title: 'ตลาดหุ้นไทยปิดบวกตามแรงซื้อหุ้นขนาดใหญ่', sourceName: 'efinanceThai', source: 'efinance',
+      url: 'https://news.google.com/rss/articles/efinance-genuine', pubDate: date,
+      snippet: 'สรุปภาวะตลาดพร้อมมูลค่าซื้อขายและปัจจัยที่นักลงทุนติดตาม'
+    }
+  ];
+  assert.deepEqual(accepted.map(item => classifyNewsItem(item).accepted), Array(accepted.length).fill(true));
+  assert.equal(classifyNewsItem(accepted[1]).classification, 'OFFICIAL_ANNOUNCEMENT');
+});
+
+test('live News API removes cross-source non-article records while keeping genuine headlines', async () => {
+  const recent = new Date().toUTCString();
+  const body = rss([
+    { title: 'ข่าว - Page 7712 of 7712 - ข่าวหุ้นธุรกิจออนไลน์ - ข่าวหุ้นธุรกิจออนไลน์', url: 'https://news.google.com/rss/articles/kaohoon-list', pubDate: recent, sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', snippet: 'ข่าว - Page 7712 of 7712' },
+    { title: 'mmxx-ventures - Thunhoon', url: 'https://news.google.com/rss/articles/thunhoon-slug', pubDate: recent, sourceName: 'Thunhoon' },
+    { title: 'ผู้ถือหุ้นอนุมัติแผนลงทุนใหม่ของบริษัท', url: 'https://news.google.com/rss/articles/genuine-shareholder-news', pubDate: recent, sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', snippet: 'ที่ประชุมอนุมัติวงเงินและกรอบเวลาดำเนินการของโครงการใหม่' }
+  ]);
+  const service = createNewsService({ fetchImpl: async () => new Response(body, { status: 200 }) });
+  const result = await service.getNews();
+  assert.deepEqual(result.items.map(item => item.title), ['ผู้ถือหุ้นอนุมัติแผนลงทุนใหม่ของบริษัท']);
 });
 
 test('live News API omits opaque SETTRADE overview results before UI delivery', async () => {

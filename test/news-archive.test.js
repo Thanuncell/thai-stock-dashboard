@@ -93,3 +93,50 @@ test('archive hides existing SETTRADE overview rows and does not ingest them aga
   assert.equal(ingested.ingested, 0);
   assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
 });
+
+test('archive hides pagination and cross-source non-news rows and prevents re-ingestion', async () => {
+  const calls = [];
+  const publishedAt = '2026-10-17T00:00:00.000Z';
+  const badRows = [
+    {
+      fingerprint: 'kaohoon-page', source: 'kaohoon', source_name: 'ข่าวหุ้นธุรกิจออนไลน์',
+      title: 'ข่าว - Page 7712 of 7712 - ข่าวหุ้นธุรกิจออนไลน์ - ข่าวหุ้นธุรกิจออนไลน์',
+      url: 'https://news.google.com/rss/articles/kaohoon-page', published_at: publishedAt,
+      snippet: 'ข่าว - Page 7712 of 7712 - ข่าวหุ้นธุรกิจออนไลน์'
+    },
+    {
+      fingerprint: 'thunhoon-slug', source: 'thunhoon', source_name: 'Thunhoon',
+      title: 'mmxx-ventures - Thunhoon', url: 'https://news.google.com/rss/articles/thunhoon-slug',
+      published_at: publishedAt, snippet: ''
+    }
+  ];
+  const good = {
+    fingerprint: 'real-news', source: 'kaohoon', source_name: 'ข่าวหุ้นธุรกิจออนไลน์',
+    title: 'ผู้ถือหุ้นอนุมัติแผนลงทุนใหม่ของบริษัท', url: 'https://news.google.com/rss/articles/real-news',
+    published_at: publishedAt, snippet: 'ที่ประชุมอนุมัติวงเงินและกรอบเวลาดำเนินการของโครงการใหม่'
+  };
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-18T00:00:00.000Z'),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (init.method === 'POST') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify([...badRows, good]), {
+        status: 200,
+        headers: { 'content-range': '0-2/3', 'content-type': 'application/json' }
+      });
+    }
+  });
+  const listed = await service.list({ page: 1, pageSize: 10, source: 'all' });
+  assert.deepEqual(listed.items.map(item => item.fingerprint), ['real-news']);
+  assert.equal(listed.qualityFiltered, 2);
+
+  for (const bad of badRows) {
+    const result = await service.ingest([{
+      source: bad.source, sourceName: bad.source_name, title: bad.title, url: bad.url,
+      pubDate: bad.published_at, snippet: bad.snippet
+    }]);
+    assert.equal(result.ingested, 0);
+  }
+  assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
+});
