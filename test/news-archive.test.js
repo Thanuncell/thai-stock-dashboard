@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const navigationPageFixtures = require('./fixtures/news-quality-navigation-pages.json');
 
 const { createNewsArchiveService } = require('../server/news-archive-service');
 
@@ -192,6 +193,59 @@ test('archive read and ingest gates reject reference classes while preserving sh
     const result = await service.ingest([{
       source: bad.source, sourceName: bad.source_name, title: bad.title, url: bad.url,
       pubDate: bad.published_at, snippet: bad.snippet
+    }]);
+    assert.equal(result.ingested, 0, bad.title);
+  }
+  assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
+});
+
+test('archive read and ingest gates reject navigation/reference landing pages', async () => {
+  const calls = [];
+  const publishedAt = '2026-10-17T00:00:00.000Z';
+  const badRows = navigationPageFixtures.rejected.map((item, index) => ({
+    fingerprint: `navigation-reference-${index}`,
+    source: item.source,
+    source_name: item.sourceName,
+    title: item.title,
+    url: item.url,
+    published_at: publishedAt,
+    snippet: ''
+  }));
+  const good = navigationPageFixtures.accepted[0];
+  const goodRow = {
+    fingerprint: 'genuine-fund-ipo-news',
+    source: good.source,
+    source_name: good.sourceName,
+    title: good.title,
+    url: good.url,
+    published_at: publishedAt,
+    snippet: good.snippet
+  };
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-18T00:00:00.000Z'),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (init.method === 'POST') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify([...badRows, goodRow]), {
+        status: 200,
+        headers: { 'content-range': '0-2/3', 'content-type': 'application/json' }
+      });
+    }
+  });
+
+  const listed = await service.list({ page: 1, pageSize: 10, source: 'settrade' });
+  assert.deepEqual(listed.items.map(item => item.fingerprint), ['genuine-fund-ipo-news']);
+  assert.equal(listed.qualityFiltered, 2);
+
+  for (const bad of badRows) {
+    const result = await service.ingest([{
+      source: bad.source,
+      sourceName: bad.source_name,
+      title: bad.title,
+      url: bad.url,
+      pubDate: bad.published_at,
+      snippet: bad.snippet
     }]);
     assert.equal(result.ingested, 0, bad.title);
   }
