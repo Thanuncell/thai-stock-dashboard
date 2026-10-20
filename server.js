@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('node:http');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
@@ -318,8 +319,13 @@ async function handle(req, res) {
       const pageSize = url.searchParams.get('pageSize') || '10';
       const source = url.searchParams.get('source') || 'all';
       const symbol = url.searchParams.get('symbol') || '';
-      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}`;
-      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({ page, pageSize, source, symbol }));
+      const query = String(url.searchParams.get('query') || '').trim().slice(0, 80);
+      const excludeUrls = url.searchParams.getAll('exclude').slice(0, 10);
+      const exclusionKey = createHash('sha256').update(JSON.stringify(excludeUrls)).digest('base64url').slice(0, 16);
+      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${exclusionKey}`;
+      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({
+        page, pageSize, source, symbol, query, excludeUrls
+      }));
       return send(res, 200, { ...data, dataState: data.stale ? 'stale' : data.configured ? 'fresh' : 'unavailable' });
     } catch (error) {
       return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable', detail: error.message });

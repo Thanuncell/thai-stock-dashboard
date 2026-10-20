@@ -6,6 +6,35 @@ const navigationPageFixtures = require('./fixtures/news-quality-navigation-pages
 
 const { createNewsArchiveService } = require('../server/news-archive-service');
 
+function archiveRow(index, overrides = {}) {
+  const order = Number.isFinite(Number(index)) ? Number(index) : 999;
+  return {
+    fingerprint: `row-${index}`,
+    title: `PTT รายงานความคืบหน้าธุรกิจลำดับ ${index}`,
+    url: `https://news.google.com/articles/archive-${index}`,
+    source: 'infoquest',
+    source_name: 'InfoQuest',
+    snippet: 'บริษัทเปิดเผยรายละเอียดและกรอบเวลาดำเนินงานล่าสุด',
+    published_at: new Date(Date.parse('2026-10-18T00:00:00.000Z') - order * 60_000).toISOString(),
+    matched_symbols: ['PTT'],
+    broker_firms: [],
+    ...overrides
+  };
+}
+
+function rangeResponse(rows, init) {
+  const [start, end] = String(init.headers.Range || '0-999').split('-').map(Number);
+  const page = rows.slice(start, end + 1);
+  const last = page.length ? start + page.length - 1 : start;
+  return new Response(JSON.stringify(page), {
+    status: 200,
+    headers: {
+      'content-range': `${start}-${last}/${rows.length}`,
+      'content-type': 'application/json'
+    }
+  });
+}
+
 test('archive ingestion is idempotent, bounded and followed by bounded retention cleanup', async () => {
   const calls = [];
   const service = createNewsArchiveService({
@@ -26,24 +55,136 @@ test('archive ingestion is idempotent, bounded and followed by bounded retention
 });
 
 test('archive pagination validates filters and never returns an unbounded year', async () => {
-  let requested;
+  const requested = [];
+  const rows = Array.from({ length: 43 }, (_, index) => archiveRow(index + 1));
   const service = createNewsArchiveService({
     env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'server-only-test-key' },
+    scanChunkSize: 20,
     fetchImpl: async (url, init) => {
-      requested = { url: String(url), init };
-      return new Response(JSON.stringify([{ fingerprint: 'one', title: 'PTT', url: 'https://news.google.com/articles/1', source: 'infoquest', source_name: 'InfoQuest', published_at: '2026-10-17T00:00:00.000Z' }]), {
-        status: 200,
-        headers: { 'content-range': '20-20/43', 'content-type': 'application/json' }
-      });
+      requested.push({ url: String(url), init });
+      return rangeResponse(rows, init);
     }
   });
   const result = await service.list({ page: 2, pageSize: 20, source: 'infoquest', symbol: 'PTT' });
   assert.equal(result.page, 2);
   assert.equal(result.pageSize, 20);
   assert.equal(result.total, 43);
-  assert.match(requested.init.headers.Range, /20-39/);
-  assert.match(requested.url, /source=eq\.infoquest/);
-  assert.match(requested.url, /matched_symbols=cs\./);
+  assert.equal(result.items.length, 20);
+  assert.deepEqual(requested.map(call => call.init.headers.Range), ['0-19', '20-39', '40-59']);
+  assert.ok(result.items.every(item => item.source === 'infoquest' && item.matchedSymbols.includes('PTT')));
+});
+
+test('archive paginates the final displayable dataset after quality filtering and deduplication', async () => {
+  const goodRows = Array.from({ length: 23 }, (_, index) => archiveRow(index + 1));
+  const rawRows = [
+    archiveRow('bad-a', { title: '- SET', url: 'https://news.google.com/articles/bad-a' }),
+    goodRows[0],
+    archiveRow('duplicate-1', { ...goodRows[0], fingerprint: 'duplicate-1', url: `${goodRows[0].url}?utm_source=duplicate` }),
+    ...goodRows.slice(1, 10),
+    archiveRow('bad-b', { title: '- SET', url: 'https://news.google.com/articles/bad-b' }),
+    ...goodRows.slice(10, 18),
+    archiveRow('duplicate-5', { ...goodRows[4], fingerprint: 'duplicate-5', url: `${goodRows[4].url}?utm_medium=duplicate` }),
+    ...goodRows.slice(18),
+    archiveRow('bad-c', { title: '- SET', url: 'https://news.google.com/articles/bad-c' })
+  ];
+  const calls = [];
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    scanChunkSize: 6,
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return rangeResponse(rawRows, init);
+    }
+  });
+
+  const first = await service.list({ page: 1, pageSize: 10 });
+  const second = await service.list({ page: 2, pageSize: 10 });
+  const final = await service.list({ page: 3, pageSize: 10 });
+  const items = [...first.items, ...second.items, ...final.items];
+
+  assert.equal(first.total, 23);
+  assert.equal(first.qualityFiltered, 3);
+  assert.equal(first.deduplicated, 2);
+  assert.equal(first.items.length, 10);
+  assert.equal(second.items.length, 10);
+  assert.equal(final.items.length, 3);
+  assert.deepEqual(items.map(item => item.fingerprint), goodRows.map(item => item.fingerprint));
+  assert.equal(new Set(items.map(item => item.url)).size, 23);
+  assert.equal(calls.length, Math.ceil(rawRows.length / 6), 'later pages reuse the bounded archive snapshot');
+});
+
+test('archive applies source, symbol, search and featured exclusions before pagination totals', async () => {
+  const matching = Array.from({ length: 13 }, (_, index) => archiveRow(index + 1, {
+    title: `PTT กำไรเติบโตลำดับ ${index + 1}`
+  }));
+  const rows = [
+    ...matching,
+    archiveRow(20, { title: 'PTT รายงานยอดขายล่าสุด' }),
+    archiveRow(21, { title: 'PTT กำไรเติบโตจากอีกสำนัก', source: 'efinance', source_name: 'efinanceThai' }),
+    archiveRow(22, { title: 'AOT กำไรเติบโต', matched_symbols: ['AOT'] })
+  ];
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    scanChunkSize: 5,
+    fetchImpl: async (url, init) => rangeResponse(rows, init)
+  });
+
+  const excludedUrl = matching[0].url;
+  const first = await service.list({
+    page: 1, pageSize: 10, source: 'infoquest', symbol: 'PTT', query: 'กำไร', excludeUrls: [excludedUrl]
+  });
+  const second = await service.list({
+    page: 2, pageSize: 10, source: 'infoquest', symbol: 'PTT', query: 'กำไร', excludeUrls: [excludedUrl]
+  });
+
+  assert.equal(first.total, 12);
+  assert.equal(first.items.length, 10);
+  assert.equal(second.items.length, 2);
+  assert.ok([...first.items, ...second.items].every(item => item.source === 'infoquest'));
+  assert.ok([...first.items, ...second.items].every(item => item.matchedSymbols.includes('PTT')));
+  assert.ok([...first.items, ...second.items].every(item => item.title.includes('กำไร')));
+  assert.ok([...first.items, ...second.items].every(item => item.url !== excludedUrl));
+});
+
+test('archive fails closed when the persisted dataset exceeds its bounded scan limit', async () => {
+  let calls = 0;
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    scanChunkSize: 5,
+    maxScanRows: 10,
+    fetchImpl: async (url, init) => {
+      calls += 1;
+      return new Response(JSON.stringify(Array.from({ length: 5 }, (_, index) => archiveRow(index + 1))), {
+        status: 200,
+        headers: { 'content-range': '0-4/11', 'content-type': 'application/json' }
+      });
+    }
+  });
+
+  await assert.rejects(service.list({ page: 1, pageSize: 10 }), /exceeds bounded scan limit/);
+  assert.equal(calls, 1);
+});
+
+test('concurrent archive pages coalesce into one bounded snapshot scan', async () => {
+  const rows = Array.from({ length: 12 }, (_, index) => archiveRow(index + 1));
+  let calls = 0;
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    scanChunkSize: 5,
+    fetchImpl: async (url, init) => {
+      calls += 1;
+      await Promise.resolve();
+      return rangeResponse(rows, init);
+    }
+  });
+
+  const [first, second] = await Promise.all([
+    service.list({ page: 1, pageSize: 10 }),
+    service.list({ page: 2, pageSize: 10 })
+  ]);
+  assert.equal(first.items.length, 10);
+  assert.equal(second.items.length, 2);
+  assert.equal(calls, 3);
 });
 
 test('archive ingestion rejects non-news records before persistence', async () => {

@@ -18,10 +18,12 @@ test('frontend setup remains single-shot and global listeners are not duplicated
   assert.equal((appSource.match(/document\.addEventListener\('keydown'/g) || []).length, 1);
 });
 
-test('frontend owns one debounced search timer and one cloud sync timer', () => {
+test('frontend owns one timer per debounced search and one cloud sync timer', () => {
   assert.equal((appSource.match(/let searchTimer/g) || []).length, 1);
+  assert.equal((appSource.match(/let newsSearchTimer/g) || []).length, 1);
   assert.equal((appSource.match(/let watchlistSyncTimer/g) || []).length, 1);
   assert.equal((appSource.match(/clearTimeout\(searchTimer\)/g) || []).length, 1);
+  assert.equal((appSource.match(/clearTimeout\(newsSearchTimer\)/g) || []).length, 1);
   assert.equal((appSource.match(/clearTimeout\(watchlistSyncTimer\)/g) || []).length, 1);
 });
 
@@ -93,10 +95,22 @@ test('News archive page restoration survives startup rendering and browser histo
 
   assert.match(restoreNavigation, /previousNewsPage = newsPage/);
   assert.match(restoreNavigation, /previousNewsSource = activeSource/);
-  assert.match(restoreNavigation, /state\.route === 'news'[\s\S]*?getArchiveNews\(\{ page: newsPage, reason: 'restore' \}\)/);
+  assert.match(restoreNavigation, /previousNewsQuery = newsQuery/);
+  assert.match(restoreNavigation, /state\.route === 'news'[\s\S]*?previousNewsQuery !== newsQuery[\s\S]*?getArchiveNews\(\{ page: newsPage, reason: 'restore' \}\)/);
   assert.match(renderNews, /const displayPage = archiveLoaded/);
   assert.match(renderNews, /if \(archiveLoaded\) newsPage = displayPage/);
   assert.doesNotMatch(renderNews, /newsPage = Math\.max\(1, Math\.min\(newsPage, total\)\)/);
+});
+
+test('News archive requests carry search and featured exclusions before server-side pagination', () => {
+  const archiveLoader = appSource.match(/async function getArchiveNews\([\s\S]*?\n\}/)?.[0] || '';
+  const searchHandler = appSource.match(/\$\('#news-search'\)\.addEventListener\('input'[\s\S]*?\n\s*\}\);/)?.[0] || '';
+
+  assert.match(archiveLoader, /query: newsQuery\.trim\(\)/);
+  assert.match(archiveLoader, /params\.append\('exclude', url\)/);
+  assert.match(searchHandler, /clearTimeout\(newsSearchTimer\)/);
+  assert.match(searchHandler, /newsSearchTimer = setTimeout/);
+  assert.match(searchHandler, /getArchiveNews\(\{ page: 1 \}\)/);
 });
 
 test('Technical Analysis wording and Overview anchors remain at baseline', () => {

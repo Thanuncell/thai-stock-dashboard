@@ -68,6 +68,7 @@ let newsAnalysisPending = false;
 let watchlistNewsRequestId = 0;
 let archiveNewsRequestId = 0;
 let searchTimer;
+let newsSearchTimer;
 let searchSequence = 0;
 let currentRange = initialNavigation.route === 'chart' ? initialNavigation.range : '1D';
 const chartIndicators = new Set(['sma20', 'ema20', 'ema50', 'macd']);
@@ -143,7 +144,7 @@ function restoreNavigationFromLocation() {
   const state = parseNavigationState(location.href, currentNavigationState());
   const previousRoute = document.body.dataset.workspacePage;
   const previousSymbol = activeSymbol, previousRange = currentRange, previousWatchlist = activeWatchlistId;
-  const previousNewsPage = newsPage, previousNewsSource = activeSource;
+  const previousNewsPage = newsPage, previousNewsSource = activeSource, previousNewsQuery = newsQuery;
   if (state.route === 'chart') {
     activeSymbol = state.symbol;
     activeName = watchlist.find(item => item.symbol === activeSymbol)?.name || activeSymbol;
@@ -161,7 +162,7 @@ function restoreNavigationFromLocation() {
   setWorkspacePage(state.route, { historyMode: 'none', scroll: false });
   renderNews(); renderWatchlistNews(); renderWatchlist(latestMarket?.stocks || []); renderMovers(latestMarket?.stocks || []);
   if (state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== currentRange || previousRoute !== 'chart')) getMarket();
-  if (state.route === 'news' && archiveConfigured && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
+  if (state.route === 'news' && archiveConfigured && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousNewsQuery !== newsQuery || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
   if (state.route === 'watchlist' && (previousWatchlist !== activeWatchlistId || previousRoute !== 'watchlist')) getWatchlistNews({ reason: 'restore' });
   writeNavigation('replace', state.route);
 }
@@ -920,7 +921,20 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
 }
 async function getArchiveNews({ page = newsPage } = {}) {
   const requestId = ++archiveNewsRequestId;
-  const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE), source: activeSource });
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(PAGE_SIZE),
+    source: activeSource,
+    query: newsQuery.trim()
+  });
+  const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || '' }));
+  const featuredUrls = selectNewsForDisplay(prepared, {
+    source: activeSource,
+    query: newsQuery.trim(),
+    featuredCount: FEATURED_COUNT,
+    sourceTier: SOURCE_TIER
+  }).featured.map(item => item.url).filter(url => /^https:\/\//i.test(String(url || '')));
+  featuredUrls.forEach(url => params.append('exclude', url));
   try {
     const response = await apiFetch(`/api/news-archive?${params}`);
     const data = await response.json();
@@ -1147,7 +1161,7 @@ function renderNews() {
     scrollPageToTop();
   });
   const counter = $('#news-count');
-  if (counter) counter.textContent = query ? `พบ ${all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
+  if (counter) counter.textContent = query ? `พบ ${archiveLoaded ? archiveTotal : all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
 }
 
 async function setup() {
@@ -1273,7 +1287,16 @@ async function setup() {
     button.classList.add('active'); activeSource = button.dataset.source; newsPage = 1; renderNews(); writeNavigation('push', 'news');
     if (archiveConfigured) getArchiveNews({ page: 1 });
   }));
-  $('#news-search').addEventListener('input', event => { newsQuery = event.target.value; newsPage = 1; renderNews(); writeNavigation('replace', 'news'); });
+  $('#news-search').addEventListener('input', event => {
+    newsQuery = event.target.value;
+    newsPage = 1;
+    renderNews();
+    writeNavigation('replace', 'news');
+    clearTimeout(newsSearchTimer);
+    newsSearchTimer = setTimeout(() => {
+      if (archiveConfigured) getArchiveNews({ page: 1 });
+    }, 280);
+  });
   $('#refresh-news').addEventListener('click', () => getNews({ reason: 'manual', resetPage: true }));
   $('#refresh-watchlist-news').addEventListener('click', () => getWatchlistNews({ reason: 'manual', resetPage: true }));
   $('#refresh-chart').addEventListener('click', getMarket);

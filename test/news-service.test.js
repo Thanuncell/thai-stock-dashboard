@@ -330,6 +330,30 @@ test('watchlist news quality keeps relevant unknown publishers with meaningful c
   assert.equal(result.items[0].sourceName, 'สำนักข่าวท้องถิ่น');
 });
 
+test('Watchlist News filters and deduplicates before its 30-item pagination dataset cap', async () => {
+  const recent = new Date().toUTCString();
+  const accepted = Array.from({ length: 30 }, (_, index) => ({
+    title: `PTT แจ้งความคืบหน้าโครงการลำดับ ${index + 1}`,
+    url: `https://news.google.com/articles/watchlist-${index + 1}`,
+    pubDate: recent,
+    sourceName: 'สำนักข่าวท้องถิ่น',
+    snippet: 'บริษัทเปิดเผยรายละเอียดโครงการและกรอบเวลาดำเนินงาน'
+  }));
+  const body = rss([
+    { title: 'PTT-company-profile - Example', url: 'https://news.google.com/articles/profile-before-cap', pubDate: recent, sourceName: 'Example' },
+    accepted[0],
+    { ...accepted[0], url: `${accepted[0].url}?utm_source=duplicate` },
+    ...accepted.slice(1),
+    { title: 'AOT เปิดเส้นทางใหม่', url: 'https://news.google.com/articles/not-in-watchlist', pubDate: recent, sourceName: 'Example' }
+  ]);
+  const service = createNewsService({ fetchImpl: async () => new Response(body, { status: 200 }) });
+  const result = await service.getWatchlistNews([{ symbol: 'PTT', name: 'ปตท.' }]);
+
+  assert.equal(result.items.length, 30);
+  assert.equal(new Set(result.items.map(item => item.url.replace(/\?.*$/, ''))).size, 30);
+  assert.ok(result.items.every(item => item.matchedSymbols.includes('PTT')));
+});
+
 test('analysis does not fabricate a summary when no article or snippet exists', async () => {
   const service = createNewsService({ env: {}, fetchImpl: async () => new Response('', { status: 404 }) });
   const result = await service.analyse([{ title: 'PTT รายงานผลประกอบการล่าสุด', url: 'https://news.google.com/articles/no-content', snippet: '' }]);
