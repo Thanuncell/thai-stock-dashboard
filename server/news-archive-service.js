@@ -2,7 +2,7 @@
 
 const { createHash } = require('node:crypto');
 const { allowedNewsUrl } = require('../lib/news-policy');
-const { newsFingerprint } = require('../lib/broker-news');
+const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { classifyNewsItem } = require('../lib/news-quality');
 
@@ -10,17 +10,31 @@ const RETENTION_DAYS = 365;
 const MAX_PAGE_SIZE = 50;
 const CLEANUP_BATCH_SIZE = 500;
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const ARCHIVE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
+const ARCHIVE_SCAN_CHUNK_SIZE = 500;
+const MAX_ARCHIVE_SCAN_ROWS = 20_000;
 const SOURCE_KEYS = new Set(['all', 'thunhoon', 'kaohoon', 'settrade', 'official', 'infoquest', 'efinance', 'broker', 'other']);
 
 function archiveFingerprint(item) {
   return createHash('sha256').update(newsFingerprint(item)).digest('hex');
 }
 
-function createNewsArchiveService({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now } = {}) {
+function createNewsArchiveService({
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  now = Date.now,
+  scanChunkSize = ARCHIVE_SCAN_CHUNK_SIZE,
+  maxScanRows = MAX_ARCHIVE_SCAN_ROWS
+} = {}) {
   const secretKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY || '';
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/, '');
   const configured = Boolean(/^https:\/\//.test(baseUrl) && secretKey);
+  const safeScanChunkSize = Math.max(1, Math.min(1000, Number.parseInt(scanChunkSize, 10) || ARCHIVE_SCAN_CHUNK_SIZE));
+  const safeMaxScanRows = Math.max(safeScanChunkSize, Math.min(100_000, Number.parseInt(maxScanRows, 10) || MAX_ARCHIVE_SCAN_ROWS));
   let lastCleanupAt = 0;
+  let archiveSnapshot = null;
+  let archiveSnapshotPending = null;
+  let archiveSnapshotVersion = 0;
 
   function headers(extra = {}) {
     return { apikey: secretKey, Authorization: `Bearer ${secretKey}`, ...extra };
@@ -78,58 +92,123 @@ function createNewsArchiveService({ env = process.env, fetchImpl = globalThis.fe
       }),
       body: JSON.stringify(rows)
     });
+    archiveSnapshotVersion += 1;
+    archiveSnapshot = null;
     const cleanupRan = await cleanupIfDue();
     return { configured: true, ingested: rows.length, cleanupRan };
   }
 
-  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '' } = {}) {
+  function fromRow(row) {
+    const safeUrl = allowedNewsUrl(row?.url);
+    const item = {
+      fingerprint: row?.fingerprint,
+      title: row?.title,
+      url: safeUrl?.href || '',
+      source: row?.source,
+      sourceName: row?.source_name,
+      snippet: row?.snippet || '',
+      pubDate: row?.published_at,
+      firstSeenAt: row?.first_seen_at,
+      fetchedAt: row?.fetched_at,
+      matchedSymbols: row?.matched_symbols || [],
+      matchedBrokerFirms: row?.broker_firms || [],
+      brokerCategory: Boolean(row?.broker_firms?.length),
+      analysisSummary: row?.analysis_summary,
+      analysisMode: row?.analysis_mode
+    };
+    return safeUrl && classifyNewsItem(item).accepted ? item : null;
+  }
+
+  async function buildArchiveSnapshot() {
+    const params = new URLSearchParams({
+      select: 'fingerprint,title,url,source,source_name,snippet,published_at,first_seen_at,fetched_at,matched_symbols,broker_firms,analysis_summary,analysis_mode',
+      order: 'published_at.desc,id.desc'
+    });
+    const rows = [];
+    let exactTotal = null;
+    let complete = false;
+    for (let start = 0; start < safeMaxScanRows; start += safeScanChunkSize) {
+      const end = Math.min(start + safeScanChunkSize - 1, safeMaxScanRows - 1);
+      const response = await request(`news_archive?${params}`, {
+        headers: headers({
+          ...(start === 0 ? { Prefer: 'count=exact' } : {}),
+          'Range-Unit': 'items',
+          Range: `${start}-${end}`
+        })
+      });
+      const chunk = await response.json();
+      const totalMatch = String(response.headers.get('content-range') || '').match(/\/(\d+|\*)$/);
+      if (totalMatch?.[1] && totalMatch[1] !== '*') {
+        exactTotal = Number(totalMatch[1]);
+        if (exactTotal > safeMaxScanRows) throw Error(`News archive exceeds bounded scan limit (${safeMaxScanRows})`);
+      }
+      rows.push(...chunk);
+      if (!chunk.length || chunk.length < safeScanChunkSize || (exactTotal !== null && rows.length >= exactTotal)) {
+        complete = true;
+        break;
+      }
+    }
+    if (!complete || (exactTotal !== null && rows.length < exactTotal)) {
+      throw Error('News archive bounded scan ended before the complete dataset');
+    }
+    const accepted = rows.map(fromRow).filter(Boolean);
+    const displayable = dedupeNewsItems(accepted);
+    return {
+      items: displayable,
+      rawTotal: rows.length,
+      qualityFiltered: rows.length - accepted.length,
+      deduplicated: accepted.length - displayable.length
+    };
+  }
+
+  async function getArchiveSnapshot() {
+    const timestamp = Number(now());
+    if (archiveSnapshot && timestamp < archiveSnapshot.expiresAt) return archiveSnapshot;
+    if (archiveSnapshotPending) return archiveSnapshotPending;
+    const version = archiveSnapshotVersion;
+    archiveSnapshotPending = buildArchiveSnapshot().then(snapshot => {
+      const value = { ...snapshot, expiresAt: Number(now()) + ARCHIVE_SNAPSHOT_TTL_MS };
+      if (version === archiveSnapshotVersion) archiveSnapshot = value;
+      return value;
+    }).finally(() => { archiveSnapshotPending = null; });
+    return archiveSnapshotPending;
+  }
+
+  function eligibleItems(items, { source, symbol, query, excludeUrls }) {
+    const normalizedQuery = String(query || '').trim().slice(0, 80).toLocaleLowerCase('th');
+    const excluded = new Set((Array.isArray(excludeUrls) ? excludeUrls : []).slice(0, 10)
+      .map(url => allowedNewsUrl(url)).filter(Boolean).map(url => newsFingerprint({ url: url.href })));
+    return items.filter(item => {
+      const sourceMatch = source === 'all' || (source === 'broker' ? item.brokerCategory : item.source === source);
+      const symbolMatch = !symbol || item.matchedSymbols.includes(symbol);
+      const searchMatch = !normalizedQuery || [item.title, item.sourceName, item.snippet, item.analysisSummary]
+        .some(value => String(value || '').toLocaleLowerCase('th').includes(normalizedQuery));
+      return sourceMatch && symbolMatch && searchMatch && !excluded.has(newsFingerprint(item));
+    });
+  }
+
+  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [] } = {}) {
     const safePage = Math.max(1, Math.min(100000, Number.parseInt(page, 10) || 1));
     const safePageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, Number.parseInt(pageSize, 10) || 10));
     if (!configured) return { configured: false, items: [], page: safePage, pageSize: safePageSize, total: 0, maxAgeDays: RETENTION_DAYS, coverage: 'unavailable' };
     const safeSource = SOURCE_KEYS.has(source) ? source : 'all';
     const safeSymbol = normalizeSymbol(symbol);
-    const params = new URLSearchParams({
-      select: 'fingerprint,title,url,source,source_name,snippet,published_at,first_seen_at,fetched_at,matched_symbols,broker_firms,analysis_summary,analysis_mode',
-      order: 'published_at.desc,id.desc'
+    const snapshot = await getArchiveSnapshot();
+    const displayable = eligibleItems(snapshot.items, {
+      source: safeSource,
+      symbol: safeSymbol,
+      query,
+      excludeUrls
     });
-    if (safeSource === 'broker') params.set('broker_firms', 'not.eq.{}');
-    else if (safeSource !== 'all') params.set('source', `eq.${safeSource}`);
-    if (safeSymbol) params.set('matched_symbols', `cs.{${safeSymbol}}`);
     const start = (safePage - 1) * safePageSize;
-    const end = start + safePageSize - 1;
-    const response = await request(`news_archive?${params}`, {
-      headers: headers({ Prefer: 'count=exact', 'Range-Unit': 'items', Range: `${start}-${end}` })
-    });
-    const rows = await response.json();
-    const contentRange = response.headers.get('content-range') || '';
-    const totalMatch = contentRange.match(/\/(\d+|\*)$/);
-    const total = totalMatch && totalMatch[1] !== '*' ? Number(totalMatch[1]) : rows.length;
-    const acceptedRows = rows.filter(row => classifyNewsItem({
-      title: row.title, url: row.url, source: row.source, sourceName: row.source_name,
-      snippet: row.snippet, pubDate: row.published_at, brokerCategory: Boolean(row.broker_firms?.length)
-    }).accepted);
     return {
       configured: true,
-      items: acceptedRows.map(row => ({
-        fingerprint: row.fingerprint,
-        title: row.title,
-        url: row.url,
-        source: row.source,
-        sourceName: row.source_name,
-        snippet: row.snippet || '',
-        pubDate: row.published_at,
-        firstSeenAt: row.first_seen_at,
-        fetchedAt: row.fetched_at,
-        matchedSymbols: row.matched_symbols || [],
-        matchedBrokerFirms: row.broker_firms || [],
-        brokerCategory: Boolean(row.broker_firms?.length),
-        analysisSummary: row.analysis_summary,
-        analysisMode: row.analysis_mode
-      })),
+      items: displayable.slice(start, start + safePageSize),
       page: safePage,
       pageSize: safePageSize,
-      total,
-      qualityFiltered: rows.length - acceptedRows.length,
+      total: displayable.length,
+      qualityFiltered: snapshot.qualityFiltered,
+      deduplicated: snapshot.deduplicated,
       maxAgeDays: RETENTION_DAYS,
       coverage: 'up-to-365-days-subject-to-source-availability'
     };
@@ -138,4 +217,13 @@ function createNewsArchiveService({ env = process.env, fetchImpl = globalThis.fe
   return { configured, ingest, list };
 }
 
-module.exports = { CLEANUP_BATCH_SIZE, MAX_PAGE_SIZE, RETENTION_DAYS, archiveFingerprint, createNewsArchiveService };
+module.exports = {
+  ARCHIVE_SCAN_CHUNK_SIZE,
+  ARCHIVE_SNAPSHOT_TTL_MS,
+  CLEANUP_BATCH_SIZE,
+  MAX_ARCHIVE_SCAN_ROWS,
+  MAX_PAGE_SIZE,
+  RETENTION_DAYS,
+  archiveFingerprint,
+  createNewsArchiveService
+};

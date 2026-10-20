@@ -55,24 +55,23 @@ test('archive ingestion is idempotent, bounded and followed by bounded retention
 });
 
 test('archive pagination validates filters and never returns an unbounded year', async () => {
-  let requested;
+  const requested = [];
+  const rows = Array.from({ length: 43 }, (_, index) => archiveRow(index + 1));
   const service = createNewsArchiveService({
     env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'server-only-test-key' },
+    scanChunkSize: 20,
     fetchImpl: async (url, init) => {
-      requested = { url: String(url), init };
-      return new Response(JSON.stringify([{ fingerprint: 'one', title: 'PTT', url: 'https://news.google.com/articles/1', source: 'infoquest', source_name: 'InfoQuest', published_at: '2026-10-17T00:00:00.000Z' }]), {
-        status: 200,
-        headers: { 'content-range': '20-20/43', 'content-type': 'application/json' }
-      });
+      requested.push({ url: String(url), init });
+      return rangeResponse(rows, init);
     }
   });
   const result = await service.list({ page: 2, pageSize: 20, source: 'infoquest', symbol: 'PTT' });
   assert.equal(result.page, 2);
   assert.equal(result.pageSize, 20);
   assert.equal(result.total, 43);
-  assert.match(requested.init.headers.Range, /20-39/);
-  assert.match(requested.url, /source=eq\.infoquest/);
-  assert.match(requested.url, /matched_symbols=cs\./);
+  assert.equal(result.items.length, 20);
+  assert.deepEqual(requested.map(call => call.init.headers.Range), ['0-19', '20-39', '40-59']);
+  assert.ok(result.items.every(item => item.source === 'infoquest' && item.matchedSymbols.includes('PTT')));
 });
 
 test('archive paginates the final displayable dataset after quality filtering and deduplication', async () => {
@@ -145,6 +144,47 @@ test('archive applies source, symbol, search and featured exclusions before pagi
   assert.ok([...first.items, ...second.items].every(item => item.matchedSymbols.includes('PTT')));
   assert.ok([...first.items, ...second.items].every(item => item.title.includes('กำไร')));
   assert.ok([...first.items, ...second.items].every(item => item.url !== excludedUrl));
+});
+
+test('archive fails closed when the persisted dataset exceeds its bounded scan limit', async () => {
+  let calls = 0;
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    scanChunkSize: 5,
+    maxScanRows: 10,
+    fetchImpl: async (url, init) => {
+      calls += 1;
+      return new Response(JSON.stringify(Array.from({ length: 5 }, (_, index) => archiveRow(index + 1))), {
+        status: 200,
+        headers: { 'content-range': '0-4/11', 'content-type': 'application/json' }
+      });
+    }
+  });
+
+  await assert.rejects(service.list({ page: 1, pageSize: 10 }), /exceeds bounded scan limit/);
+  assert.equal(calls, 1);
+});
+
+test('concurrent archive pages coalesce into one bounded snapshot scan', async () => {
+  const rows = Array.from({ length: 12 }, (_, index) => archiveRow(index + 1));
+  let calls = 0;
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    scanChunkSize: 5,
+    fetchImpl: async (url, init) => {
+      calls += 1;
+      await Promise.resolve();
+      return rangeResponse(rows, init);
+    }
+  });
+
+  const [first, second] = await Promise.all([
+    service.list({ page: 1, pageSize: 10 }),
+    service.list({ page: 2, pageSize: 10 })
+  ]);
+  assert.equal(first.items.length, 10);
+  assert.equal(second.items.length, 2);
+  assert.equal(calls, 3);
 });
 
 test('archive ingestion rejects non-news records before persistence', async () => {
