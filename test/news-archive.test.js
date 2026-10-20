@@ -145,3 +145,55 @@ test('archive hides pagination and cross-source non-news rows and prevents re-in
   }
   assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
 });
+
+test('archive read and ingest gates reject reference classes while preserving short genuine articles', async () => {
+  const calls = [];
+  const publishedAt = '2026-10-17T00:00:00.000Z';
+  const badRows = [
+    {
+      fingerprint: 'bond-reference', source: 'settrade', source_name: 'Settrade',
+      title: 'BONDUS01 - Settrade', url: 'https://news.google.com/rss/articles/bond-reference',
+      published_at: publishedAt, snippet: ''
+    },
+    {
+      fingerprint: 'bot-report-reference', source: 'official', source_name: 'Bank of Thailand',
+      title: 'ReportEGPRP0001 - Bank of Thailand', url: 'https://news.google.com/rss/articles/bot-report-reference',
+      published_at: publishedAt, snippet: ''
+    },
+    {
+      fingerprint: 'trading-calendar', source: 'settrade', source_name: 'Settrade',
+      title: 'S50H27P1060 - ปฏิทินการซื้อขาย - Settrade', url: 'https://news.google.com/rss/articles/trading-calendar',
+      published_at: publishedAt, snippet: ''
+    }
+  ];
+  const good = {
+    fingerprint: 'short-article', source: 'efinance', source_name: 'efinanceThai',
+    title: 'Force Majeure', url: 'https://news.google.com/rss/articles/short-article',
+    published_at: publishedAt, snippet: 'บทความอธิบายเหตุสุดวิสัยและผลกระทบต่อบริษัทจดทะเบียน'
+  };
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-18T00:00:00.000Z'),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (init.method === 'POST') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify([...badRows, good]), {
+        status: 200,
+        headers: { 'content-range': '0-3/4', 'content-type': 'application/json' }
+      });
+    }
+  });
+
+  const listed = await service.list({ page: 1, pageSize: 10, source: 'all' });
+  assert.deepEqual(listed.items.map(item => item.fingerprint), ['short-article']);
+  assert.equal(listed.qualityFiltered, 3);
+
+  for (const bad of badRows) {
+    const result = await service.ingest([{
+      source: bad.source, sourceName: bad.source_name, title: bad.title, url: bad.url,
+      pubDate: bad.published_at, snippet: bad.snippet
+    }]);
+    assert.equal(result.ingested, 0, bad.title);
+  }
+  assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
+});

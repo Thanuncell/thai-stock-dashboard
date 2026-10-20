@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 
 const { BROKER_FIRMS, decorateBrokerAttribution, matchBrokerFirms } = require('../lib/broker-news');
 const { createNewsService } = require('../server/news-service');
-const { classifyNewsItem } = require('../lib/news-quality');
+const { NEWS_QUALITY_DECISION, classifyNewsItem } = require('../lib/news-quality');
 
 function rss(items) {
   return `<rss><channel>${items.map(item => `<item><title>${item.title}</title><link>${item.url}</link><pubDate>${item.pubDate}</pubDate><description>${item.snippet || ''}</description><source>${item.sourceName}</source></item>`).join('')}</channel></rss>`;
@@ -73,7 +73,7 @@ test('SETTRADE overview and data pages are rejected while real articles and offi
     url: 'https://www.settrade.com/th/equities/quote/LHHOTEL/overview', pubDate: date
   };
   assert.deepEqual(classifyNewsItem(overview), {
-    accepted: false, classification: 'QUOTE_DATA_OVERVIEW', reason: 'SETTRADE_DATA_PAGE_TITLE'
+    accepted: false, decision: 'REJECT', classification: 'QUOTE_DATA_OVERVIEW', reason: 'SETTRADE_DATA_PAGE_TITLE'
   });
   assert.equal(classifyNewsItem({
     ...overview,
@@ -97,6 +97,111 @@ test('SETTRADE overview and data pages are rejected while real articles and offi
     sourceName: 'ตลาดหลักทรัพย์แห่งประเทศไทย',
     url: 'https://www.set.or.th/th/market/news-and-alert/newsdetails?id=12345'
   }).accepted, true);
+});
+
+test('three-state news quality rejects deterministic reference pages generically', () => {
+  const date = new Date().toISOString();
+  const rejected = [
+    {
+      title: 'BONDUS01 - Settrade', sourceName: 'Settrade', source: 'settrade',
+      url: 'https://news.google.com/rss/articles/bondus01-reference', pubDate: date,
+      classification: 'INSTRUMENT_REFERENCE'
+    },
+    {
+      title: 'ReportEGPRP0001 - Bank of Thailand', sourceName: 'Bank of Thailand', source: 'official',
+      url: 'https://news.google.com/rss/articles/bot-report-reference', pubDate: date,
+      classification: 'REPORT_REFERENCE'
+    },
+    {
+      title: 'S50H27P1060 - ปฏิทินการซื้อขาย - Settrade', sourceName: 'Settrade', source: 'settrade',
+      url: 'https://news.google.com/rss/articles/settrade-calendar', pubDate: date,
+      classification: 'TRADING_CALENDAR'
+    },
+    {
+      title: 'METCO - ภาพรวมบริษัท - Settrade', sourceName: 'Settrade', source: 'settrade',
+      url: 'https://news.google.com/rss/articles/metco-overview', pubDate: date,
+      classification: 'QUOTE_DATA_OVERVIEW'
+    },
+    {
+      title: 'HUMAN - ภาพรวมบริษัท - SETTRADE.COM', sourceName: 'SETTRADE.COM', source: 'other',
+      url: 'https://news.google.com/rss/articles/human-overview', pubDate: date,
+      classification: 'QUOTE_DATA_OVERVIEW'
+    },
+    {
+      title: 'S50V26P990 - ปฏิทินการซื้อขาย - SETTRADE.COM', sourceName: 'SETTRADE.COM', source: 'other',
+      url: 'https://news.google.com/rss/articles/settrade-com-calendar', pubDate: date,
+      classification: 'TRADING_CALENDAR'
+    },
+    {
+      title: 'ข่าวล่าสุด', sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', source: 'kaohoon',
+      url: 'https://www.kaohoon.com/category/news/page/7712/', pubDate: date,
+      classification: 'PAGINATION'
+    }
+  ];
+
+  assert.equal(NEWS_QUALITY_DECISION.REJECT, 'REJECT');
+  for (const item of rejected) {
+    const result = classifyNewsItem(item);
+    assert.equal(result.accepted, false, item.title);
+    assert.equal(result.decision, NEWS_QUALITY_DECISION.REJECT, item.title);
+    assert.equal(result.classification, item.classification, item.title);
+  }
+});
+
+test('short or unusual headlines use article evidence instead of title length alone', () => {
+  const date = new Date().toISOString();
+  const accepted = [
+    {
+      title: 'Force Majeure', sourceName: 'efinanceThai', source: 'efinance',
+      url: 'https://news.google.com/rss/articles/efinance-force-majeure', pubDate: date,
+      snippet: 'บทความอธิบายเหตุสุดวิสัยและผลกระทบต่อบริษัทจดทะเบียน'
+    },
+    {
+      title: 'ไทย เยอรมนี', sourceName: 'efinanceThai', source: 'efinance',
+      url: 'https://www.efinancethai.com/news/short-thai-germany', pubDate: date,
+      snippet: 'รายงานความร่วมมือทางเศรษฐกิจระหว่างไทยและเยอรมนี'
+    },
+    {
+      title: 'บัตรเติมเงิน', sourceName: 'efinanceThai', source: 'efinance',
+      url: 'https://www.efinancethai.com/article/prepaid-card', pubDate: date,
+      snippet: 'ข่าวธุรกิจเกี่ยวกับบริการบัตรเติมเงินและแผนการดำเนินงาน'
+    },
+    {
+      title: 'PTT', sourceName: 'สำนักข่าวท้องถิ่น', source: 'other',
+      url: 'https://news.google.com/rss/articles/opaque-short-title', pubDate: date,
+      snippet: ''
+    }
+  ];
+
+  const results = accepted.map(classifyNewsItem);
+  assert.deepEqual(results.slice(0, 3).map(result => result.decision), [
+    NEWS_QUALITY_DECISION.ACCEPT,
+    NEWS_QUALITY_DECISION.ACCEPT,
+    NEWS_QUALITY_DECISION.ACCEPT
+  ]);
+  assert.equal(results[3].decision, NEWS_QUALITY_DECISION.AMBIGUOUS);
+  assert.ok(results.every(result => result.accepted), 'title shape alone must not discard a potentially genuine article');
+});
+
+test('official announcements and genuine shareholder articles remain accepted', () => {
+  const date = new Date().toISOString();
+  const controls = [
+    {
+      title: 'บริษัทจดทะเบียนแจ้งมติที่ประชุมผู้ถือหุ้น',
+      sourceName: 'ตลาดหลักทรัพย์แห่งประเทศไทย', source: 'settrade',
+      url: 'https://www.set.or.th/th/market/news-and-alert/newsdetails?id=12345', pubDate: date
+    },
+    {
+      title: 'ผู้ถือหุ้นอนุมัติแผนลงทุนใหม่ของบริษัท',
+      sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', source: 'kaohoon',
+      url: 'https://www.kaohoon.com/news/999999', pubDate: date,
+      snippet: 'ที่ประชุมผู้ถือหุ้นอนุมัติวงเงินและกรอบเวลาดำเนินโครงการ'
+    }
+  ];
+  const results = controls.map(classifyNewsItem);
+  assert.ok(results.every(result => result.accepted));
+  assert.ok(results.every(result => result.decision === NEWS_QUALITY_DECISION.ACCEPT));
+  assert.equal(results[0].classification, 'OFFICIAL_ANNOUNCEMENT');
 });
 
 test('generic page classification rejects listings, auth, data and ownership pages without hiding real news', () => {
