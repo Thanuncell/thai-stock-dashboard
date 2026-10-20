@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const navigationPageFixtures = require('./fixtures/news-quality-navigation-pages.json');
 
 const { BROKER_FIRMS, decorateBrokerAttribution, matchBrokerFirms } = require('../lib/broker-news');
 const { createNewsService } = require('../server/news-service');
@@ -146,6 +147,30 @@ test('three-state news quality rejects deterministic reference pages generically
     assert.equal(result.decision, NEWS_QUALITY_DECISION.REJECT, item.title);
     assert.equal(result.classification, item.classification, item.title);
   }
+});
+
+test('navigation and reference landing pages are rejected without hiding genuine news', async () => {
+  const pubDate = new Date().toUTCString();
+  for (const item of navigationPageFixtures.rejected) {
+    const result = classifyNewsItem({ ...item, pubDate });
+    assert.equal(result.accepted, false, item.title);
+    assert.equal(result.decision, NEWS_QUALITY_DECISION.REJECT, item.title);
+    assert.equal(result.classification, item.classification, item.title);
+  }
+  for (const item of navigationPageFixtures.accepted) {
+    assert.equal(classifyNewsItem({ ...item, pubDate }).accepted, true, item.title);
+  }
+
+  const body = rss([
+    ...navigationPageFixtures.rejected.map(item => ({ ...item, pubDate })),
+    ...navigationPageFixtures.accepted.map(item => ({ ...item, pubDate }))
+  ]);
+  const service = createNewsService({ fetchImpl: async () => new Response(body, { status: 200 }) });
+  const result = await service.getNews();
+  assert.deepEqual(
+    result.items.map(item => item.title).sort(),
+    navigationPageFixtures.accepted.map(item => item.title).sort()
+  );
 });
 
 test('short or unusual headlines use article evidence instead of title length alone', () => {

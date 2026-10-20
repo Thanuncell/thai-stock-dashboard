@@ -1,0 +1,41 @@
+{
+  "rejected": [
+    {
+      "title": "กองทุนรวม - ค้นหากองทุน IPO - Settrade",
+      "sourceName": "Settrade",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/opaque-fund-directory",
+      "classification": "NAVIGATION_REFERENCE"
+    },
+    {
+      "title": "สรุปภาวะตลาด - สรุปภาพรวมตลาด - Settrade",
+      "sourceName": "Settrade",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/opaque-market-overview",
+      "classification": "NAVIGATION_REFERENCE"
+    }
+  ],
+  "accepted": [
+    {
+      "title": "บลจ. เปิดขายกองทุนรวม IPO รับโอกาสลงทุนทั่วโลก - Settrade",
+      "sourceName": "Settrade",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/genuine-fund-ipo",
+      "snippet": "บริษัทหลักทรัพย์จัดการกองทุนเปิดเผยรายละเอียดช่วงเสนอขายและนโยบายการลงทุน"
+    },
+    {
+      "title": "สรุปภาวะตลาดหุ้นไทยประจำวันที่ 20 ตุลาคม 2569 - Settrade",
+      "sourceName": "Settrade",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/genuine-market-wrap",
+      "snippet": "รายงานการเคลื่อนไหวของดัชนี มูลค่าซื้อขาย และปัจจัยที่มีผลต่อตลาดหุ้นไทย"
+    },
+    {
+      "title": "บริษัทจดทะเบียนแจ้งผลการดำเนินงานไตรมาสล่าสุด - SET",
+      "sourceName": "ตลาดหลักทรัพย์แห่งประเทศไทย",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/genuine-official-announcement",
+      "snippet": "บริษัทเปิดเผยผลการดำเนินงานและข้อมูลสำคัญต่อตลาดหลักทรัพย์"
+    }
+  ]
+}
