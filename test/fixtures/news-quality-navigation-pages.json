@@ -1,6 +1,34 @@
 {
   "rejected": [
     {
+      "title": "2 Factors Authentication Login - Settrade",
+      "sourceName": "Settrade",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/opaque-settrade-authentication-login",
+      "classification": "AUTHENTICATION_PAGE"
+    },
+    {
+      "title": "METCO - ภาพรวมบริษัท - Settrade",
+      "sourceName": "Settrade",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/opaque-settrade-company-overview",
+      "classification": "QUOTE_DATA_OVERVIEW"
+    },
+    {
+      "title": "BCP - ข้อมูลผู้ถือหุ้น - Settrade",
+      "sourceName": "Settrade",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/opaque-settrade-shareholders",
+      "classification": "SHAREHOLDER_OWNERSHIP"
+    },
+    {
+      "title": "S50V26P990 - ปฏิทินการซื้อขาย - SETTRADE.COM",
+      "sourceName": "SETTRADE.COM",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/opaque-settrade-trading-calendar",
+      "classification": "TRADING_CALENDAR"
+    },
+    {
       "title": "กองทุนรวม - ค้นหากองทุน IPO - Settrade",
       "sourceName": "Settrade",
       "source": "settrade",
@@ -16,6 +44,13 @@
     }
   ],
   "accepted": [
+    {
+      "title": "SETTRADE เปิดใช้ 2 Factors Authentication เพิ่มความปลอดภัยให้ผู้ลงทุน - Settrade",
+      "sourceName": "Settrade",
+      "source": "settrade",
+      "url": "https://news.google.com/rss/articles/genuine-settrade-authentication-news",
+      "snippet": "SETTRADE ประกาศเปิดใช้ระบบยืนยันตัวตนสองขั้นตอน พร้อมแนะนำวิธีใช้งานแก่ผู้ลงทุน"
+    },
     {
       "title": "บลจ. เปิดขายกองทุนรวม IPO รับโอกาสลงทุนทั่วโลก - Settrade",
       "sourceName": "Settrade",

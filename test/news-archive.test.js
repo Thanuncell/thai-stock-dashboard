@@ -229,14 +229,17 @@ test('archive read and ingest gates reject navigation/reference landing pages', 
       if (init.method === 'POST') return new Response(null, { status: 204 });
       return new Response(JSON.stringify([...badRows, goodRow]), {
         status: 200,
-        headers: { 'content-range': '0-2/3', 'content-type': 'application/json' }
+        headers: {
+          'content-range': `0-${badRows.length}/${badRows.length + 1}`,
+          'content-type': 'application/json'
+        }
       });
     }
   });
 
   const listed = await service.list({ page: 1, pageSize: 10, source: 'settrade' });
   assert.deepEqual(listed.items.map(item => item.fingerprint), ['genuine-fund-ipo-news']);
-  assert.equal(listed.qualityFiltered, 2);
+  assert.equal(listed.qualityFiltered, navigationPageFixtures.rejected.length);
 
   for (const bad of badRows) {
     const result = await service.ingest([{
