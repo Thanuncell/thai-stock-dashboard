@@ -143,6 +143,7 @@ function restoreNavigationFromLocation() {
   const state = parseNavigationState(location.href, currentNavigationState());
   const previousRoute = document.body.dataset.workspacePage;
   const previousSymbol = activeSymbol, previousRange = currentRange, previousWatchlist = activeWatchlistId;
+  const previousNewsPage = newsPage, previousNewsSource = activeSource;
   if (state.route === 'chart') {
     activeSymbol = state.symbol;
     activeName = watchlist.find(item => item.symbol === activeSymbol)?.name || activeSymbol;
@@ -160,6 +161,7 @@ function restoreNavigationFromLocation() {
   setWorkspacePage(state.route, { historyMode: 'none', scroll: false });
   renderNews(); renderWatchlistNews(); renderWatchlist(latestMarket?.stocks || []); renderMovers(latestMarket?.stocks || []);
   if (state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== currentRange || previousRoute !== 'chart')) getMarket();
+  if (state.route === 'news' && archiveConfigured && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
   if (state.route === 'watchlist' && (previousWatchlist !== activeWatchlistId || previousRoute !== 'watchlist')) getWatchlistNews({ reason: 'restore' });
   writeNavigation('replace', state.route);
 }
@@ -1134,11 +1136,12 @@ function renderNews() {
   }
   const availableCount = archiveLoaded ? archiveTotal : rest.length;
   const total = Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
-  newsPage = Math.max(1, Math.min(newsPage, total));
-  const items = archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((newsPage - 1) * PAGE_SIZE, newsPage * PAGE_SIZE);
+  const displayPage = archiveLoaded ? Math.max(1, Math.min(newsPage, total)) : 1;
+  if (archiveLoaded) newsPage = displayPage;
+  const items = archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((displayPage - 1) * PAGE_SIZE, displayPage * PAGE_SIZE);
   const emptyText = query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่มีข่าวในหมวดที่เลือก';
   renderNewsItemsInto($('#news-list'), items, emptyText);
-  renderPagerInto($('#news-pager'), newsPage, total, availableCount, async page => {
+  renderPagerInto($('#news-pager'), displayPage, total, availableCount, async page => {
     newsPage = page; writeNavigation('push', 'news');
     if (archiveConfigured) await getArchiveNews({ page }); else renderNews();
     scrollPageToTop();

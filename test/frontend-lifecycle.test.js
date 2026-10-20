@@ -87,6 +87,18 @@ test('News pagers preserve state and scroll the page to top with reduced-motion 
   assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollPageToTop\(\)/);
 });
 
+test('News archive page restoration survives startup rendering and browser history', () => {
+  const restoreNavigation = appSource.match(/function restoreNavigationFromLocation\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const renderNews = appSource.match(/function renderNews\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+
+  assert.match(restoreNavigation, /previousNewsPage = newsPage/);
+  assert.match(restoreNavigation, /previousNewsSource = activeSource/);
+  assert.match(restoreNavigation, /state\.route === 'news'[\s\S]*?getArchiveNews\(\{ page: newsPage, reason: 'restore' \}\)/);
+  assert.match(renderNews, /const displayPage = archiveLoaded/);
+  assert.match(renderNews, /if \(archiveLoaded\) newsPage = displayPage/);
+  assert.doesNotMatch(renderNews, /newsPage = Math\.max\(1, Math\.min\(newsPage, total\)\)/);
+});
+
 test('Technical Analysis wording and Overview anchors remain at baseline', () => {
   assert.match(indexSource, /<h2>สรุปสัญญาณ<\/h2>/);
   assert.match(indexSource, /<small>ความเห็นรวม<\/small>/);
