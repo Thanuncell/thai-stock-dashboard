@@ -225,6 +225,14 @@ body:not(.authenticated) .app-shell{display:none}body.authenticated .app-shell{d
 .market-placeholder-icon{display:grid;place-items:center;flex:0 0 28px;width:28px;height:28px;border-radius:7px;background:#eaf5f0;color:#31816a;font-size:16px}
 .market-live-placeholder strong{font-size:10px;font-weight:600}
 .market-live-placeholder p{margin:4px 0 0;color:var(--muted);font-size:9px;line-height:1.65}
+.market-active-table-wrap{min-width:0;overflow-x:auto}
+.market-active-table{width:100%;border-collapse:collapse;font-size:9px;white-space:nowrap}
+.market-active-table th,.market-active-table td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right}
+.market-active-table th:first-child,.market-active-table td:first-child{text-align:left}
+.market-active-table th{color:var(--muted);font-weight:600}
+.market-active-table td b{font:700 10px var(--latin)}
+.market-active-table td small{display:block;color:var(--muted);font-size:8px}
+.market-active-table .up{color:var(--green)}.market-active-table .down{color:var(--red)}
 .nvdr-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .nvdr-metrics>div{display:grid;gap:4px;min-width:0;padding:10px 8px;border:1px solid var(--line);border-radius:7px}
 .nvdr-metrics small{min-height:28px;color:var(--muted);font-size:9px;line-height:1.5}

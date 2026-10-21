@@ -122,6 +122,17 @@ test('Technical Analysis wording and Overview anchors remain at baseline', () =>
   assert.match(indexSource, /id="market-data-overview"/);
 });
 
+test('Market Overview uses the neutral route and SETscope-owned structured tables without changing the shell', () => {
+  assert.match(appSource, /apiFetch\(`\/api\/market-overview/);
+  assert.doesNotMatch(appSource, /apiFetch\(`\/api\/settrade-overview/);
+  assert.match(indexSource, /id="active-value-content"/);
+  assert.match(appSource, /class="market-active-table"/);
+  assert.match(appSource, /activeRows\.slice\(0, 10\)/);
+  assert.doesNotMatch(appSource, /data\.activeValueHtml|innerHTML\s*=\s*data\./);
+  assert.ok(indexSource.indexOf('id="market-index-grid"') < indexSource.indexOf('id="market-breadth-list"'));
+  assert.ok(indexSource.indexOf('id="market-breadth-list"') < indexSource.indexOf('id="active-value-content"'));
+});
+
 test('Coverage UI uses persisted summary fields without a hard-coded count', () => {
   assert.match(indexSource, /id="coverage-summary"/);
   assert.match(indexSource, /id="coverage-count">—<\/b>/);

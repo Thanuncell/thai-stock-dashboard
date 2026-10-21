@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — SETscope v1.5.3 acceptance candidate
+
+### Added
+
+- A provider-neutral Market Overview route with the existing SETTRADE route retained as a compatibility alias.
+- Overview-only source/page/schema/numeric/freshness/publish guards, a persistent kill switch, shared request budget, sequential queue, circuit breaker, field-level last-known-good state, and evidence-only shadow comparison.
+- Structured semantic parsers and SETscope-owned rendering for Most Active and TFEX data when the normal upstream responses expose valid rows.
+
+### Changed
+
+- The existing five SETTRADE page requests are now sequential and globally coalesced; the shared cache aligns with the existing five-minute Overview polling interval.
+- Market Overview fields degrade independently instead of allowing one parser/provider failure to blank the full page.
+
+### Security and scope
+
+- No provider bypass, private endpoint, schema/RLS change, secret, new environment value, scheduler, production real-time path, or additional polling timer was added.
+- Chart, Technical, Yahoo Coverage, News, News Archive, Watchlist, Authentication, and Stock Detail behavior remains unchanged.
+
 ## Unreleased — SETscope v1.5.2 acceptance candidate
 
 ### Added

@@ -274,8 +274,16 @@ function switchWatchlist(id, { historyMode = 'push', resetPage = true } = {}) {
 function setText(selector, value) { const el = $(selector); if (el) el.textContent = value; }
 function renderSettradeOverview(data) {
   const indices = data.indices || [];
+  const tfex = data.tfex || {};
   $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => {
-    if (symbol === 'TFEX') return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ดูข้อมูลต้นทาง</strong><small>ข้อมูลล่าช้า 15 นาที · อ้างอิงแหล่งข้อมูลด้านล่าง</small></article>`;
+    if (symbol === 'TFEX') {
+      if (!tfex.available) return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ข้อมูลยังไม่พร้อม</strong><small>ข้อมูลล่าช้า ${number(tfex.delayMinutes || 15)} นาที · อ้างอิงแหล่งข้อมูลด้านล่าง</small></article>`;
+      const volume = toFiniteNumber(tfex.totalVolume);
+      const openInterest = toFiniteNumber(tfex.openInterest);
+      const primary = volume === null ? `มีข้อมูล ${tfex.topVolume?.length || 0} สัญญา` : `${number(volume)} สัญญา`;
+      const detail = openInterest === null ? 'สถานะคงค้างยังไม่พร้อม' : `สถานะคงค้าง ${number(openInterest)} สัญญา`;
+      return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>${primary}</strong><small>${detail} · ล่าช้า ${number(tfex.delayMinutes || 15)} นาที</small></article>`;
+    }
     const item = indices.find(row => row.symbol === symbol);
     if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
     const change = toFiniteNumber(item.change);
@@ -317,7 +325,18 @@ function renderSettradeOverview(data) {
   const foreign = data.foreign || {};
   const net = toFiniteNumber(foreign.netMillion);
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(foreign.netMillion)}</strong><small>ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}</small>`;
-  setText('#active-value-status', data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง');
+  const activeRows = Array.isArray(data.activeValue) ? data.activeValue : [];
+  const activeRoot = $('#active-value-content');
+  if (activeRoot) {
+    activeRoot.className = activeRows.length ? 'market-active-table-wrap' : 'market-live-placeholder';
+    activeRoot.innerHTML = activeRows.length
+      ? `<table class="market-active-table"><thead><tr><th>หุ้น</th><th>ล่าสุด</th><th>เปลี่ยนแปลง</th><th>มูลค่า (ลบ.)</th></tr></thead><tbody>${activeRows.slice(0, 10).map(item => {
+          const change = toFiniteNumber(item.change);
+          const trend = change > 0 ? 'up' : change < 0 ? 'down' : '';
+          return `<tr><td><b>${escapeHtml(item.symbol)}</b><small>#${number(item.rank)}</small></td><td>${number(item.last)}</td><td class="${trend}">${change > 0 ? '+' : ''}${number(change)} (${number(item.changePercent)}%)</td><td>${number(item.turnoverMillion)}</td></tr>`;
+        }).join('')}</tbody></table><small class="market-source-caption">${escapeHtml(data.activeValueStatus || 'ข้อมูลจัดอันดับจาก SETTRADE')}</small>`
+      : `<span class="market-placeholder-icon">↗</span><div><strong id="active-value-status">${escapeHtml(data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง')}</strong><p>ต้นทางยังไม่ส่งข้อมูลตารางแบบอ่านได้ โปรดตรวจสอบจากแหล่งข้อมูลด้านล่าง</p></div>`;
+  }
   const timeLabel = data.asOf ? `ข้อมูล ณ ${stamp(data.asOf)}` : `ดึงเมื่อ ${stamp(data.fetchedAt)}`;
   const settradeStatus = data.dataState === 'stale' || data.stale
     ? `ใช้ข้อมูล SETTRADE ที่บันทึกล่าสุด · ${timeLabel}`
@@ -333,7 +352,7 @@ async function getSettradeOverview(force = false) {
   if (button) { button.disabled = true; button.classList.add('is-loading'); button.textContent = 'กำลังอัปเดต…'; }
   setText('#settrade-updated', 'กำลังดึงข้อมูลจาก SETTRADE…');
   try {
-    const response = await apiFetch(`/api/settrade-overview${force ? '?refresh=1' : ''}`);
+    const response = await apiFetch(`/api/market-overview${force ? '?refresh=1' : ''}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'ดึงข้อมูลจาก SETTRADE ไม่สำเร็จ');
     renderSettradeOverview(data);
