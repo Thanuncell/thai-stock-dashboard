@@ -18,7 +18,8 @@ function safetyError(code, message, { status = 0, retryable = false } = {}) {
 
 function explicitAccessDenial(html = '') {
   const value = String(html);
-  return /captcha|cf-chl-|bot challenge|access denied/i.test(value)
+  return /cf-chl-|bot challenge|access denied|captcha challenge|verify (?:that )?you are human/i.test(value)
+    || /<title[^>]*>[^<]*(?:captcha|challenge)[^<]*<\/title>/i.test(value)
     || /<title[^>]*>[^<]*(?:login|sign in|เข้าสู่ระบบ)[^<]*<\/title>/i.test(value)
     || /<input[^>]+type=["']password["']/i.test(value);
 }

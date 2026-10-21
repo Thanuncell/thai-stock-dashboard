@@ -9,7 +9,7 @@ const {
   parseSettradeActiveValue,
   parseSettradeTfex
 } = require('../lib/settrade-parser');
-const { createMarketOverviewSafety } = require('../server/market-overview-safety');
+const { createMarketOverviewSafety, explicitAccessDenial } = require('../server/market-overview-safety');
 const { createMarketOverviewService } = require('../server/market-overview-service');
 const { createSettradeService } = require('../server/settrade-service');
 
@@ -119,6 +119,50 @@ test('403 or access-denial page opens MANUAL_REVIEW_REQUIRED and prevents furthe
   await assert.rejects(captchaSafety.request('https://www.settrade.com/a'), /MANUAL_REVIEW_REQUIRED/);
   await assert.rejects(captchaSafety.request('https://www.settrade.com/b'), /MANUAL_REVIEW_REQUIRED/);
   assert.equal(captchaCalls, 1);
+});
+
+test('a passive reCAPTCHA site-key config is not mistaken for an active CAPTCHA challenge', () => {
+  assert.equal(explicitAccessDenial('<script>settings={gReCaptchaSiteKey:"public-site-key"}</script><h1>สรุปภาวะตลาด</h1>'), false);
+  assert.equal(explicitAccessDenial('<html><title>Checking CAPTCHA</title><body>captcha challenge</body></html>'), true);
+  assert.equal(explicitAccessDenial('<html><title>Login - SETTRADE</title><input type="password"></html>'), true);
+});
+
+test('parser mismatch is explicit, consumes no retry requests and does not hide healthy fields', async () => {
+  let calls = 0;
+  const safety = createMarketOverviewSafety({
+    minSpacingMs: 0,
+    maxRequestsPerWindow: 10,
+    fetchImpl: async url => {
+      calls += 1;
+      if (String(url).includes('/nvdr/value')) {
+        return htmlResponse('<h1>ภาพรวมมูลค่าการซื้อขาย NVDR</h1><div>มูลค่า SET และ mai 60,980.99</div><div data-new-schema="nvdr">34,209.86</div>');
+      }
+      return htmlResponse(responseFor(url));
+    }
+  });
+  const service = createSettradeService({ safety });
+  const result = (await service.getOverview()).value;
+
+  assert.equal(calls, 5);
+  assert.equal(result.fieldStatus.nvdr.state, 'UNAVAILABLE');
+  assert.equal(result.fieldStatus.nvdr.reason, 'PARSER_MISMATCH');
+  assert.equal(result.fieldStatus.indices.state, 'PASS');
+  assert.equal(result.fieldStatus.foreign.state, 'PASS');
+  assert.equal(result.partial, true);
+});
+
+test('wrong page remains rejected even when another field can still render', async () => {
+  const safety = createMarketOverviewSafety({
+    minSpacingMs: 0,
+    maxRequestsPerWindow: 10,
+    fetchImpl: async url => htmlResponse(String(url).includes('/nvdr/value')
+      ? fixture('settrade-wrong-page.html')
+      : responseFor(url))
+  });
+  const result = (await createSettradeService({ safety }).getOverview()).value;
+  assert.equal(result.fieldStatus.nvdr.state, 'UNAVAILABLE');
+  assert.equal(result.fieldStatus.nvdr.reason, 'PAGE_IDENTITY_MISMATCH');
+  assert.equal(result.fieldStatus.indices.state, 'PASS');
 });
 
 test('429 backs off without retrying and repeated transient failures use one HALF_OPEN probe', async () => {
