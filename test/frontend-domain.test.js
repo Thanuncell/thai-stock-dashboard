@@ -112,3 +112,55 @@ test('missing market values remain unavailable instead of becoming zero', () => 
   ] }]);
   assert.deepEqual(validZero, { up: 0, down: 0, comparable: true });
 });
+
+test('Market Overview banner keeps validated Overview fields ahead of a later market response', () => {
+  const resolved = domain.resolveMarketBannerFields({
+    symbol: 'SET', last: 1546.05, change: -8.89, changePercent: -0.57,
+    volumeThousand: 9921584, high: 1563.04, low: 1532.71, turnoverMillion: 43861.21
+  }, {
+    symbol: 'SET', guardStatus: 'accepted', last: 1546.1, prior: 1554.9,
+    volume: null, high: null, low: null, turnoverMillionBaht: null
+  });
+
+  assert.equal(resolved.index.last, 1546.1);
+  assert.equal(resolved.volumeThousand, 9921584);
+  assert.deepEqual([resolved.high, resolved.low], [1563.04, 1532.71]);
+  assert.equal(resolved.turnoverMillion, 43861.21);
+  assert.deepEqual(resolved.sources, {
+    index: 'market', volume: 'overview', range: 'overview', turnover: 'overview'
+  });
+});
+
+test('Market Overview banner converts valid raw-share fallback volume to thousands without inventing missing values', () => {
+  const fallback = domain.resolveMarketBannerFields(null, {
+    symbol: 'SET', guardStatus: 'accepted', last: 1500, prior: 1490,
+    volume: 1234567000, high: 1510, low: 1480, turnoverMillionBaht: 45678.9
+  });
+  assert.equal(fallback.volumeThousand, 1234567);
+  assert.equal(fallback.turnoverMillion, 45678.9);
+  assert.deepEqual(fallback.sources, {
+    index: 'market', volume: 'market', range: 'market', turnover: 'market'
+  });
+
+  const unavailable = domain.resolveMarketBannerFields({}, {
+    symbol: 'SET', guardStatus: 'accepted', last: 1500, prior: 1490,
+    volume: null, high: null, low: null, turnoverMillionBaht: null
+  });
+  assert.equal(unavailable.volumeThousand, null);
+  assert.equal(unavailable.high, null);
+  assert.equal(unavailable.low, null);
+  assert.equal(unavailable.turnoverMillion, null);
+});
+
+test('Market Overview freshness label distinguishes current, partial and LKG data', () => {
+  const fetchedAt = '2026-10-21T07:16:21.000Z';
+  const fresh = domain.marketOverviewStatus({ fetchedAt, dataState: 'fresh', fieldStatus: {} });
+  assert.match(fresh, /^แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: /);
+  assert.doesNotMatch(fresh, /LKG|บางส่วนไม่พร้อม/);
+
+  const partial = domain.marketOverviewStatus({ fetchedAt, dataState: 'partial', fieldStatus: {} });
+  assert.match(partial, /บางส่วนไม่พร้อม$/);
+
+  const lkg = domain.marketOverviewStatus({ fetchedAt, dataState: 'partial', fieldStatus: { nvdr: { state: 'LKG' } } });
+  assert.match(lkg, /ข้อมูลที่บันทึกล่าสุด \(LKG\)$/);
+});

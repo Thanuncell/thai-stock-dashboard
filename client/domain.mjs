@@ -34,6 +34,55 @@ export function toFiniteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+export function resolveMarketBannerFields(overviewIndex, marketIndex) {
+  const overview = overviewIndex && typeof overviewIndex === 'object' ? overviewIndex : {};
+  const market = marketIndex && typeof marketIndex === 'object' ? marketIndex : {};
+  const nonNegative = value => {
+    const number = toFiniteNumber(value);
+    return number !== null && number >= 0 ? number : null;
+  };
+  const positive = value => {
+    const number = toFiniteNumber(value);
+    return number !== null && number > 0 ? number : null;
+  };
+  const range = row => {
+    const high = positive(row?.high), low = positive(row?.low);
+    return high !== null && low !== null && high >= low ? { high, low } : null;
+  };
+
+  const marketAccepted = market.guardStatus === 'accepted' && positive(market.last) !== null;
+  const overviewAccepted = positive(overview.last) !== null;
+  const overviewVolume = nonNegative(overview.volumeThousand);
+  const marketRawVolume = nonNegative(market.volume);
+  const overviewRange = range(overview), marketRange = range(market);
+  const overviewTurnover = nonNegative(overview.turnoverMillion);
+  const marketTurnover = nonNegative(market.turnoverMillionBaht);
+
+  return {
+    index: marketAccepted ? market : overviewAccepted ? overview : null,
+    volumeThousand: overviewVolume ?? (marketRawVolume === null ? null : marketRawVolume / 1000),
+    high: (overviewRange || marketRange)?.high ?? null,
+    low: (overviewRange || marketRange)?.low ?? null,
+    turnoverMillion: overviewTurnover ?? marketTurnover,
+    sources: {
+      index: marketAccepted ? 'market' : overviewAccepted ? 'overview' : null,
+      volume: overviewVolume !== null ? 'overview' : marketRawVolume !== null ? 'market' : null,
+      range: overviewRange ? 'overview' : marketRange ? 'market' : null,
+      turnover: overviewTurnover !== null ? 'overview' : marketTurnover !== null ? 'market' : null
+    }
+  };
+}
+
+export function marketOverviewStatus(data = {}) {
+  const fieldStates = Object.values(data.fieldStatus || {});
+  const usesLkg = data.dataState === 'stale' || data.stale
+    || fieldStates.some(field => field?.state === 'LKG' || field?.stale);
+  const partial = data.dataState === 'partial' || Boolean(data.errors?.length)
+    || fieldStates.some(field => field?.state === 'UNAVAILABLE');
+  const suffix = usesLkg ? ' · ข้อมูลที่บันทึกล่าสุด (LKG)' : partial ? ' · บางส่วนไม่พร้อม' : '';
+  return `แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: ${stamp(data.fetchedAt || data.asOf)}${suffix}`;
+}
+
 export function quoteChange(last, prior) {
   const current = toFiniteNumber(last);
   const previous = toFiniteNumber(prior);
