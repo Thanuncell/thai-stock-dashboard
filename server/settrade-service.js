@@ -1,6 +1,7 @@
 'use strict';
 
 const {
+  classifySettradeParse,
   marketHtmlText,
   parseSettradeActiveValue,
   parseSettradeForeign,
@@ -41,11 +42,11 @@ const EMPTY_TFEX = Object.freeze({
 
 function pageIdentity(index, html) {
   const text = marketHtmlText(String(html || '').slice(0, 180_000));
-  if (index === 0) return /ดัชนี/i.test(text) && /\bSET\b/i.test(text) && /\bmai\b/i.test(text);
-  if (index === 1) return /NVDR/i.test(text) && /มูลค่าการซื้อขาย/i.test(text);
-  if (index === 2) return /นักลงทุนต่างประเทศ/i.test(text) && /มูลค่าซื้อ|มูลค่าขาย/i.test(text);
-  if (index === 3) return /อนุพันธ์|Derivatives|TFEX/i.test(text) && /Total Market|ภาพรวมตลาด/i.test(text);
-  if (index === 4) return /Most Active Value/i.test(text) && /ชื่อย่อหลักทรัพย์/i.test(text);
+  if (index === 0) return /สรุปภาวะตลาด|ข้อมูลดัชนี|ดัชนีตลาด/i.test(text) && /\bSET\b/i.test(text);
+  if (index === 1) return /NVDR/i.test(text) && /มูลค่า(?:การ)?ซื้อขาย|สัดส่วน/i.test(text);
+  if (index === 2) return /กลุ่มนักลงทุน|นักลงทุนต่างประเทศ|นักลงทุนต่างชาติ/i.test(text) && /(?:มูลค่า)?ซื้อ|(?:มูลค่า)?ขาย|สุทธิ/i.test(text);
+  if (index === 3) return /อนุพันธ์|Derivatives|TFEX/i.test(text) && /Total Market|ภาพรวมตลาด|ประเภทผู้ลงทุน|ปริมาณซื้อขายสูงสุด/i.test(text);
+  if (index === 4) return /Most Active|มูลค่าการซื้อขายสูงสุด/i.test(text) && /ชื่อย่อหลักทรัพย์|หลักทรัพย์|Symbol|อันดับ|ลำดับ/i.test(text);
   return false;
 }
 
@@ -97,13 +98,15 @@ function createSettradeService({
   async function loadOverview() {
     const pages = [];
     const pageErrors = [];
+    const identities = [];
     for (let index = 0; index < PATHS.length; index += 1) {
       try {
         const html = await fetchPage(PATHS[index]);
-        if (!pageIdentity(index, html)) throw Error('PAGE_IDENTITY_MISMATCH');
         pages[index] = html;
+        identities[index] = pageIdentity(index, html);
       } catch (error) {
         pages[index] = '';
+        identities[index] = false;
         pageErrors[index] = error;
       }
     }
@@ -115,13 +118,20 @@ function createSettradeService({
     const tfex = pages[3] ? parseSettradeTfex(pages[3]) : { ...EMPTY_TFEX };
     const active = pages[4] ? parseSettradeActiveValue(pages[4]) : { items: [], asOf: '' };
 
-    const indicesField = field('indices', overview.indices, overview.indices.some(item => item.symbol === 'SET' && Number.isFinite(item.last)), fetchedAt, pageErrors[0]?.message || 'SCHEMA_UNAVAILABLE');
-    const breadthField = field('breadth', overview.breadth, overview.breadth.length > 0, fetchedAt, pageErrors[0]?.message || 'SCHEMA_UNAVAILABLE');
-    const closeField = field('closeSummary', overview.closeSummary, Boolean(overview.closeSummary), fetchedAt, pageErrors[0]?.message || 'NOT_PUBLISHED');
-    const nvdrField = field('nvdr', nvdr, hasNumber(nvdr), fetchedAt, pageErrors[1]?.message || 'SCHEMA_UNAVAILABLE');
-    const foreignField = field('foreign', foreign, hasNumber(foreign), fetchedAt, pageErrors[2]?.message || 'SCHEMA_UNAVAILABLE');
-    const tfexField = field('tfex', tfex, Boolean(tfex.available), fetchedAt, pageErrors[3]?.message || 'NO_STRUCTURED_DATA');
-    const activeField = field('activeValue', active.items, active.items.length > 0, active.asOf || fetchedAt, pageErrors[4]?.message || 'NO_STRUCTURED_DATA');
+    function reason(pageIndex, parseField, parsed) {
+      if (pageErrors[pageIndex]) return pageErrors[pageIndex].code || pageErrors[pageIndex].message;
+      const outcome = classifySettradeParse(parseField, parsed);
+      if (outcome === 'ACCEPT') return null;
+      return identities[pageIndex] ? outcome : 'PAGE_IDENTITY_MISMATCH';
+    }
+
+    const indicesField = field('indices', overview.indices, overview.indices.some(item => item.symbol === 'SET' && Number.isFinite(item.last)), fetchedAt, reason(0, 'indices', overview));
+    const breadthField = field('breadth', overview.breadth, overview.breadth.some(group => group.items?.some(item => Number.isFinite(item.count) || Number.isFinite(item.volumeThousand))), fetchedAt, reason(0, 'breadth', overview));
+    const closeField = field('closeSummary', overview.closeSummary, Boolean(overview.closeSummary), fetchedAt, reason(0, 'closeSummary', overview));
+    const nvdrField = field('nvdr', nvdr, hasNumber(nvdr), fetchedAt, reason(1, 'nvdr', nvdr));
+    const foreignField = field('foreign', foreign, hasNumber(foreign), fetchedAt, reason(2, 'foreign', foreign));
+    const tfexField = field('tfex', tfex, Boolean(tfex.available), fetchedAt, reason(3, 'tfex', tfex));
+    const activeField = field('activeValue', active.items, active.items.length > 0, active.asOf || fetchedAt, reason(4, 'activeValue', active));
 
     const fieldStatus = {
       indices: indicesField.status,
@@ -132,7 +142,13 @@ function createSettradeService({
       tfex: tfexField.status,
       activeValue: activeField.status
     };
-    const errors = pageErrors.map((error, index) => error ? `${PATHS[index]}: ${error.code || error.message}` : null).filter(Boolean);
+    const fieldPages = { indices: 0, breadth: 0, closeSummary: 0, nvdr: 1, foreign: 2, tfex: 3, activeValue: 4 };
+    const errors = [];
+    for (const [name, status] of Object.entries(fieldStatus)) {
+      if (status.state === 'PASS' || !status.reason) continue;
+      const message = `${PATHS[fieldPages[name]]}: ${name} ${status.reason}`;
+      if (!errors.includes(message)) errors.push(message);
+    }
     const states = Object.values(fieldStatus).map(status => status.state);
     const hasUsableField = states.some(state => state === 'PASS' || state === 'LKG');
     const partial = errors.length > 0 || states.some(state => state !== 'PASS');

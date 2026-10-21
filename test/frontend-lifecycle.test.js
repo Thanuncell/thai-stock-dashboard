@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const styleSource = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
+const domainSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'domain.mjs'), 'utf8');
 
 test('frontend setup remains single-shot and global listeners are not duplicated', () => {
   assert.equal((appSource.match(/addEventListener\('setscope:authenticated',\s*setup,\s*\{\s*once:\s*true\s*\}\)/g) || []).length, 1);
@@ -131,6 +132,33 @@ test('Market Overview uses the neutral route and SETscope-owned structured table
   assert.doesNotMatch(appSource, /data\.activeValueHtml|innerHTML\s*=\s*data\./);
   assert.ok(indexSource.indexOf('id="market-index-grid"') < indexSource.indexOf('id="market-breadth-list"'));
   assert.ok(indexSource.indexOf('id="market-breadth-list"') < indexSource.indexOf('id="active-value-content"'));
+});
+
+test('Market Overview display labels, units and unavailable copy remain truthful', () => {
+  assert.match(indexSource, /ปริมาณซื้อขาย SET \('000 หุ้น\)/);
+  assert.match(indexSource, /มูลค่าซื้อขาย \(ล้านบาท\)/);
+  assert.match(indexSource, /<div class="section-overline">MARKET SUMMARY<\/div><h2>สรุปภาวะตลาด<\/h2>/);
+  assert.doesNotMatch(indexSource, /END OF DAY|สรุปซื้อขายสิ้นวัน/);
+  assert.doesNotMatch(indexSource, /สรุปจากข้อมูลตลาดสาธารณะ โปรดตรวจสอบต้นทางก่อนใช้งาน/);
+  assert.doesNotMatch(indexSource, /class="market-data-foot"|class="market-sources"|id="market-data-date"/);
+  assert.doesNotMatch(indexSource, /SET \/ mai · สถิติขึ้น–ลง|ข้อมูลและความถี่ขึ้นกับต้นทาง/);
+  assert.match(indexSource, /มูลค่าซื้อขาย SET \+ mai/);
+  assert.doesNotMatch(indexSource, /มูลค่าตลาด SET \+ mai/);
+  assert.match(appSource, /ข้อมูลล่าช้า \$\{tfexDelayLabel\} นาที/);
+  assert.doesNotMatch(appSource, /อ้างอิงแหล่งข้อมูลด้านล่าง|โปรดตรวจสอบจากแหล่งข้อมูลด้านล่าง/);
+  assert.match(appSource, /มีข้อมูล \$\{tfex\.topVolume\?\.length \|\| 0\} รายการ/);
+  assert.match(appSource, /ยังไม่มีสรุปภาวะตลาดรอบนี้/);
+});
+
+test('Market Overview has deterministic startup banner ownership and truthful freshness', () => {
+  assert.match(appSource, /let latestSettradeOverview = null/);
+  assert.match(appSource, /function renderMarketBanner\(\)/);
+  assert.match(appSource, /resolveMarketBannerFields\(overviewIndex, marketIndex\)/);
+  assert.doesNotMatch(appSource, /volumeThousand \* 1000/);
+  assert.match(appSource, /marketOverviewStatus\(data\)/);
+  assert.match(domainSource, /แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด:/);
+  assert.match(domainSource, /ข้อมูลที่บันทึกล่าสุด \(LKG\)/);
+  assert.match(appSource, /updateTradingViewChart\(\); getMarket\(\); getSettradeOverview\(\);/);
 });
 
 test('Coverage UI uses persisted summary fields without a hard-coded count', () => {
