@@ -10,6 +10,8 @@ const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'u
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const realtimeSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'realtime-readiness.js'), 'utf8');
 const guardSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'data-guard.js'), 'utf8');
+const overviewSafetySource = fs.readFileSync(path.join(__dirname, '..', 'server', 'market-overview-safety.js'), 'utf8');
+const reliabilitySource = fs.readFileSync(path.join(__dirname, '..', 'server', 'reliability.js'), 'utf8');
 
 test('polling intervals remain at the baseline request budget', () => {
   assert.equal((appSource.match(/setInterval\(getMarket, 60000\)/g) || []).length, 1);
@@ -52,5 +54,14 @@ test('Preventive Data Guard adds no upstream validation request or browser polli
   assert.equal((appSource.match(/apiFetch\('\/api\/coverage'\)/g) || []).length, 1);
   assert.match(appSource, /if \(page === 'chart'\) getCoverageSummary\(\)/);
   assert.match(appSource, /if \(!root \|\| coverageSummaryRequested\) return/);
+  assert.equal((appSource.match(/setInterval\(/g) || []).length, 4);
+});
+
+test('Market Overview keeps five-minute polling while globally coalescing and spacing provider requests', () => {
+  assert.equal((appSource.match(/setInterval\(getSettradeOverview, 300000\)/g) || []).length, 1);
+  assert.match(reliabilitySource, /settrade:[\s\S]*?ttlMs: 300_000/);
+  assert.match(overviewSafetySource, /minSpacingMs = Number\(process\.env\.MARKET_OVERVIEW_MIN_SPACING_MS\) \|\| 250/);
+  assert.match(overviewSafetySource, /maxRequestsPerWindow = Number\(process\.env\.MARKET_OVERVIEW_MAX_REQUESTS_PER_WINDOW\) \|\| 7/);
+  assert.match(overviewSafetySource, /let queue = Promise\.resolve\(\)/);
   assert.equal((appSource.match(/setInterval\(/g) || []).length, 4);
 });

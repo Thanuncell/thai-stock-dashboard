@@ -159,13 +159,16 @@ test('partial provider outages degrade independently without fabricating zero va
   assert.equal(market.partial, true);
   assert.ok(market.asOf);
 
-  const settradeResponse = await request(base, '/api/settrade-overview', { headers });
+  const settradeResponse = await request(base, '/api/market-overview', { headers });
   assert.equal(settradeResponse.status, 200);
   const settrade = JSON.parse(settradeResponse.body);
   assert.equal(settrade.indices[0].symbol, 'SET');
   assert.equal(settrade.nvdr.marketMillion, null);
   assert.equal(settrade.tfex.available, false);
-  assert.equal(settrade.errors.length, 2);
+  assert.ok(settrade.errors.some(error => error.includes('/nvdr/value')));
+  assert.ok(settrade.errors.some(error => error.includes('/derivatives/overview')));
+  assert.ok(settrade.errors.some(error => error.includes('/most-active-value')));
+  assert.equal(settrade.fieldStatus.activeValue.state, 'UNAVAILABLE');
   assert.ok(settrade.fetchedAt);
   assert.equal(settrade.dataState, 'partial');
   assert.equal(settrade.partial, true);
@@ -207,10 +210,14 @@ test('backend API response contracts remain stable before service extraction', a
   const overview = JSON.parse((await request(base, '/api/settrade-overview', { headers })).body);
   assert.deepEqual(Object.keys(overview).sort(), [
     'activeValue', 'activeValueStatus', 'asOf', 'breadth', 'cached', 'closeSummary', 'dataState',
-    'delayed', 'errors', 'fetchedAt', 'foreign', 'indices', 'links', 'marketDate', 'nvdr',
-    'partial', 'source', 'stale', 'tfex'
+    'delayed', 'errors', 'fetchedAt', 'fieldStatus', 'foreign', 'indices', 'links', 'marketDate', 'nvdr',
+    'partial', 'source', 'sourceStatus', 'stale', 'tfex'
   ]);
   assert.equal(overview.cached, true);
+
+  const neutralOverview = JSON.parse((await request(base, '/api/market-overview', { headers })).body);
+  assert.deepEqual(neutralOverview.indices, overview.indices);
+  assert.deepEqual(neutralOverview.fieldStatus, overview.fieldStatus);
 
   const news = JSON.parse((await request(base, '/api/news', { headers })).body);
   assert.deepEqual(Object.keys(news).sort(), ['asOf', 'dataState', 'errors', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);

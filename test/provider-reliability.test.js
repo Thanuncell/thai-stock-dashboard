@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 
 const { createMarketService } = require('../server/market-service');
 const { createNewsService } = require('../server/news-service');
+const { createMarketOverviewSafety } = require('../server/market-overview-safety');
 const { createSettradeService } = require('../server/settrade-service');
 
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
@@ -225,24 +226,28 @@ test('every Google News feed request has a bounded abort signal', async () => {
 test('partial SETTRADE refresh never relabels prior fields with a new timestamp', async () => {
   let round = 1;
   const response = (body, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/html' } });
-  const service = createSettradeService({
-    fetchImpl: async input => {
+  const fetchImpl = async input => {
       const url = String(input);
       if (round === 2 && url.includes('/market-summary/overview')) throw Error('overview timeout');
       if (url.includes('/market-summary/overview')) return response(fixture('settrade-overview.html'));
       if (url.includes('/nvdr/value')) return response(fixture('settrade-nvdr.html'));
       if (url.includes('/historical-report/investor-type')) return response(fixture('settrade-foreign.html'));
       return response('<div></div>');
-    }
-  });
+  };
+  const safety = createMarketOverviewSafety({ fetchImpl, minSpacingMs: 0, maxRequestsPerWindow: 20 });
+  const cache = { get: async (_key, _policy, load) => ({ value: await load(), meta: { status: 'miss' } }) };
+  const service = createSettradeService({ fetchImpl, safety, cache });
 
   const first = await service.getOverview(true);
   assert.ok(first.value.indices.length > 0);
+  const firstAsOf = first.value.fieldStatus.indices.asOf;
   round = 2;
   const partial = await service.getOverview(true);
 
-  assert.deepEqual(partial.value.indices, []);
-  assert.equal(partial.value.dataState, 'partial');
+  assert.deepEqual(partial.value.indices, first.value.indices);
+  assert.equal(partial.value.fieldStatus.indices.state, 'LKG');
+  assert.equal(partial.value.fieldStatus.indices.asOf, firstAsOf);
+  assert.equal(partial.value.dataState, 'stale');
   assert.equal(partial.value.partial, true);
   assert.ok(partial.value.errors.some(error => error.includes('/market-summary/overview')));
 });

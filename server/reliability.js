@@ -20,9 +20,9 @@ const PROVIDER_POLICIES = Object.freeze({
   }),
   watchlistNews: Object.freeze({ ttlMs: 300_000, staleIfErrorMs: 0, errorBackoffMs: 5_000 }),
   settrade: Object.freeze({
-    ttlMs: 60_000,
-    staleIfErrorMs: 300_000,
-    errorBackoffMs: 15_000,
+    ttlMs: 300_000,
+    staleIfErrorMs: 1_800_000,
+    errorBackoffMs: 60_000,
     markHit(value) {
       return { ...value, cached: true };
     },

@@ -8,6 +8,8 @@ const { URL } = require('node:url');
 const { normalizeMarketSymbols, normalizeSymbol, normalizeWatchlistNewsStocks, normalizeWatchlistsPayload } = require('./lib/validation');
 const { createAuthService } = require('./server/auth-service');
 const { createCoverageRepository } = require('./server/coverage-service');
+const { createMarketOverviewService } = require('./server/market-overview-service');
+const { createSettradeProvider } = require('./server/market-overview-providers/settrade');
 const { createMarketService } = require('./server/market-service');
 const { createNewsArchiveService } = require('./server/news-archive-service');
 const { createNewsService } = require('./server/news-service');
@@ -19,7 +21,6 @@ const {
   isTransientProviderError,
   retryWithBackoff
 } = require('./server/reliability');
-const { createSettradeService } = require('./server/settrade-service');
 const { createWatchlistService } = require('./server/watchlist-service');
 
 const ROOT = __dirname;
@@ -125,7 +126,8 @@ const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch }
 const marketService = createMarketService({ fetchImpl: providerFetch });
 const newsService = createNewsService({ fetchImpl: providerFetch });
 const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch });
-const settradeService = createSettradeService({ fetchImpl: providerFetch });
+const settradeProvider = createSettradeProvider({ fetchImpl: providerFetch });
+const marketOverviewService = createMarketOverviewService({ provider: settradeProvider });
 const watchlistService = createWatchlistService({ fetchImpl: providerFetch });
 const newsAnalysisCalls = new Map();
 
@@ -280,14 +282,14 @@ async function handle(req, res) {
     }
     catch (error) { return send(res, 502, { error: error.message, items: [] }); }
   }
-  if (url.pathname === '/api/settrade-overview') {
+  if (url.pathname === '/api/market-overview' || url.pathname === '/api/settrade-overview') {
     try {
       const force = url.searchParams.get('refresh') === '1' && !limited(`refresh:${user.id}`, 3);
-      const result = await settradeService.getOverview(force);
+      const result = await marketOverviewService.getOverview(force);
       observability.markCache(res, result.meta);
       return send(res, 200, result.value);
     } catch (error) {
-      return send(res, 502, { error: 'ดึงข้อมูล SETTRADE ไม่สำเร็จ', detail: error.message });
+      return send(res, 502, { error: 'ดึงข้อมูลภาพรวมตลาดไม่สำเร็จ', detail: error.message });
     }
   }
   if (url.pathname === '/api/market') {
