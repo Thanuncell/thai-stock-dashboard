@@ -1,3 +1,24 @@
+# SETscope v1.5.3 acceptance-candidate verification
+
+- Active execution specification: `v153_v6.docx`, titled SETscope v1.5.3 Market Overview Completion & Reliability FINAL v6. Earlier v1.5.3 documents are historical references only.
+- Source of truth and exact baseline: clean `main` / `origin/main` at `96c65564659982bbff33cfef5542790a39bd5bb3` (merge commit of PR #36). v1.5.2.x through v1.5.2.3 remain closed and frozen.
+- Working branch: `codex/v1.5.3-market-overview`, created directly from that baseline. `main` was not edited and no prior feature branch was merged into it.
+- Baseline full regression passed 131/131 with loopback permission. The v1.5.3 targeted Market Overview, parser, reliability, lifecycle, network-budget, and server-smoke suite passes 53/53. The complete post-change suite passes 146/146, syntax validation passes 25/25, and `git diff --check` passes.
+- The server smoke gate passes 5/5. Partial provider outages keep independently healthy fields and APIs available; the neutral `/api/market-overview` route and compatibility `/api/settrade-overview` route return the same preserved contract.
+- Provider safety verification covers the kill switch, source/page/schema guards, zero-request disabled mode, sequential request spacing, coalescing, the shared manual-refresh budget, 401/403/CAPTCHA hard stop, 429 cooldown, bounded retries, OPEN → HALF_OPEN → ACTIVE recovery, field-level LKG, and parser failure without compensating requests.
+- Market Overview keeps its existing five-minute browser polling cadence and the same five upstream page paths. A normal cache-miss cycle remains five upstream requests before and after; the provider cache now aligns to five minutes, requests are sequential with 250 ms default spacing, and the shared default ceiling is seven attempts per five minutes. Manual refresh cannot bypass the cache or provider safety layer.
+- Most Active and TFEX have semantic structured parsers and SETscope-owned rendering inside the existing cards. They publish only validated values exposed in the normal upstream response; missing or placeholder data stays explicit `UNAVAILABLE` or bounded `LKG`, never fabricated zero/fresh data.
+- Shadow/API comparison defaults OFF and is evidence-only when explicitly configured. A mismatch cannot replace, quarantine, or alter production SETTRADE output in v1.5.3.
+- Chart, Technical, Yahoo Coverage, News, publisher extraction, News Archive, Watchlist, Authentication, Stock Detail, database schema/RLS, environment configuration, scheduler, and production true real-time behavior are unchanged.
+- Existing untracked user documents, CSV files, lockfile, and screenshots remain preserved and excluded.
+- CI and authenticated exact-commit production smoke are pending the reviewable branch commit/deployment gate.
+
+### v1.5.3 rollback readiness
+
+1. Revert the v1.5.3 application commits or redeploy baseline `96c65564659982bbff33cfef5542790a39bd5bb3`.
+2. The legacy `/api/settrade-overview` compatibility route remains available, so rollback requires no client contract migration.
+3. No database migration, RLS change, environment value, secret, provider entitlement, scheduler, polling interval, or production real-time setting was added; there is no data rollback step.
+
 # SETscope v1.5.2 acceptance-candidate verification
 
 - Source of truth and base: latest fetched `origin/main` at `5c58d8a78ad87481dc6d8e2babf1e51e35885b73` (merge commit of PR #30).
