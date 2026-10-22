@@ -1,95 +1,95 @@
 # SETscope
 
-Thai stock dashboard. Run `start.bat` (Node.js 18 or newer is required), then open http://127.0.0.1:4173.
+SETscope is a Thai stock dashboard for market monitoring, charts, technical context, news, and personal Watchlists.
+
+Run `start.bat` with Node.js 18 or newer, then open <http://127.0.0.1:4173>.
 
 ## Development checks
 
-Run `npm test` for deterministic unit, contract, auth, outage, and security regression tests. Run `npm run check` for JavaScript syntax checks. The tests use local fixtures and mocks; they do not call live market-data providers or require production credentials.
-
-Backend HTTP routing and response mapping remain in `server.js`. Provider and persistence boundaries live in `server/`: `auth-service.js`, `watchlist-service.js`, `market-service.js`, `settrade-service.js`, and `news-service.js`. Each service is created through a small factory so tests can inject deterministic fetch behavior without changing the public API.
+Run `npm test` for the regression suite and `npm run check` for JavaScript syntax checks. Tests use local fixtures and mocks; they do not require production credentials or call live market-data providers.
 
 ## Deploy from GitHub
 
-This app needs a small Node.js server to proxy Yahoo Finance and RSS requests. GitHub Pages only serves static files, so use Render's free web service instead. Push this repository to GitHub, sign in to [Render](https://render.com/), create a new Blueprint, and select the repository. Render reads `render.yaml`, builds the Node app, and gives it a public `onrender.com` URL. The free service may sleep after 15 minutes with no incoming traffic and take time to wake; see [Render free-instance limits](https://render.com/docs/free).
+SETscope requires a Node.js web service for authenticated APIs and third-party data requests. GitHub Pages alone is not sufficient. To deploy on Render, push the repository to GitHub, create a Blueprint from the repository, and let Render apply `render.yaml`.
 
-## Authentication setup
+Free Render services may sleep after a period without traffic and can take time to wake. See [Render free-instance limits](https://render.com/docs/free).
 
-Email/password sign-up and sign-in use Supabase Auth; passwords are never stored by this app. Before the dashboard is available, create a Supabase project and set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in Render's Environment settings (use the anon/publishable key, never a service-role or secret key). In Supabase, allow the deployed site's URL as an Auth redirect URL and configure email confirmation. The dashboard data APIs validate each access token with Supabase before returning search, market, or news data. If the variables are missing, the site stays on the setup/login screen and the APIs refuse access.
+## Authentication and Watchlists
 
-The sign-up page requires accepting the Terms and acknowledging the Privacy Notice. Review `terms.html` and `privacy.html`, fill in the real controller/support contact, and verify data retention and provider descriptions before public launch. Watchlists sync across devices for the same Supabase account. To enable this, run `supabase/watchlists.sql` once in Supabase Dashboard > SQL Editor. The table uses row-level security so each account can only read and change its own Watchlists. Alert preferences remain in browser storage.
+Email/password sign-up and sign-in use Supabase Auth; SETscope does not store passwords. Configure these server environment variables before public use:
 
-## Yahoo Finance market data
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY` using the anon/publishable key, never an elevated server secret
 
-The dashboard searches Yahoo Finance's Thai equity results (symbols ending in `.BK`) by company name or ticker, with up to five locally saved watchlists and 30 symbols in each list. The selected list drives the sidebar, watchlist movers, market requests, and alert settings. Watchlists are stored in the browser and the previous single-list data is migrated on first load. The Yahoo Finance search and chart endpoints are undocumented and may change; search coverage follows Yahoo's market-symbol index, so check the SET securities directory if a listed symbol is not returned. Quotes and analysis poll every minute. Yahoo labels Thai stock quotes as delayed; the dashboard discloses an approximately 15-minute delay.
+Allow the deployed URL as a Supabase Auth redirect URL and configure email confirmation. If authentication is not configured, protected dashboard APIs refuse access.
 
-The main chart is rendered by SETscope as an OHLC candlestick chart with volume and selectable SMA 20 / EMA 20, 50, 100, and 200 overlays. Its data comes from Yahoo Finance, not TradingView; Yahoo Finance data for Thai stocks is delayed (the API response currently labels the delay as approximately 15 minutes). The side-panel RSI, MACD, SMA and EMA summary is calculated separately from Yahoo Finance closing prices. The technical panel explains the indicator evidence on each side, calculates nearby swing-low supports and swing-high resistances from the same selected chart timeframe, and describes a condition to monitor. A long EMA is omitted from the vote until enough bars are available. These are approximate levels and educational context, not an instruction to trade. The Technical View stock search changes the active chart only; the selected symbol stays in the search field. Adding to the Watchlist requires the separate add button. The light/dark theme and watchlist are saved in the browser. The watchlist scrolls independently when it has more items than fit on screen.
+Review `terms.html` and `privacy.html`, replace placeholder support/controller details, and verify the described retention and data-provider practices before launch.
 
-The SET Index banner uses Yahoo Finance for price, volume, high, and low. To display the SET market's accumulated trading value in million baht, configure the `SET_API_KEY` environment variable in Render. The backend requests the delayed index endpoint from SET's Market Data API. The value remains unavailable when this key is not configured or the API cannot return it; it is not estimated from volume.
+To synchronize Watchlists across devices, review and apply `supabase/watchlists.sql` once. Row-level security keeps each account's Watchlists isolated. Alert preferences remain stored in the user's browser.
 
-## Coverage truth and preventive data guard (v1.5.2 acceptance candidate)
+## Market data and analysis
 
-Market payloads pass through one server-side data guard before SETscope treats them as usable. The guard validates the requested Yahoo symbol and Thai market identity, finite numeric values, OHLC invariants, non-negative volume, ordered/unique timestamps, future and regular-session stale timestamps, last/close and change consistency, and configurable price-move anomalies. Suspect or quarantined payloads never update the in-memory last-known-good value and never feed RSI, MACD, EMA, support, resistance, mover ranking, or alerts. A context-isolated last-known-good value may be shown only as explicitly stale, with its original `asOf`, for at most 24 hours by default; otherwise the value is unavailable. The guard performs no network request of its own.
+SETscope supports Thai equity search, saved Watchlists, an OHLC candlestick chart with volume, and selectable SMA/EMA overlays. RSI, MACD, moving averages, support, and resistance are calculated from the selected chart data and timeframe.
 
-Guard policy is configurable at the server boundary with `DATA_GUARD_FUTURE_TOLERANCE_MS`, `DATA_GUARD_REGULAR_STALE_MS`, `DATA_GUARD_MAX_PRICE_MOVE_RATIO`, `DATA_GUARD_LAST_KNOWN_TTL_MS`, and `DATA_GUARD_LAST_CLOSE_MISMATCH_RATIO`. These settings change validation thresholds only; they do not enable real-time delivery or add a corroboration provider.
+Market information is validated before being presented as current or used for technical calculations. Invalid or suspect data is not converted into a plausible-looking value. When a previously accepted value is retained temporarily, the interface must identify it as stale or last-known data rather than fresh.
 
-`supabase/coverage.sql` is an additive, service-role-only persistence migration for `security_coverage` and `coverage_runs`. Browser roles and `PUBLIC` receive no direct privileges, RLS is enabled and forced, and no existing Watchlist, News Archive, Auth, or default-privilege object is changed. Apply it only after review. Seed only an authoritative, authorized symbol registry through `COVERAGE_SYMBOLS`; a symbol list, search result, or historical planning number is not proof of working coverage.
+Yahoo Finance identifies Thai market quotes as delayed, commonly by approximately 15 minutes. Its search and chart availability may change, and symbol coverage is not guaranteed to include every SET-listed security. Technical signals and calculated levels are educational context, not investment advice.
 
-The bounded runner is `node scripts/run-coverage-verification.js`:
+To display the SET market's accumulated trading value, configure `SET_API_KEY` in the server environment. If the value cannot be retrieved, SETscope shows it as unavailable rather than estimating it from volume.
 
-- `COVERAGE_BATCH_SIZE` defaults to 125 and is clamped to 1–200.
-- `COVERAGE_CONCURRENCY` defaults to 4 and is clamped to 1–10.
-- Oldest `last_checked_at` values are checked first. Each symbol is isolated, transient failures receive at most one bounded retry, and a completed daily run is idempotent.
-- Current Verified Coverage counts active rows where both `symbol_verified` and `chart_ready` are true. `technical_ready` remains a separate health count.
-- A single transient failure, anomaly, or quarantined payload preserves the prior verified state. A symbol becomes inactive or unsupported only when an adapter supplies explicit confirmed lifecycle evidence.
-- The recommended schedule is once daily around 19:00 Asia/Bangkok (12:00 UTC), configured in the scheduler rather than hard-coded in the application. No production scheduler is created by this repository change because activating new shared/paid infrastructure requires a separate owner decision.
+## Market Overview availability
 
-The authenticated `/api/coverage` summary is cached for five minutes and is requested once, lazily, on the first Chart visit. It has no browser polling and causes no Yahoo request. The UI remains hidden until a completed persisted run exists; it then displays only the verified count, completion time, and Yahoo Finance attribution. A saved summary older than 36 hours is classified stale instead of being relabelled fresh.
+Market Overview presents validated public market information with independent field-level availability. A missing or malformed field must not blank the entire Overview, overwrite a valid value with zero, or affect Chart, Technical, Coverage, News, Watchlist, Authentication, or Stock Detail.
 
-Production gate evidence recorded on 2026-10-18 uses an authorized 191-symbol SET100+sSET registry. The persisted result is Current Verified Coverage 129 and technical-ready 129 after a five-symbol canary plus one bounded 125-symbol batch. One symbol (BANPU) remains `temporary_failed` because invalid numeric rows were quarantined, and 61 symbols remain pending for a later rolling batch. These values are a timestamped audit result, not a hard-coded product limit or a whole-market claim. The daily scheduler remains OFF.
+SET, mai, market breadth, trading summaries, NVDR/foreign activity, Most Active, and TFEX are displayed only when usable structured data is available. Otherwise the affected field or card shows a truthful unavailable or stale state. SETscope does not fabricate missing values.
 
-The owner-approved Production Coverage UI verification deployed commit `9eebefdb5903aa220e1f4be5ae3afbc09356a163` as Render deploy `dep-dbaedhjrjlhs739upt80`. The deploy became live, `/healthz` returned HTTP 200, and the authenticated Chart UI displayed persisted Current Verified Coverage 129, Last Checked 18 Oct 2026 22:24:19 Asia/Bangkok, and Yahoo Finance attribution. Chart, News, Watchlist, Reload, Back/Forward, canonical URL state, and breadcrumb smoke checks passed. Render Auto-Deploy was restored to its original On Commit setting after the smoke test. The branch remains unmerged and the daily Coverage scheduler remains OFF.
+Compatibility with the established Market Overview API is preserved. Source availability and upstream page formats may still change without notice.
 
-For rollback, first disable the external schedule and revert the v1.5.2 application commits; the additive tables can remain safely unused. `supabase/coverage_rollback.sql` is destructive and must only be run manually after a backup and explicit approval. Do not remove the shared server-side Supabase secret solely to disable Coverage because News Archive also uses it; a missing table or completed run already keeps the Coverage UI hidden.
+## Coverage and data reliability
 
-## Real-time readiness (production delivery remains off)
+Coverage is based on completed verification evidence, not the size of a symbol list or a whole-market claim. The Chart workspace displays a Coverage summary only after a persisted verification run exists and clearly distinguishes verified Chart and Technical readiness.
 
-`server/realtime-readiness.js` defines an inactive boundary for a future licensed provider. It separates latest-price, chart, and market-snapshot methods; normalizes provider/source/as-of and delayed/stale/partial state; keeps a bounded in-memory last-known store; coalesces duplicate reads; enforces an in-flight request limit; and exposes an injectable fanout boundary without creating sockets, listeners, timers, queues, or database tables.
+To enable persisted Coverage, review and apply `supabase/coverage.sql`, then provide an authoritative, authorized symbol registry through `COVERAGE_SYMBOLS`. Run `node scripts/run-coverage-verification.js` as a bounded verification job. This repository does not enable a production scheduler automatically; scheduling requires a separate owner decision.
 
-`REALTIME_READY` and `REALTIME_ENABLED` are independent opt-in flags and both default to false. `REALTIME_ENABLED=true` has no effect unless `REALTIME_READY=true`, and the production server does not initialize the readiness runtime or add UI/network activity in this phase. Existing Yahoo Finance behavior remains delayed polling with the same request budget. Disabling the future path is therefore an immediate rollback that leaves the delayed provider unchanged.
+Coverage verification preserves an already verified symbol through an isolated transient failure or anomaly unless there is confirmed lifecycle evidence that the symbol is no longer supported. Suspect data is quarantined and does not feed technical analysis.
 
-Do not connect or enable a live provider until the production Go/No-Go review has separately confirmed data rights and redistribution terms, entitlement enforcement, provider and fanout capacity, monitoring, partial-outage fallback, and operational rollback. Provider credentials must remain server-side and must never enter responses, cache keys, browser code, or logs.
+The production acceptance run recorded on 18 October 2026 verified 129 of the approved 191-symbol registry for both Chart and Technical readiness. One symbol was quarantined because its numeric data failed validation, and 61 symbols remained pending. This is timestamped evidence, not a permanent product limit or a complete-market coverage claim. The daily scheduler remained off.
 
-Alert settings are created only for symbols in the currently selected Watchlist. Users can enable technical signal-change alerts and set an upper or lower price threshold. Alert preferences, state, and recent history are stored in that browser's local storage. The dashboard polls once per minute while the page is open; browser notifications require permission. There is no server-side push or background monitoring after closing the page, and Yahoo's Thai quotes are delayed.
+If Coverage must be disabled, stop its external schedule and revert the related application changes. `supabase/coverage_rollback.sql` is destructive and must only be used after a backup and explicit approval.
+
+## Real-time status and alerts
+
+Production true real-time delivery is off. SETscope continues to use delayed data at its established polling cadence. A live provider must not be enabled until data rights, redistribution terms, entitlements, capacity, monitoring, outage fallback, and rollback have been approved. Provider credentials must remain server-side.
+
+Alerts apply only to symbols in the selected Watchlist. Users can monitor technical signal changes and upper or lower price thresholds while the page is open. There is no server-side push or background monitoring after the page is closed, and browser notifications require permission.
 
 ## News
 
-The news panel reads Google News RSS search feeds and refreshes every 5 minutes. Changing the publisher filter or typing a search uses already loaded data and does not trigger another upstream feed request. Featured News remains limited to the latest 7 days and follows the active source filter. Watchlist News keeps relevant stories from unknown publishers as `other` instead of treating an unknown publisher as an irrelevant story.
+News refreshes every five minutes. Changing a publisher filter or entering a search uses loaded data and does not itself request another upstream feed. Featured News covers the latest seven days and follows the active source filter. Watchlist News keeps relevant stories from unknown publishers under `other` instead of discarding them solely because the publisher is unknown.
 
-The visible broker filter is **โบรกเกอร์**. Broker attribution is separate from the actual publisher, so an InfoQuest, efinance, or other publisher card can remain credited to that publisher while also being discoverable under the broker filter. The initial mapping covers KS, INVX, BLS, FSS, KKPS, KGI, YUANTA, KSS, KTX, and LIB. Acronyms alone are intentionally not treated as attribution.
+The **โบรกเกอร์** filter keeps broker attribution separate from the actual publisher. The supported broker mapping includes KS, INVX, BLS, FSS, KKPS, KGI, YUANTA, KSS, KTX, and LIB. An acronym alone is not treated as sufficient attribution.
 
-### News Archive (up to 365 days)
+### News Archive
 
-Run `supabase/news_archive.sql` once, then set `SUPABASE_SECRET_KEY` only in the Render server environment. The legacy `SUPABASE_SERVICE_ROLE_KEY` remains a temporary server-side fallback, but the current Supabase secret key is preferred. Never place either elevated key in browser code, a URL, source control, or logs. The archive table has RLS enabled and direct `anon`/`authenticated` access revoked; the browser reads it only through the authenticated SETscope API.
+To enable the News Archive, review and apply `supabase/news_archive.sql`, then configure `SUPABASE_SECRET_KEY` only in the server environment. Never place an elevated key in browser code, URLs, source control, or logs. Direct browser access to the archive database is not required; authenticated users access it through the SETscope API.
 
-Each five-minute live refresh performs one existing set of upstream feed reads, then batch-upserts normalized, HTTPS-validated, deduplicated items. It never refetches a full year. Archive reads are server-paginated at 10 items in the UI and capped at 50 items per API request. Retention cleanup runs at most once per day per server process and deletes no more than 500 expired rows per call. The archive is **up to one year and subject to available source data**: it grows from successful incremental ingestion and does not claim historical completeness or backfill content the upstream source cannot provide.
+The archive grows incrementally from successfully received and validated items, retains up to 365 days, and does not claim complete historical coverage. The UI displays 10 items per page, while server responses remain bounded. It does not fetch a full year of upstream news on each refresh.
 
-If archive persistence is not configured or is temporarily unavailable, current 30-day live News remains available and is labelled honestly; missing archive data is not converted to zero or presented as fresh. `supabase/news_archive_rollback.sql` is a destructive manual rollback and should only be used after a backup. The safer application rollback is to revert the archive commit or remove `SUPABASE_SECRET_KEY`, which leaves the additive table intact.
+If archive persistence is unavailable, current live News continues in a truthful degraded mode. `supabase/news_archive_rollback.sql` is destructive and must only be used after a backup and explicit approval.
 
-### Shareable workspace URLs
+## Shareable workspace URLs
 
-The URL is the canonical source for workspace navigation. Reload, Ctrl+F5, bookmarks, and Back/Forward preserve these states:
+The URL is the canonical navigation state. Reload, Ctrl+F5, bookmarks, and Back/Forward preserve supported workspace state, for example:
 
 - `#overview`
 - `?symbol=PTT&range=1M#chart`
 - `?s=PTT&source=infoquest&newsPage=12#news`
 - `?watchlist=list-2&watchPage=4#watchlist`
 
-Only a Watchlist identifier and page are stored in the URL; stock lists, account identifiers, email addresses, tokens, and credentials are never serialized. Invalid or stale parameters are safely replaced with canonical defaults. Auto refresh does not add browser-history entries or change the current page.
+Only a Watchlist identifier and page are stored in the URL. Stock lists, account identifiers, email addresses, tokens, and credentials are never serialized. Invalid or stale parameters fall back to canonical defaults, and automatic refresh does not add history entries or reset the current page.
 
-### News request budget
+## Data and usage limitations
 
-The upstream budget is unchanged: the main News feed and Watchlist News each refresh at the existing five-minute cadence, with server cache/single-flight protection. When the archive is configured, the browser adds one bounded `/api/news-archive` database-page request at News startup/refresh and on archive-page navigation. Source filter clicks may read a different server-side archive page but never initiate a new upstream RSS ingestion. No polling interval is shorter than five minutes.
+Data availability, retention depth, redistribution rights, and update timing depend on third-party providers. Headlines link to publisher stories, and headline sentiment is a lightweight informational hint rather than full-article analysis or investment advice.
 
-Headlines link to the publisher story. A lightweight Thai headline keyword heuristic labels each item positive, negative, or neutral; it marks whether the headline mentions the currently viewed stock. This is a headline-level hint, not full-article sentiment or investment advice. Feed availability, retention depth, redistribution rights, and update timing depend on the publishers and feed service and must be reviewed before public launch.
-
-Technical signals are for educational purposes, not investment advice. Yahoo Finance data must not be presented as real-time for SET: Yahoo classifies it as delayed. Search results are limited to symbols indexed by Yahoo Finance; Yahoo chart data is also an undocumented service.
+Missing, partial, delayed, stale, or rejected data must not be presented as fresh or silently converted to zero. Users should verify important market information with an authorized primary source before making financial decisions.
