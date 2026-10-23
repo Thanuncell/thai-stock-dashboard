@@ -141,7 +141,7 @@ test('missing market values remain unavailable instead of becoming zero', () => 
   assert.deepEqual(validZero, { up: 0, down: 0, comparable: true });
 });
 
-test('Market Overview banner keeps validated Overview fields ahead of a later market response', () => {
+test('Market Overview banner keeps one validated SETTRADE index snapshot after a later market response', () => {
   const resolved = domain.resolveMarketBannerFields({
     symbol: 'SET', last: 1546.05, change: -8.89, changePercent: -0.57,
     volumeThousand: 9921584, high: 1563.04, low: 1532.71, turnoverMillion: 43861.21
@@ -150,12 +150,12 @@ test('Market Overview banner keeps validated Overview fields ahead of a later ma
     volume: null, high: null, low: null, turnoverMillionBaht: null
   });
 
-  assert.equal(resolved.index.last, 1546.1);
+  assert.equal(resolved.index.last, 1546.05);
   assert.equal(resolved.volumeThousand, 9921584);
   assert.deepEqual([resolved.high, resolved.low], [1563.04, 1532.71]);
   assert.equal(resolved.turnoverMillion, 43861.21);
   assert.deepEqual(resolved.sources, {
-    index: 'market', volume: 'overview', range: 'overview', turnover: 'overview'
+    index: 'overview', volume: 'overview', range: 'overview', turnover: 'overview'
   });
 });
 
@@ -167,8 +167,9 @@ test('Market Overview banner converts valid raw-share fallback volume to thousan
   assert.equal(fallback.volumeThousand, 1234567);
   assert.equal(fallback.turnoverMillion, 45678.9);
   assert.deepEqual(fallback.sources, {
-    index: 'market', volume: 'market', range: 'market', turnover: 'market'
+    index: null, volume: 'market', range: 'market', turnover: 'market'
   });
+  assert.equal(fallback.index, null);
 
   const unavailable = domain.resolveMarketBannerFields({}, {
     symbol: 'SET', guardStatus: 'accepted', last: 1500, prior: 1490,
@@ -178,6 +179,41 @@ test('Market Overview banner converts valid raw-share fallback volume to thousan
   assert.equal(unavailable.high, null);
   assert.equal(unavailable.low, null);
   assert.equal(unavailable.turnoverMillion, null);
+  assert.equal(unavailable.index, null);
+});
+
+test('Market Overview banner keeps truthful LKG or unavailable SETTRADE index state without Yahoo substitution', () => {
+  const yahoo = {
+    symbol: 'SET', guardStatus: 'accepted', last: 1498.25, prior: 1490,
+    volume: 1000000, high: 1510, low: 1480, turnoverMillionBaht: 45000
+  };
+  const savedSettrade = { symbol: 'SET', last: 1502.75, change: -1.25, changePercent: -0.08 };
+  const lkg = domain.resolveMarketBannerFields(savedSettrade, yahoo);
+
+  assert.equal(lkg.index.last, 1502.75);
+  assert.equal(lkg.sources.index, 'overview');
+  const savedAt = '2026-10-23T07:30:00.000Z';
+  const refreshedAt = '2026-10-23T08:00:00.000Z';
+  const lkgStatus = domain.marketOverviewStatus({
+    fetchedAt: refreshedAt,
+    dataState: 'stale',
+    fieldStatus: { indices: { state: 'LKG', stale: true, asOf: savedAt } }
+  });
+  assert.match(lkgStatus, /ข้อมูลที่บันทึกล่าสุด \(LKG\)$/);
+  assert.ok(lkgStatus.includes(domain.stamp(savedAt)));
+  assert.ok(!lkgStatus.includes(domain.stamp(refreshedAt)));
+
+  const passAt = '2026-10-23T07:59:00.000Z';
+  const passStatus = domain.marketOverviewStatus({
+    fetchedAt: refreshedAt,
+    dataState: 'delayed',
+    fieldStatus: { indices: { state: 'PASS', asOf: passAt } }
+  });
+  assert.ok(passStatus.includes(domain.stamp(passAt)));
+
+  const expired = domain.resolveMarketBannerFields(null, yahoo);
+  assert.equal(expired.index, null);
+  assert.equal(expired.sources.index, null);
 });
 
 test('Market Overview freshness label distinguishes current, partial and LKG data', () => {

@@ -106,7 +106,6 @@ export function resolveMarketBannerFields(overviewIndex, marketIndex) {
     return high !== null && low !== null && high >= low ? { high, low } : null;
   };
 
-  const marketAccepted = market.guardStatus === 'accepted' && positive(market.last) !== null;
   const overviewAccepted = positive(overview.last) !== null;
   const overviewVolume = nonNegative(overview.volumeThousand);
   const marketRawVolume = nonNegative(market.volume);
@@ -115,13 +114,13 @@ export function resolveMarketBannerFields(overviewIndex, marketIndex) {
   const marketTurnover = nonNegative(market.turnoverMillionBaht);
 
   return {
-    index: marketAccepted ? market : overviewAccepted ? overview : null,
+    index: overviewAccepted ? overview : null,
     volumeThousand: overviewVolume ?? (marketRawVolume === null ? null : marketRawVolume / 1000),
     high: (overviewRange || marketRange)?.high ?? null,
     low: (overviewRange || marketRange)?.low ?? null,
     turnoverMillion: overviewTurnover ?? marketTurnover,
     sources: {
-      index: marketAccepted ? 'market' : overviewAccepted ? 'overview' : null,
+      index: overviewAccepted ? 'overview' : null,
       volume: overviewVolume !== null ? 'overview' : marketRawVolume !== null ? 'market' : null,
       range: overviewRange ? 'overview' : marketRange ? 'market' : null,
       turnover: overviewTurnover !== null ? 'overview' : marketTurnover !== null ? 'market' : null
@@ -131,10 +130,14 @@ export function resolveMarketBannerFields(overviewIndex, marketIndex) {
 
 export function marketOverviewStatus(data = {}) {
   const fieldStates = Object.values(data.fieldStatus || {});
+  const indexStatus = data.fieldStatus?.indices;
+  const indexAsOf = ['PASS', 'LKG'].includes(indexStatus?.state) ? indexStatus.asOf : null;
   const usesLkg = data.dataState === 'stale' || data.stale
     || fieldStates.some(field => field?.state === 'LKG' || field?.stale);
-  const suffix = usesLkg ? ' · ข้อมูลที่บันทึกล่าสุด (LKG)' : '';
-  return `แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: ${stamp(data.fetchedAt || data.asOf)}${suffix}`;
+  const partial = data.dataState === 'partial' || Boolean(data.errors?.length)
+    || fieldStates.some(field => field?.state === 'UNAVAILABLE');
+  const suffix = usesLkg ? ' · ข้อมูลที่บันทึกล่าสุด (LKG)' : partial ? ' · บางส่วนไม่พร้อม' : '';
+  return `แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: ${stamp(indexAsOf || data.fetchedAt || data.asOf)}${suffix}`;
 }
 
 export function quoteChange(last, prior) {

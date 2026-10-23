@@ -248,6 +248,14 @@ test('Most Active LKG rows are labelled as saved data without consuming extra re
   assert.equal(stale.fieldStatus.indices.state, 'PASS');
   assert.match(stale.activeValueStatus, /บันทึกล่าสุด/);
   assert.doesNotMatch(stale.activeValueStatus, /ข้อมูลล่าสุด/);
+
+  now = 1_000 + 1_800_001;
+  const expired = (await service.getOverview()).value;
+  assert.equal(calls, 15);
+  assert.equal(expired.fieldStatus.activeValue.state, 'UNAVAILABLE');
+  assert.deepEqual(expired.activeValue, []);
+  assert.equal(expired.fieldStatus.indices.state, 'PASS');
+  assert.doesNotMatch(expired.activeValueStatus, /ข้อมูลล่าสุด|บันทึกล่าสุด/);
 });
 
 test('complete scraper failure returns an Overview-safe degraded contract instead of throwing', async () => {
