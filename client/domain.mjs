@@ -133,9 +133,7 @@ export function marketOverviewStatus(data = {}) {
   const fieldStates = Object.values(data.fieldStatus || {});
   const usesLkg = data.dataState === 'stale' || data.stale
     || fieldStates.some(field => field?.state === 'LKG' || field?.stale);
-  const partial = data.dataState === 'partial' || Boolean(data.errors?.length)
-    || fieldStates.some(field => field?.state === 'UNAVAILABLE');
-  const suffix = usesLkg ? ' · ข้อมูลที่บันทึกล่าสุด (LKG)' : partial ? ' · บางส่วนไม่พร้อม' : '';
+  const suffix = usesLkg ? ' · ข้อมูลที่บันทึกล่าสุด (LKG)' : '';
   return `แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: ${stamp(data.fetchedAt || data.asOf)}${suffix}`;
 }
 

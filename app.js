@@ -37,6 +37,8 @@ const $ = selector => document.querySelector(selector);
 const apiFetch = (url, options) => window.setscopeAuth.authorizedFetch(url, options);
 const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+const wholeNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+  ? Number(value).toLocaleString('th-TH', { maximumFractionDigits: 0 }) : '—';
 const marketRequestSequence = createRequestSequence();
 const NAVIGATION_FALLBACK_KEY = 'setscope-navigation-fallback-v1';
 const navigationFallback = (() => {
@@ -98,6 +100,9 @@ let unreadAlerts = 0;
 let watchlistCloudReady = false;
 let watchlistSyncTimer = null;
 let watchlistSyncChain = Promise.resolve();
+let watchlistQuery = '';
+let watchlistCollapsed = false;
+const workspaceScrollPositions = new Map();
 
 function setWatchlistSyncStatus(text, state = '') {
   ['#watchlist-sync-status', '#watchlist-sync-status-mobile'].forEach(selector => {
@@ -131,6 +136,8 @@ function syncNavigationControls() {
 }
 function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   if (!workspaceRoutes[page]) page = 'overview';
+  const previousPage = document.body.dataset.workspacePage;
+  if (scroll && previousPage && previousPage !== page) workspaceScrollPositions.set(previousPage, window.scrollY);
   const visible = new Set(workspaceRoutes[page].nodes);
   ['#market-overview', '#market-data-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page'].forEach(selector => {
     const node = $(selector); if (node) node.classList.toggle('workspace-hidden', !visible.has(selector));
@@ -148,7 +155,10 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   setText('#breadcrumb-current', heading.breadcrumb);
   if (page === 'chart') getCoverageSummary();
   if (historyMode !== 'none') writeNavigation(historyMode, page);
-  if (scroll) window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (scroll && previousPage !== page) {
+    const top = workspaceScrollPositions.get(page) || 0;
+    requestAnimationFrame(() => window.scrollTo({ top, behavior: 'auto' }));
+  }
 }
 let lastRestoredLocation = '';
 function restoreNavigationFromLocation() {
@@ -304,7 +314,7 @@ function renderMarketBanner() {
   } else {
     setText('#set-index', '—');
   }
-  setText('#set-volume', number(resolved.volumeThousand));
+  setText('#set-volume', wholeNumber(resolved.volumeThousand));
   setText('#set-range', resolved.high === null || resolved.low === null ? '—' : `${number(resolved.high)} / ${number(resolved.low)}`);
   setText('#set-turnover', number(resolved.turnoverMillion));
   $('#set-volume').title = resolved.sources.volume === 'overview'
@@ -354,7 +364,7 @@ function renderSettradeOverview(data) {
   }
   $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<div class="market-breadth-group"><b>${escapeHtml(group.market)}</b>${(group.items || []).map(item => {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
-    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${number(item.volumeThousand)} พันหุ้น</small></div>`;
+    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>ปริมาณซื้อขาย ('000) ${number(item.volumeThousand)}</small></div>`;
   }).join('')}</div>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
   setText('#market-close-summary', data.closeSummary || 'ยังไม่มีสรุปภาวะตลาดรอบนี้');
   const nvdr = data.nvdr || {};
@@ -386,7 +396,7 @@ async function getSettradeOverview(force = false) {
   const button = $('#refresh-market-data');
   if (button?.disabled) return;
   if (button) { button.disabled = true; button.classList.add('is-loading'); button.textContent = 'กำลังอัปเดต…'; }
-  setText('#settrade-updated', 'กำลังดึงข้อมูลจาก SETTRADE…');
+  setText('#settrade-updated', 'กำลังอัปเดตข้อมูลจาก SETTRADE...');
   try {
     const response = await apiFetch(`/api/market-overview${force ? '?refresh=1' : ''}`);
     const data = await response.json();
@@ -394,7 +404,7 @@ async function getSettradeOverview(force = false) {
     renderSettradeOverview(data);
   } catch (error) {
     console.warn('SETTRADE overview refresh failed', error);
-    setText('#settrade-updated', 'ดึงข้อมูลไม่สำเร็จ · ตรวจสอบข้อมูลโดยตรงที่ SETTRADE');
+    setText('#settrade-updated', 'อัปเดตข้อมูลไม่สำเร็จ');
   } finally {
     if (button) { button.disabled = false; button.classList.remove('is-loading'); button.textContent = '↻ อัปเดตข้อมูลตลาด'; }
   }
@@ -408,22 +418,47 @@ function updateWatchlistAddButton() {
   button.textContent = saved ? 'ติดตามแล้ว' : '＋ เพิ่มเข้า Watchlist';
 }
 
+function watchlistItemNode(item, quote) {
+  const quoteState = quote?.dataState;
+  const quoteStateText = quoteState === 'stale' ? 'ข้อมูลเก่า' : quoteState === 'suspect' || quoteState === 'quarantined' ? 'ข้อมูลต้องสงสัย' : '';
+  const change = quote ? Number(quote.last) - Number(quote.prior) : null;
+  const percent = quote && Number(quote.prior) ? change / Number(quote.prior) * 100 : null;
+  const template = document.createElement('template');
+  template.innerHTML = `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name || item.symbol)}">
+    <div class="watch-details"><span class="watch-symbol">${escapeHtml(item.symbol)}</span><span class="watch-name">${escapeHtml(item.name || item.symbol)}</span></div>
+    <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}${quoteStateText ? `<span class="watch-data-state">${quoteStateText}</span>` : ''}</div>
+    <button class="watch-remove" type="button" data-remove="${escapeHtml(item.symbol)}" aria-label="ลบ ${escapeHtml(item.symbol)}" title="นำออกจากรายการ">×</button>
+  </div>`;
+  const node = template.content.firstElementChild;
+  node.dataset.renderKey = JSON.stringify([item.symbol, item.name, activeSymbol, quote?.last, quote?.prior, quoteState]);
+  return node;
+}
+
+function patchWatchlistRoot(root, items, bySymbol) {
+  if (!root) return;
+  const scrollTop = root.scrollTop;
+  const existing = new Map([...root.querySelectorAll(':scope > .watch-item')].map(node => [node.dataset.sym, node]));
+  const nodes = items.map(item => {
+    const next = watchlistItemNode(item, bySymbol[item.symbol]);
+    const current = existing.get(item.symbol);
+    return current?.dataset.renderKey === next.dataset.renderKey ? current : next;
+  });
+  if (!nodes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'watch-empty';
+    empty.textContent = watchlist.length ? 'ไม่พบหุ้นที่ตรงกับคำค้น' : 'ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist';
+    nodes.push(empty);
+  }
+  root.replaceChildren(...nodes);
+  root.scrollTop = scrollTop;
+}
+
 function renderWatchlist(rows = []) {
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
-  const markup = watchlist.length ? watchlist.map(item => {
-    const quote = bySymbol[item.symbol];
-    const quoteState = quote?.dataState;
-    const quoteStateText = quoteState === 'stale' ? 'ข้อมูลเก่า' : quoteState === 'suspect' || quoteState === 'quarantined' ? 'ข้อมูลต้องสงสัย' : '';
-    const change = quote ? Number(quote.last) - Number(quote.prior) : null;
-    const percent = quote && Number(quote.prior) ? change / Number(quote.prior) * 100 : null;
-    return `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name || item.symbol)}">
-      <div class="watch-details"><span class="watch-symbol">${escapeHtml(item.symbol)}</span><span class="watch-name">${escapeHtml(item.name || item.symbol)}</span></div>
-      <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}${quoteStateText ? `<span class="watch-data-state">${quoteStateText}</span>` : ''}</div>
-      <button class="watch-remove" type="button" data-remove="${escapeHtml(item.symbol)}" aria-label="ลบ ${escapeHtml(item.symbol)}" title="นำออกจากรายการ">×</button>
-    </div>`;
-  }).join('') : '<div class="watch-empty">ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist</div>';
-  $('#watchlist').innerHTML = markup;
-  $('#watchlist-mobile').innerHTML = markup;
+  const normalizedQuery = watchlistQuery.trim().toLocaleLowerCase('th');
+  const visibleItems = normalizedQuery ? watchlist.filter(item => `${item.symbol} ${item.name || ''}`.toLocaleLowerCase('th').includes(normalizedQuery)) : watchlist;
+  patchWatchlistRoot($('#watchlist'), watchlist, bySymbol);
+  patchWatchlistRoot($('#watchlist-mobile'), visibleItems, bySymbol);
   renderWatchlistPicker();
   setText('.nav-count', String(watchlist.length));
   setText('#watch-metric', String(watchlist.length));
@@ -1208,9 +1243,10 @@ function renderNewsItemsInto(root, items, emptyText) {
 function watchlistEmptyText() {
   return watchlist.length ? 'ยังไม่มีข่าวของหุ้นในรายการติดตาม' : 'ยังไม่มีหุ้นในรายการติดตาม';
 }
-function scrollPageToTop() {
+function scrollToSection(selector) {
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+  const target = $(selector);
+  target?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
 }
 function renderWatchlistNews() {
   const root = $('#watchlist-news-list');
@@ -1220,7 +1256,7 @@ function renderWatchlistNews() {
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
-    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollPageToTop();
+    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToSection('#watchlist-news-list');
   });
 }
 function renderPagerInto(bar, current, total, count, onPick) {
@@ -1274,7 +1310,7 @@ function renderNews() {
   renderPagerInto($('#news-pager'), displayPage, total, availableCount, async page => {
     newsPage = page; writeNavigation('push', 'news');
     if (archiveConfigured) await getArchiveNews({ page }); else renderNews();
-    scrollPageToTop();
+    scrollToSection('#news-list');
   });
   const counter = $('#news-count');
   if (counter) counter.textContent = query ? `พบ ${archiveLoaded ? archiveTotal : all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
@@ -1341,6 +1377,17 @@ async function setup() {
   $('#watchlist-create')?.addEventListener('click', createWatchlist);
   $('#watchlist-create-mobile')?.addEventListener('click', createWatchlist);
   ['#watchlist-rename', '#watchlist-rename-mobile'].forEach(selector => $(selector)?.addEventListener('click', renameActiveWatchlist));
+  $('#watchlist-search')?.addEventListener('input', event => {
+    watchlistQuery = event.target.value;
+    renderWatchlist(latestMarket?.stocks || []);
+  });
+  $('#watchlist-toggle')?.addEventListener('click', event => {
+    watchlistCollapsed = !watchlistCollapsed;
+    $('#watchlist-page')?.classList.toggle('watchlist-collapsed', watchlistCollapsed);
+    event.currentTarget.setAttribute('aria-expanded', String(!watchlistCollapsed));
+    event.currentTarget.textContent = watchlistCollapsed ? 'ขยายรายการ' : 'ย่อรายการ';
+  });
+  $('#watchlist-news-jump')?.addEventListener('click', () => scrollToSection('#watchlist-news-list'));
   $('#mover-list').addEventListener('click', event => { const row = event.target.closest('[data-mover-symbol]'); if (row) selectStock(row.dataset.moverSymbol, row.dataset.moverName); });
   document.querySelectorAll('.movers-tabs button').forEach((button, index) => button.addEventListener('click', () => {
     document.querySelectorAll('.movers-tabs button').forEach(item => item.classList.remove('selected'));

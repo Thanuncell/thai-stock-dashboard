@@ -187,7 +187,7 @@ test('Market Overview freshness label distinguishes current, partial and LKG dat
   assert.doesNotMatch(fresh, /LKG|บางส่วนไม่พร้อม/);
 
   const partial = domain.marketOverviewStatus({ fetchedAt, dataState: 'partial', fieldStatus: {} });
-  assert.match(partial, /บางส่วนไม่พร้อม$/);
+  assert.doesNotMatch(partial, /บางส่วนไม่พร้อม/);
 
   const lkg = domain.marketOverviewStatus({ fetchedAt, dataState: 'partial', fieldStatus: { nvdr: { state: 'LKG' } } });
   assert.match(lkg, /ข้อมูลที่บันทึกล่าสุด \(LKG\)$/);
