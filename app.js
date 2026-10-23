@@ -5,10 +5,12 @@ import {
   THAI_NAMES,
   analyseTechnicals,
   alignIndicatorSeries,
+  chartPriceAxis,
   chartGeometry,
   computeEma,
   computeSmaSeries,
   createRequestSequence,
+  defaultChartViewport,
   escapeHtml,
   findPriceLevels,
   mergeWatchlists,
@@ -16,6 +18,8 @@ import {
   navigationUrl,
   newsKey,
   normalizeLists,
+  normalizeChartViewport,
+  panChartViewport,
   pageList,
   parseNavigationState,
   quoteChange,
@@ -25,7 +29,8 @@ import {
   sentimentHeadline,
   stamp,
   summarizeBreadth,
-  toFiniteNumber
+  toFiniteNumber,
+  zoomChartViewport
 } from './client/domain.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -79,6 +84,12 @@ let chartLoadState = 'loading';
 let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
 let chartResizeTimer = null;
 let chartCssFullscreen = false;
+let chartViewport = null;
+let chartViewportKey = '';
+let chartRowCount = 0;
+const chartPointers = new Map();
+let chartGesture = null;
+let chartRenderFrame = null;
 let coverageSummaryRequested = false;
 let alertPrefs = readLocal('setscope-alert-prefs', {});
 let alertStates = readLocal('setscope-alert-states', {});
@@ -448,8 +459,8 @@ function setTechnicalPanelState(state) {
 function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indicatorBars = bars, dataState = 'delayed') {
   const host = $('#stock-price-chart');
   if (!host) return;
-  const rows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
-  if (!rows.length) {
+  const allRows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
+  if (!allRows.length) {
     const isError = chartLoadState === 'error';
     const isUnavailable = chartLoadState === 'unavailable';
     const message = chartLoadMessage || (isUnavailable ? 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้' : isError ? 'โหลดข้อมูลไม่สำเร็จ' : 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
@@ -460,12 +471,21 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   }
   const calculationRows = (indicatorBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
   const analysis = analyseTechnicals(calculationRows, levelBars);
-  const alignToChart = values => alignIndicatorSeries(calculationRows, values, rows);
-  const macdSeries = analysis ? alignToChart(analysis.macdSeries) : [];
-  const signalSeries = analysis ? alignToChart(analysis.signalSeries) : [];
-  const macdHistogram = analysis ? alignToChart(analysis.macdHistogram) : [];
-  const showMacd = chartIndicators.has('macd') && macdSeries.some(Number.isFinite);
   const hostWidth = Math.max(320, Math.floor(host.clientWidth || host.parentElement?.clientWidth || 640));
+  const viewportKey = `${activeSymbol}:${currentRange}`;
+  if (chartViewportKey !== viewportKey) {
+    chartViewportKey = viewportKey;
+    chartViewport = defaultChartViewport({ rowCount: allRows.length, hostWidth, range: currentRange });
+  } else {
+    chartViewport = normalizeChartViewport(chartViewport, allRows.length, { hostWidth, range: currentRange });
+  }
+  chartRowCount = allRows.length;
+  const rows = allRows.slice(chartViewport.start, chartViewport.end);
+  const alignToVisibleChart = values => alignIndicatorSeries(calculationRows, values, allRows).slice(chartViewport.start, chartViewport.end);
+  const macdSeries = analysis ? alignToVisibleChart(analysis.macdSeries) : [];
+  const signalSeries = analysis ? alignToVisibleChart(analysis.signalSeries) : [];
+  const macdHistogram = analysis ? alignToVisibleChart(analysis.macdHistogram) : [];
+  const showMacd = chartIndicators.has('macd') && macdSeries.some(Number.isFinite);
   const geometry = chartGeometry({ rowCount: rows.length, hostWidth, range: currentRange });
   const { left, right, width, plotWidth, step, candleWidth, x } = geometry;
   const top = 22;
@@ -473,24 +493,20 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   const priceBottom = 280, volumeBottom = 340, macdTop = 375, macdBottom = 475;
   const closes = rows.map(row => Number(row.close));
   const calculationCloses = calculationRows.map(row => Number(row.close));
-  const smaValues = alignToChart(computeSmaSeries(calculationCloses, 20));
+  const smaValues = alignToVisibleChart(computeSmaSeries(calculationCloses, 20));
   const indicatorSeries = [
     ['sma20', smaValues, 'sma20-chart-line'],
-    ['ema20', alignToChart(computeEma(calculationCloses, 20)), 'ema20-chart-line'],
-    ['ema50', alignToChart(computeEma(calculationCloses, 50)), 'ema50-chart-line'],
-    ['ema100', alignToChart(computeEma(calculationCloses, 100)), 'ema100-chart-line'],
-    ['ema200', alignToChart(computeEma(calculationCloses, 200)), 'ema200-chart-line']
+    ['ema20', alignToVisibleChart(computeEma(calculationCloses, 20)), 'ema20-chart-line'],
+    ['ema50', alignToVisibleChart(computeEma(calculationCloses, 50)), 'ema50-chart-line'],
+    ['ema100', alignToVisibleChart(computeEma(calculationCloses, 100)), 'ema100-chart-line'],
+    ['ema200', alignToVisibleChart(computeEma(calculationCloses, 200)), 'ema200-chart-line']
   ];
-  const chartLevels = analysis?.levels || findPriceLevels(levelBars, closes.at(-1));
-  const levelDetails = [...chartLevels.supportDetails, ...chartLevels.resistanceDetails];
-  const scaleValues = [
-    ...rows.flatMap(row => [Number(row.low), Number(row.high)]),
-    ...indicatorSeries.filter(([key]) => chartIndicators.has(key)).flatMap(([, values]) => values.filter(Number.isFinite)),
-    ...levelDetails.map(item => item.value)
-  ].filter(Number.isFinite);
-  const minPrice = Math.min(...scaleValues), maxPrice = Math.max(...scaleValues);
-  const pad = Math.max((maxPrice - minPrice) * .08, maxPrice * .003, .01);
-  const min = minPrice - pad, max = maxPrice + pad, span = max - min || 1;
+  const chartLevels = analysis?.levels || findPriceLevels(levelBars, Number(allRows.at(-1)?.close));
+  const indicatorValues = indicatorSeries.filter(([key]) => chartIndicators.has(key)).flatMap(([, values]) => values.filter(Number.isFinite));
+  const axis = chartPriceAxis(rows, indicatorValues);
+  const min = axis.min, max = axis.max, span = max - min || 1;
+  const levelDetails = [...chartLevels.supportDetails, ...chartLevels.resistanceDetails]
+    .filter(item => Number(item.value) >= min && Number(item.value) <= max);
   const y = value => top + (max - value) / span * (priceBottom - top);
   const volumeMax = Math.max(...rows.map(row => toFiniteNumber(row.volume)).filter(value => value !== null && value >= 0), 1);
   const grid = Array.from({ length: 5 }, (_, index) => {
@@ -549,6 +565,76 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
 function scheduleChartRedraw() {
   clearTimeout(chartResizeTimer);
   chartResizeTimer = setTimeout(updateTradingViewChart, 180);
+}
+
+function queueChartViewportRender() {
+  if (chartRenderFrame !== null) return;
+  chartRenderFrame = requestAnimationFrame(() => {
+    chartRenderFrame = null;
+    updateTradingViewChart();
+  });
+}
+
+function setChartZoom(factor, anchorRatio = .5) {
+  if (!chartRowCount) return;
+  chartViewport = zoomChartViewport(chartViewport, chartRowCount, factor, anchorRatio);
+  queueChartViewportRender();
+}
+
+function resetChartViewport() {
+  chartViewport = null;
+  chartViewportKey = '';
+  updateTradingViewChart();
+}
+
+function beginChartGesture() {
+  const points = [...chartPointers.values()];
+  if (points.length >= 2) {
+    const [first, second] = points;
+    chartGesture = {
+      type: 'pinch',
+      distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+      viewport: { ...chartViewport }
+    };
+  } else if (points.length === 1) {
+    chartGesture = { type: 'pan', x: points[0].x, viewport: { ...chartViewport } };
+  }
+}
+
+function setupChartGestures() {
+  const host = $('#stock-price-chart');
+  if (!host) return;
+  host.addEventListener('pointerdown', event => {
+    chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    host.setPointerCapture?.(event.pointerId);
+    beginChartGesture();
+  });
+  host.addEventListener('pointermove', event => {
+    if (!chartPointers.has(event.pointerId) || !chartRowCount) return;
+    chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const points = [...chartPointers.values()];
+    if (points.length >= 2) {
+      if (chartGesture?.type !== 'pinch') beginChartGesture();
+      const [first, second] = points;
+      const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+      const bounds = host.getBoundingClientRect();
+      const midpoint = (first.x + second.x) / 2;
+      const anchor = bounds.width ? (midpoint - bounds.left) / bounds.width : .5;
+      chartViewport = zoomChartViewport(chartGesture.viewport, chartRowCount, chartGesture.distance / distance, anchor);
+    } else if (points.length === 1 && chartGesture?.type === 'pan') {
+      const span = Math.max(1, chartGesture.viewport.end - chartGesture.viewport.start);
+      const pixelsPerBar = Math.max(1, host.clientWidth / span);
+      chartViewport = panChartViewport(chartGesture.viewport, chartRowCount, -(points[0].x - chartGesture.x) / pixelsPerBar);
+    }
+    event.preventDefault();
+    queueChartViewportRender();
+  }, { passive: false });
+  const finish = event => {
+    chartPointers.delete(event.pointerId);
+    if (chartPointers.size) beginChartGesture(); else chartGesture = null;
+  };
+  host.addEventListener('pointerup', finish);
+  host.addEventListener('pointercancel', finish);
 }
 
 function updateFullscreenControl() {
@@ -1300,6 +1386,10 @@ async function setup() {
     updateTradingViewChart();
   });
   $('#chart-fullscreen')?.addEventListener('click', toggleChartFullscreen);
+  $('#chart-zoom-in')?.addEventListener('click', () => setChartZoom(.8));
+  $('#chart-zoom-out')?.addEventListener('click', () => setChartZoom(1.25));
+  $('#chart-reset')?.addEventListener('click', resetChartViewport);
+  setupChartGestures();
   $('#stock-price-chart')?.addEventListener('click', event => {
     if (event.target.closest('[data-chart-retry]')) getMarket();
   });

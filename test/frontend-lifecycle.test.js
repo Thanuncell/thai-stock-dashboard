@@ -82,6 +82,24 @@ test('responsive chart CSS does not override calculated viewport width with a fi
   assert.doesNotMatch(styleSource, /\.price-chart-svg\{[^}]*min-width:(?:660|720)px/);
 });
 
+test('chart viewport controls and cached gestures are single-shot and add no provider request', () => {
+  assert.match(indexSource, /id="chart-zoom-out"/);
+  assert.match(indexSource, /id="chart-zoom-in"/);
+  assert.match(indexSource, /id="chart-reset"/);
+  assert.match(styleSource, /#stock-price-chart\{touch-action:none/);
+  assert.equal((appSource.match(/setupChartGestures\(\);/g) || []).length, 1);
+  assert.equal((appSource.match(/host\.addEventListener\('pointerdown'/g) || []).length, 1);
+  assert.equal((appSource.match(/host\.addEventListener\('pointermove'/g) || []).length, 1);
+  const viewportControls = appSource.match(/function setChartZoom[\s\S]*?function beginChartGesture/)?.[0] || '';
+  const gestures = appSource.match(/function setupChartGestures[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(viewportControls, /zoomChartViewport/);
+  assert.match(gestures, /panChartViewport/);
+  assert.doesNotMatch(viewportControls, /getMarket\(|apiFetch\(/);
+  assert.doesNotMatch(gestures, /getMarket\(|apiFetch\(/);
+  assert.match(appSource, /allRows\.slice\(chartViewport\.start, chartViewport\.end\)/);
+  assert.match(appSource, /chartPriceAxis\(rows, indicatorValues\)/);
+});
+
 test('News pagers preserve state and scroll the page to top with reduced-motion support', () => {
   assert.match(appSource, /window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
   assert.match(appSource, /window\.scrollTo\(\{ top: 0, behavior: reduceMotion \? 'auto' : 'smooth' \}\)/);

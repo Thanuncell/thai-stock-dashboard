@@ -15,6 +15,34 @@ test('dense intraday chart geometry stays within the viewport and preserves orde
   assert.ok(geometry.x(291) <= geometry.width - geometry.right);
 });
 
+test('chart viewport defaults to a useful latest window without changing the dataset', () => {
+  assert.deepEqual(domain.defaultChartViewport({ rowCount: 200, hostWidth: 390, range: '1D' }), {
+    start: 158, end: 200, followLatest: true
+  });
+  assert.deepEqual(domain.defaultChartViewport({ rowCount: 8, hostWidth: 390, range: '1D' }), {
+    start: 0, end: 8, followLatest: true
+  });
+});
+
+test('chart zoom preserves its anchor and pan remains bounded in cached rows', () => {
+  const initial = { start: 100, end: 150, followLatest: false };
+  const zoomed = domain.zoomChartViewport(initial, 200, .5, .5);
+  assert.deepEqual(zoomed, { start: 113, end: 138, followLatest: false });
+  assert.deepEqual(domain.panChartViewport(zoomed, 200, -999), { start: 0, end: 25, followLatest: false });
+  assert.deepEqual(domain.panChartViewport(zoomed, 200, 999), { start: 175, end: 200, followLatest: true });
+});
+
+test('adaptive price axis uses only visible valid values and does not invent missing prices', () => {
+  const axis = domain.chartPriceAxis([
+    { low: 98, high: 103 },
+    { low: 99, high: 104 },
+    { low: null, high: undefined }
+  ], [100, null]);
+  assert.equal(axis.min, 97.52);
+  assert.equal(axis.max, 104.48);
+  assert.equal(domain.chartPriceAxis([{ low: null, high: null }]), null);
+});
+
 test('workspace routing preserves canonical and legacy hashes', () => {
   assert.equal(domain.pageFromHash('#overview'), 'overview');
   assert.equal(domain.pageFromHash('#chart-section'), 'chart');

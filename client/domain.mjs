@@ -25,6 +25,62 @@ export function chartGeometry({ rowCount = 0, hostWidth = 640 } = {}) {
   return { width, left, right, plotWidth, step, candleWidth, x: index => left + step * index + step / 2 };
 }
 
+export function defaultChartViewport({ rowCount = 0, hostWidth = 640, range = '1D' } = {}) {
+  const total = Math.max(0, Number.parseInt(rowCount, 10) || 0);
+  if (!total) return { start: 0, end: 0, followLatest: true };
+  const compact = Number(hostWidth) < 520;
+  const preferred = range === '1Y' ? (compact ? 56 : 90) : compact ? 42 : 68;
+  const visible = Math.min(total, Math.max(12, preferred));
+  return { start: total - visible, end: total, followLatest: true };
+}
+
+export function normalizeChartViewport(viewport, rowCount, options = {}) {
+  const total = Math.max(0, Number.parseInt(rowCount, 10) || 0);
+  if (!total) return { start: 0, end: 0, followLatest: true };
+  if (!viewport || !Number.isFinite(Number(viewport.start)) || !Number.isFinite(Number(viewport.end))) {
+    return defaultChartViewport({ rowCount: total, hostWidth: options.hostWidth, range: options.range });
+  }
+  const minimum = Math.min(total, Math.max(4, Number.parseInt(options.minimumBars, 10) || 12));
+  const span = Math.min(total, Math.max(minimum, Math.round(Number(viewport.end) - Number(viewport.start))));
+  const followLatest = options.followLatest ?? Boolean(viewport.followLatest);
+  const requestedStart = followLatest ? total - span : Math.round(Number(viewport.start));
+  const start = Math.max(0, Math.min(total - span, requestedStart));
+  return { start, end: start + span, followLatest: followLatest && start + span === total };
+}
+
+export function zoomChartViewport(viewport, rowCount, factor, anchorRatio = .5, options = {}) {
+  const current = normalizeChartViewport(viewport, rowCount, options);
+  const total = Math.max(0, Number.parseInt(rowCount, 10) || 0);
+  if (!total) return current;
+  const minimum = Math.min(total, Math.max(4, Number.parseInt(options.minimumBars, 10) || 12));
+  const ratio = Math.max(0, Math.min(1, Number(anchorRatio) || 0));
+  const currentSpan = current.end - current.start;
+  const nextSpan = Math.max(minimum, Math.min(total, Math.round(currentSpan * (Number(factor) || 1))));
+  const anchor = current.start + currentSpan * ratio;
+  const start = Math.round(anchor - nextSpan * ratio);
+  return normalizeChartViewport({ start, end: start + nextSpan, followLatest: false }, total, { ...options, followLatest: false });
+}
+
+export function panChartViewport(viewport, rowCount, deltaBars, options = {}) {
+  const current = normalizeChartViewport(viewport, rowCount, options);
+  const span = current.end - current.start;
+  const total = Math.max(0, Number.parseInt(rowCount, 10) || 0);
+  const start = current.start + Math.round(Number(deltaBars) || 0);
+  const next = normalizeChartViewport({ start, end: start + span, followLatest: false }, total, { ...options, followLatest: false });
+  return { ...next, followLatest: next.end === total };
+}
+
+export function chartPriceAxis(rows = [], extraValues = []) {
+  const values = [
+    ...(rows || []).flatMap(row => [toFiniteNumber(row?.low), toFiniteNumber(row?.high)]),
+    ...(extraValues || []).map(toFiniteNumber)
+  ].filter(value => value !== null && value > 0);
+  if (!values.length) return null;
+  const low = Math.min(...values), high = Math.max(...values);
+  const pad = Math.max((high - low) * .08, high * .003, .01);
+  return { min: low - pad, max: high + pad, pad };
+}
+
 const formatNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
 

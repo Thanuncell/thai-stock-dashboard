@@ -256,6 +256,9 @@ html[data-theme="dark"] .news-refresh-btn{border-color:#35584d;background:#1d302
 html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433d}
 /* SETscope-owned OHLC chart (market data supplied by Yahoo Finance). */
 .chart-indicators{gap:7px;flex-wrap:wrap;min-height:26px}
+.chart-controls{display:flex;justify-content:flex-end;gap:6px;margin:8px 0 2px}
+.chart-controls button{min-width:40px;min-height:40px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);font:600 11px var(--font);cursor:pointer}
+.chart-controls button:hover{border-color:#72bba4;color:#24745f}
 .chart-data-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:9px;line-height:1.5}
 .chart-source-note{color:var(--muted)}
 .watch-data-state{color:#a56a27;font-size:7px;font-weight:600;white-space:nowrap}
@@ -271,6 +274,7 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .own-chart-wrap{height:380px;overflow:hidden;margin-top:6px;border:1px solid var(--line);border-radius:7px;background:var(--paper)}
 .own-chart-wrap.has-macd{height:520px}
 #stock-price-chart,.chart-svg-scroll{width:100%;height:100%}
+#stock-price-chart{touch-action:none;user-select:none}
 .chart-svg-scroll{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
 .price-chart-svg{display:block;width:100%;min-width:100%;height:100%;font-family:var(--latin),var(--font)}
 .chart-grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}
