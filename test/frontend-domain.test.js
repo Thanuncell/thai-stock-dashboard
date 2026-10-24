@@ -15,6 +15,34 @@ test('dense intraday chart geometry stays within the viewport and preserves orde
   assert.ok(geometry.x(291) <= geometry.width - geometry.right);
 });
 
+test('chart viewport defaults to a useful latest window without changing the dataset', () => {
+  assert.deepEqual(domain.defaultChartViewport({ rowCount: 200, hostWidth: 390, range: '1D' }), {
+    start: 158, end: 200, followLatest: true
+  });
+  assert.deepEqual(domain.defaultChartViewport({ rowCount: 8, hostWidth: 390, range: '1D' }), {
+    start: 0, end: 8, followLatest: true
+  });
+});
+
+test('chart zoom preserves its anchor and pan remains bounded in cached rows', () => {
+  const initial = { start: 100, end: 150, followLatest: false };
+  const zoomed = domain.zoomChartViewport(initial, 200, .5, .5);
+  assert.deepEqual(zoomed, { start: 113, end: 138, followLatest: false });
+  assert.deepEqual(domain.panChartViewport(zoomed, 200, -999), { start: 0, end: 25, followLatest: false });
+  assert.deepEqual(domain.panChartViewport(zoomed, 200, 999), { start: 175, end: 200, followLatest: true });
+});
+
+test('adaptive price axis uses only visible valid values and does not invent missing prices', () => {
+  const axis = domain.chartPriceAxis([
+    { low: 98, high: 103 },
+    { low: 99, high: 104 },
+    { low: null, high: undefined }
+  ], [100, null]);
+  assert.equal(axis.min, 97.52);
+  assert.equal(axis.max, 104.48);
+  assert.equal(domain.chartPriceAxis([{ low: null, high: null }]), null);
+});
+
 test('workspace routing preserves canonical and legacy hashes', () => {
   assert.equal(domain.pageFromHash('#overview'), 'overview');
   assert.equal(domain.pageFromHash('#chart-section'), 'chart');
@@ -113,7 +141,7 @@ test('missing market values remain unavailable instead of becoming zero', () => 
   assert.deepEqual(validZero, { up: 0, down: 0, comparable: true });
 });
 
-test('Market Overview banner keeps validated Overview fields ahead of a later market response', () => {
+test('Market Overview banner keeps one validated SETTRADE index snapshot after a later market response', () => {
   const resolved = domain.resolveMarketBannerFields({
     symbol: 'SET', last: 1546.05, change: -8.89, changePercent: -0.57,
     volumeThousand: 9921584, high: 1563.04, low: 1532.71, turnoverMillion: 43861.21
@@ -122,12 +150,12 @@ test('Market Overview banner keeps validated Overview fields ahead of a later ma
     volume: null, high: null, low: null, turnoverMillionBaht: null
   });
 
-  assert.equal(resolved.index.last, 1546.1);
+  assert.equal(resolved.index.last, 1546.05);
   assert.equal(resolved.volumeThousand, 9921584);
   assert.deepEqual([resolved.high, resolved.low], [1563.04, 1532.71]);
   assert.equal(resolved.turnoverMillion, 43861.21);
   assert.deepEqual(resolved.sources, {
-    index: 'market', volume: 'overview', range: 'overview', turnover: 'overview'
+    index: 'overview', volume: 'overview', range: 'overview', turnover: 'overview'
   });
 });
 
@@ -139,8 +167,9 @@ test('Market Overview banner converts valid raw-share fallback volume to thousan
   assert.equal(fallback.volumeThousand, 1234567);
   assert.equal(fallback.turnoverMillion, 45678.9);
   assert.deepEqual(fallback.sources, {
-    index: 'market', volume: 'market', range: 'market', turnover: 'market'
+    index: null, volume: 'market', range: 'market', turnover: 'market'
   });
+  assert.equal(fallback.index, null);
 
   const unavailable = domain.resolveMarketBannerFields({}, {
     symbol: 'SET', guardStatus: 'accepted', last: 1500, prior: 1490,
@@ -150,6 +179,41 @@ test('Market Overview banner converts valid raw-share fallback volume to thousan
   assert.equal(unavailable.high, null);
   assert.equal(unavailable.low, null);
   assert.equal(unavailable.turnoverMillion, null);
+  assert.equal(unavailable.index, null);
+});
+
+test('Market Overview banner keeps truthful LKG or unavailable SETTRADE index state without Yahoo substitution', () => {
+  const yahoo = {
+    symbol: 'SET', guardStatus: 'accepted', last: 1498.25, prior: 1490,
+    volume: 1000000, high: 1510, low: 1480, turnoverMillionBaht: 45000
+  };
+  const savedSettrade = { symbol: 'SET', last: 1502.75, change: -1.25, changePercent: -0.08 };
+  const lkg = domain.resolveMarketBannerFields(savedSettrade, yahoo);
+
+  assert.equal(lkg.index.last, 1502.75);
+  assert.equal(lkg.sources.index, 'overview');
+  const savedAt = '2026-10-23T07:30:00.000Z';
+  const refreshedAt = '2026-10-23T08:00:00.000Z';
+  const lkgStatus = domain.marketOverviewStatus({
+    fetchedAt: refreshedAt,
+    dataState: 'stale',
+    fieldStatus: { indices: { state: 'LKG', stale: true, asOf: savedAt } }
+  });
+  assert.match(lkgStatus, /ข้อมูลที่บันทึกล่าสุด \(LKG\)$/);
+  assert.ok(lkgStatus.includes(domain.stamp(savedAt)));
+  assert.ok(!lkgStatus.includes(domain.stamp(refreshedAt)));
+
+  const passAt = '2026-10-23T07:59:00.000Z';
+  const passStatus = domain.marketOverviewStatus({
+    fetchedAt: refreshedAt,
+    dataState: 'delayed',
+    fieldStatus: { indices: { state: 'PASS', asOf: passAt } }
+  });
+  assert.ok(passStatus.includes(domain.stamp(passAt)));
+
+  const expired = domain.resolveMarketBannerFields(null, yahoo);
+  assert.equal(expired.index, null);
+  assert.equal(expired.sources.index, null);
 });
 
 test('Market Overview freshness label distinguishes current, partial and LKG data', () => {
@@ -159,7 +223,7 @@ test('Market Overview freshness label distinguishes current, partial and LKG dat
   assert.doesNotMatch(fresh, /LKG|บางส่วนไม่พร้อม/);
 
   const partial = domain.marketOverviewStatus({ fetchedAt, dataState: 'partial', fieldStatus: {} });
-  assert.match(partial, /บางส่วนไม่พร้อม$/);
+  assert.doesNotMatch(partial, /บางส่วนไม่พร้อม/);
 
   const lkg = domain.marketOverviewStatus({ fetchedAt, dataState: 'partial', fieldStatus: { nvdr: { state: 'LKG' } } });
   assert.match(lkg, /ข้อมูลที่บันทึกล่าสุด \(LKG\)$/);

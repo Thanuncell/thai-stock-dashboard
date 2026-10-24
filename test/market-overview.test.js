@@ -218,6 +218,46 @@ test('a wrong-page parser failure degrades one field while unrelated Overview fi
   assert.equal(result.partial, true);
 });
 
+test('Most Active LKG rows are labelled as saved data without consuming extra requests', async () => {
+  let now = 1_000;
+  let calls = 0;
+  const safety = createMarketOverviewSafety({
+    now: () => now,
+    minSpacingMs: 0,
+    maxRequestsPerWindow: 20,
+    fetchImpl: async url => {
+      calls += 1;
+      const activePage = String(url).includes('/most-active-value');
+      return htmlResponse(activePage && now > 1_000
+        ? fixture('settrade-wrong-page.html')
+        : responseFor(url));
+    }
+  });
+  const service = createSettradeService({ now: () => now, safety });
+
+  const fresh = (await service.getOverview()).value;
+  assert.equal(fresh.fieldStatus.activeValue.state, 'PASS');
+  assert.match(fresh.activeValueStatus, /ข้อมูลล่าสุด 3 รายการ/);
+  assert.equal(calls, 5);
+
+  now += 300_001;
+  const stale = (await service.getOverview()).value;
+  assert.equal(calls, 10);
+  assert.equal(stale.fieldStatus.activeValue.state, 'LKG');
+  assert.equal(stale.activeValue.length, 3);
+  assert.equal(stale.fieldStatus.indices.state, 'PASS');
+  assert.match(stale.activeValueStatus, /บันทึกล่าสุด/);
+  assert.doesNotMatch(stale.activeValueStatus, /ข้อมูลล่าสุด/);
+
+  now = 1_000 + 1_800_001;
+  const expired = (await service.getOverview()).value;
+  assert.equal(calls, 15);
+  assert.equal(expired.fieldStatus.activeValue.state, 'UNAVAILABLE');
+  assert.deepEqual(expired.activeValue, []);
+  assert.equal(expired.fieldStatus.indices.state, 'PASS');
+  assert.doesNotMatch(expired.activeValueStatus, /ข้อมูลล่าสุด|บันทึกล่าสุด/);
+});
+
 test('complete scraper failure returns an Overview-safe degraded contract instead of throwing', async () => {
   let calls = 0;
   const safety = createMarketOverviewSafety({

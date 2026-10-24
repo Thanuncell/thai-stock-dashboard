@@ -175,10 +175,10 @@ function createSettradeService({
       links: LINKS,
       fieldStatus,
       sourceStatus: { settrade: safetyStatus },
-      activeValueStatus: activeField.value.length
-        ? `ข้อมูลล่าสุด ${activeField.value.length} รายการจาก SETTRADE`
-        : activeField.status.state === 'LKG'
-          ? 'ใช้รายการจัดอันดับที่บันทึกล่าสุด'
+      activeValueStatus: activeField.status.state === 'LKG'
+        ? `ใช้รายการจัดอันดับที่บันทึกล่าสุด ${activeField.value.length} รายการ`
+        : activeField.value.length
+          ? `ข้อมูลล่าสุด ${activeField.value.length} รายการจาก SETTRADE`
           : 'ต้นทางยังไม่ส่งตารางจัดอันดับแบบอ่านได้'
     };
   }

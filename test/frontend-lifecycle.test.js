@@ -82,12 +82,61 @@ test('responsive chart CSS does not override calculated viewport width with a fi
   assert.doesNotMatch(styleSource, /\.price-chart-svg\{[^}]*min-width:(?:660|720)px/);
 });
 
-test('News pagers preserve state and scroll the page to top with reduced-motion support', () => {
+test('chart viewport controls and cached gestures are single-shot and add no provider request', () => {
+  assert.match(indexSource, /id="chart-zoom-out"/);
+  assert.match(indexSource, /id="chart-zoom-in"/);
+  assert.match(indexSource, /id="chart-reset"/);
+  assert.match(styleSource, /#stock-price-chart\{touch-action:none/);
+  assert.equal((appSource.match(/setupChartGestures\(\);/g) || []).length, 1);
+  assert.equal((appSource.match(/host\.addEventListener\('pointerdown'/g) || []).length, 1);
+  assert.equal((appSource.match(/host\.addEventListener\('pointermove'/g) || []).length, 1);
+  const viewportControls = appSource.match(/function setChartZoom[\s\S]*?function beginChartGesture/)?.[0] || '';
+  const gestures = appSource.match(/function setupChartGestures[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(viewportControls, /zoomChartViewport/);
+  assert.match(gestures, /panChartViewport/);
+  assert.doesNotMatch(viewportControls, /getMarket\(|apiFetch\(/);
+  assert.doesNotMatch(gestures, /getMarket\(|apiFetch\(/);
+  assert.match(appSource, /allRows\.slice\(chartViewport\.start, chartViewport\.end\)/);
+  assert.match(appSource, /chartPriceAxis\(rows, indicatorValues\)/);
+});
+
+test('chart redraw reuses locale formatters instead of recreating them per candle', () => {
+  assert.match(appSource, /const decimalNumberFormatter = new Intl\.NumberFormat\('th-TH'/);
+  assert.match(appSource, /const chartIntradayFormatter = new Intl\.DateTimeFormat\('th-TH'/);
+  const renderer = appSource.match(/function renderPriceChart[\s\S]*?\n\}/)?.[0] || '';
+  assert.doesNotMatch(renderer, /\.toLocaleString\('th-TH'/);
+  assert.match(renderer, /chartIntradayFormatter/);
+  assert.match(renderer, /chartDateFormatter/);
+});
+
+test('News pagers preserve state and scroll only their list with reduced-motion support', () => {
   assert.match(appSource, /window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
-  assert.match(appSource, /window\.scrollTo\(\{ top: 0, behavior: reduceMotion \? 'auto' : 'smooth' \}\)/);
-  assert.doesNotMatch(appSource, /scrollIntoView/);
-  assert.match(appSource, /watchNewsPage = page; renderWatchlistNews\(\); writeNavigation\('push', 'watchlist'\); scrollPageToTop\(\)/);
-  assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollPageToTop\(\)/);
+  assert.match(appSource, /target\?\.scrollIntoView\(\{ behavior: reduceMotion \? 'auto' : 'smooth', block: 'start' \}\)/);
+  assert.match(appSource, /watchNewsPage = page; renderWatchlistNews\(\); writeNavigation\('push', 'watchlist'\); scrollToSection\('#watchlist-news-list'\)/);
+  assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollToSection\('#news-list'\)/);
+});
+
+test('Watchlist workspace search, collapse and News jump preserve membership and scroll state', () => {
+  assert.match(indexSource, /id="watchlist-search"/);
+  assert.match(indexSource, /id="watchlist-toggle"/);
+  assert.match(indexSource, /id="watchlist-news-jump"/);
+  assert.match(indexSource, /id="refresh-watchlist-news"[^>]*>↻ อัปเดตข่าว<\/button>/);
+  assert.match(styleSource, /\.watchlist-workspace \.watch-list-mobile\s*\{[^}]*overflow:\s*auto/);
+  assert.match(appSource, /function patchWatchlistRoot/);
+  assert.match(appSource, /const scrollTop = root\.scrollTop/);
+  assert.match(appSource, /root\.scrollTop = scrollTop/);
+  const watchlistSearch = appSource.match(/\$\('#watchlist-search'\)[\s\S]*?\n\s*}\);/)?.[0] || '';
+  assert.match(watchlistSearch, /watchlistQuery = event\.target\.value/);
+  assert.match(watchlistSearch, /renderWatchlist\(latestMarket\?\.stocks \|\| \[\]\)/);
+  assert.doesNotMatch(watchlistSearch, /saveWatchlist|scheduleWatchlistCloudSync|getMarket/);
+});
+
+test('UI cleanup labels remain presentation-only and truthful', () => {
+  assert.match(appSource, /setText\('#set-volume', wholeNumber\(resolved\.volumeThousand\)\)/);
+  assert.match(appSource, /ปริมาณซื้อขาย \('000\)/);
+  assert.match(indexSource, /กำลังอัปเดตข้อมูลจาก SETTRADE\.\.\./);
+  assert.match(appSource, /อัปเดตข้อมูลไม่สำเร็จ/);
+  assert.doesNotMatch(domainSource, /บางส่วนไม่พร้อม/);
 });
 
 test('News archive page restoration survives startup rendering and browser history', () => {

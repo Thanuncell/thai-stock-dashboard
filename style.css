@@ -170,11 +170,17 @@ html[data-theme="dark"] .watchlist-label select,html[data-theme="dark"] .mobile-
 .watchlist-workspace .mobile-watchlist-picker select { flex: 0 1 220px; max-width: 240px; min-height: 40px; font-size: 11px; }
 .watchlist-workspace .mobile-watchlist-picker button { min-height: 40px; font-size: 11px; }
 .watchlist-workspace .mobile-watchlist-picker .watchlist-sync-status { width: auto; margin-left: 0; text-align: left; }
+.watchlist-tools{display:grid;grid-template-columns:minmax(150px,1fr) auto auto;align-items:end;gap:8px;margin:0 0 10px}
+.watchlist-tools label{grid-column:1;color:var(--muted);font-size:10px}
+.watchlist-tools input{grid-column:1;min-height:40px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);font:500 11px var(--font)}
+.watchlist-tools button{min-height:40px;padding:7px 11px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:#43856f;font:600 10px var(--font);cursor:pointer}
 .watchlist-workspace .watch-list-mobile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: min(56vh, 520px); overflow: auto; padding: 2px 3px 8px 0; overscroll-behavior: contain; }
+.watchlist-workspace.watchlist-collapsed .watch-list-mobile{display:none}
 .watchlist-workspace .watch-list-mobile .watch-item { min-width: 0; min-height: 68px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
 .watchlist-workspace .watch-list-mobile .watch-symbol, .watchlist-workspace .watch-list-mobile .watch-price { font-size: 12px; }
 .watchlist-workspace .watch-list-mobile .watch-name { font-size: 10px; }
 @media (max-width:790px) {
+  .watchlist-tools{grid-template-columns:minmax(0,1fr) auto auto}
   .watchlist-workspace .mobile-watchlist-picker { margin: 0 0 10px; }
   .watchlist-workspace .mobile-watchlist-picker .watchlist-sync-status { width: auto; margin: 0 0 0 auto; }
   .watchlist-workspace .watch-list-mobile { grid-template-columns: minmax(0, 1fr); max-height: min(62vh, 560px); margin: 0; }
@@ -256,6 +262,9 @@ html[data-theme="dark"] .news-refresh-btn{border-color:#35584d;background:#1d302
 html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433d}
 /* SETscope-owned OHLC chart (market data supplied by Yahoo Finance). */
 .chart-indicators{gap:7px;flex-wrap:wrap;min-height:26px}
+.chart-controls{display:flex;justify-content:flex-end;gap:6px;margin:8px 0 2px}
+.chart-controls button{min-width:40px;min-height:40px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);font:600 11px var(--font);cursor:pointer}
+.chart-controls button:hover{border-color:#72bba4;color:#24745f}
 .chart-data-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:9px;line-height:1.5}
 .chart-source-note{color:var(--muted)}
 .watch-data-state{color:#a56a27;font-size:7px;font-weight:600;white-space:nowrap}
@@ -271,6 +280,7 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .own-chart-wrap{height:380px;overflow:hidden;margin-top:6px;border:1px solid var(--line);border-radius:7px;background:var(--paper)}
 .own-chart-wrap.has-macd{height:520px}
 #stock-price-chart,.chart-svg-scroll{width:100%;height:100%}
+#stock-price-chart{touch-action:none;user-select:none}
 .chart-svg-scroll{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
 .price-chart-svg{display:block;width:100%;min-width:100%;height:100%;font-family:var(--latin),var(--font)}
 .chart-grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}

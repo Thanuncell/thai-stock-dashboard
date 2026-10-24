@@ -5,10 +5,12 @@ import {
   THAI_NAMES,
   analyseTechnicals,
   alignIndicatorSeries,
+  chartPriceAxis,
   chartGeometry,
   computeEma,
   computeSmaSeries,
   createRequestSequence,
+  defaultChartViewport,
   escapeHtml,
   findPriceLevels,
   mergeWatchlists,
@@ -16,6 +18,8 @@ import {
   navigationUrl,
   newsKey,
   normalizeLists,
+  normalizeChartViewport,
+  panChartViewport,
   pageList,
   parseNavigationState,
   quoteChange,
@@ -25,13 +29,20 @@ import {
   sentimentHeadline,
   stamp,
   summarizeBreadth,
-  toFiniteNumber
+  toFiniteNumber,
+  zoomChartViewport
 } from './client/domain.mjs';
 
 const $ = selector => document.querySelector(selector);
 const apiFetch = (url, options) => window.setscopeAuth.authorizedFetch(url, options);
+const decimalNumberFormatter = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const wholeNumberFormatter = new Intl.NumberFormat('th-TH', { maximumFractionDigits: 0 });
+const chartDateFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short' });
+const chartIntradayFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
-  ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+  ? decimalNumberFormatter.format(Number(value)) : '—';
+const wholeNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+  ? wholeNumberFormatter.format(Number(value)) : '—';
 const marketRequestSequence = createRequestSequence();
 const NAVIGATION_FALLBACK_KEY = 'setscope-navigation-fallback-v1';
 const navigationFallback = (() => {
@@ -79,6 +90,12 @@ let chartLoadState = 'loading';
 let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
 let chartResizeTimer = null;
 let chartCssFullscreen = false;
+let chartViewport = null;
+let chartViewportKey = '';
+let chartRowCount = 0;
+const chartPointers = new Map();
+let chartGesture = null;
+let chartRenderFrame = null;
 let coverageSummaryRequested = false;
 let alertPrefs = readLocal('setscope-alert-prefs', {});
 let alertStates = readLocal('setscope-alert-states', {});
@@ -87,6 +104,9 @@ let unreadAlerts = 0;
 let watchlistCloudReady = false;
 let watchlistSyncTimer = null;
 let watchlistSyncChain = Promise.resolve();
+let watchlistQuery = '';
+let watchlistCollapsed = false;
+const workspaceScrollPositions = new Map();
 
 function setWatchlistSyncStatus(text, state = '') {
   ['#watchlist-sync-status', '#watchlist-sync-status-mobile'].forEach(selector => {
@@ -120,6 +140,8 @@ function syncNavigationControls() {
 }
 function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   if (!workspaceRoutes[page]) page = 'overview';
+  const previousPage = document.body.dataset.workspacePage;
+  if (scroll && previousPage && previousPage !== page) workspaceScrollPositions.set(previousPage, window.scrollY);
   const visible = new Set(workspaceRoutes[page].nodes);
   ['#market-overview', '#market-data-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page'].forEach(selector => {
     const node = $(selector); if (node) node.classList.toggle('workspace-hidden', !visible.has(selector));
@@ -137,7 +159,10 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   setText('#breadcrumb-current', heading.breadcrumb);
   if (page === 'chart') getCoverageSummary();
   if (historyMode !== 'none') writeNavigation(historyMode, page);
-  if (scroll) window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (scroll && previousPage !== page) {
+    const top = workspaceScrollPositions.get(page) || 0;
+    requestAnimationFrame(() => window.scrollTo({ top, behavior: 'auto' }));
+  }
 }
 let lastRestoredLocation = '';
 function restoreNavigationFromLocation() {
@@ -293,7 +318,7 @@ function renderMarketBanner() {
   } else {
     setText('#set-index', '—');
   }
-  setText('#set-volume', number(resolved.volumeThousand));
+  setText('#set-volume', wholeNumber(resolved.volumeThousand));
   setText('#set-range', resolved.high === null || resolved.low === null ? '—' : `${number(resolved.high)} / ${number(resolved.low)}`);
   setText('#set-turnover', number(resolved.turnoverMillion));
   $('#set-volume').title = resolved.sources.volume === 'overview'
@@ -343,7 +368,7 @@ function renderSettradeOverview(data) {
   }
   $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<div class="market-breadth-group"><b>${escapeHtml(group.market)}</b>${(group.items || []).map(item => {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
-    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>${number(item.volumeThousand)} พันหุ้น</small></div>`;
+    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>ปริมาณซื้อขาย ('000) ${number(item.volumeThousand)}</small></div>`;
   }).join('')}</div>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
   setText('#market-close-summary', data.closeSummary || 'ยังไม่มีสรุปภาวะตลาดรอบนี้');
   const nvdr = data.nvdr || {};
@@ -375,7 +400,7 @@ async function getSettradeOverview(force = false) {
   const button = $('#refresh-market-data');
   if (button?.disabled) return;
   if (button) { button.disabled = true; button.classList.add('is-loading'); button.textContent = 'กำลังอัปเดต…'; }
-  setText('#settrade-updated', 'กำลังดึงข้อมูลจาก SETTRADE…');
+  setText('#settrade-updated', 'กำลังอัปเดตข้อมูลจาก SETTRADE...');
   try {
     const response = await apiFetch(`/api/market-overview${force ? '?refresh=1' : ''}`);
     const data = await response.json();
@@ -383,7 +408,7 @@ async function getSettradeOverview(force = false) {
     renderSettradeOverview(data);
   } catch (error) {
     console.warn('SETTRADE overview refresh failed', error);
-    setText('#settrade-updated', 'ดึงข้อมูลไม่สำเร็จ · ตรวจสอบข้อมูลโดยตรงที่ SETTRADE');
+    setText('#settrade-updated', 'อัปเดตข้อมูลไม่สำเร็จ');
   } finally {
     if (button) { button.disabled = false; button.classList.remove('is-loading'); button.textContent = '↻ อัปเดตข้อมูลตลาด'; }
   }
@@ -397,22 +422,47 @@ function updateWatchlistAddButton() {
   button.textContent = saved ? 'ติดตามแล้ว' : '＋ เพิ่มเข้า Watchlist';
 }
 
+function watchlistItemNode(item, quote) {
+  const quoteState = quote?.dataState;
+  const quoteStateText = quoteState === 'stale' ? 'ข้อมูลเก่า' : quoteState === 'suspect' || quoteState === 'quarantined' ? 'ข้อมูลต้องสงสัย' : '';
+  const change = quote ? Number(quote.last) - Number(quote.prior) : null;
+  const percent = quote && Number(quote.prior) ? change / Number(quote.prior) * 100 : null;
+  const template = document.createElement('template');
+  template.innerHTML = `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name || item.symbol)}">
+    <div class="watch-details"><span class="watch-symbol">${escapeHtml(item.symbol)}</span><span class="watch-name">${escapeHtml(item.name || item.symbol)}</span></div>
+    <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}${quoteStateText ? `<span class="watch-data-state">${quoteStateText}</span>` : ''}</div>
+    <button class="watch-remove" type="button" data-remove="${escapeHtml(item.symbol)}" aria-label="ลบ ${escapeHtml(item.symbol)}" title="นำออกจากรายการ">×</button>
+  </div>`;
+  const node = template.content.firstElementChild;
+  node.dataset.renderKey = JSON.stringify([item.symbol, item.name, activeSymbol, quote?.last, quote?.prior, quoteState]);
+  return node;
+}
+
+function patchWatchlistRoot(root, items, bySymbol) {
+  if (!root) return;
+  const scrollTop = root.scrollTop;
+  const existing = new Map([...root.querySelectorAll(':scope > .watch-item')].map(node => [node.dataset.sym, node]));
+  const nodes = items.map(item => {
+    const next = watchlistItemNode(item, bySymbol[item.symbol]);
+    const current = existing.get(item.symbol);
+    return current?.dataset.renderKey === next.dataset.renderKey ? current : next;
+  });
+  if (!nodes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'watch-empty';
+    empty.textContent = watchlist.length ? 'ไม่พบหุ้นที่ตรงกับคำค้น' : 'ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist';
+    nodes.push(empty);
+  }
+  root.replaceChildren(...nodes);
+  root.scrollTop = scrollTop;
+}
+
 function renderWatchlist(rows = []) {
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
-  const markup = watchlist.length ? watchlist.map(item => {
-    const quote = bySymbol[item.symbol];
-    const quoteState = quote?.dataState;
-    const quoteStateText = quoteState === 'stale' ? 'ข้อมูลเก่า' : quoteState === 'suspect' || quoteState === 'quarantined' ? 'ข้อมูลต้องสงสัย' : '';
-    const change = quote ? Number(quote.last) - Number(quote.prior) : null;
-    const percent = quote && Number(quote.prior) ? change / Number(quote.prior) * 100 : null;
-    return `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name || item.symbol)}">
-      <div class="watch-details"><span class="watch-symbol">${escapeHtml(item.symbol)}</span><span class="watch-name">${escapeHtml(item.name || item.symbol)}</span></div>
-      <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}${quoteStateText ? `<span class="watch-data-state">${quoteStateText}</span>` : ''}</div>
-      <button class="watch-remove" type="button" data-remove="${escapeHtml(item.symbol)}" aria-label="ลบ ${escapeHtml(item.symbol)}" title="นำออกจากรายการ">×</button>
-    </div>`;
-  }).join('') : '<div class="watch-empty">ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist</div>';
-  $('#watchlist').innerHTML = markup;
-  $('#watchlist-mobile').innerHTML = markup;
+  const normalizedQuery = watchlistQuery.trim().toLocaleLowerCase('th');
+  const visibleItems = normalizedQuery ? watchlist.filter(item => `${item.symbol} ${item.name || ''}`.toLocaleLowerCase('th').includes(normalizedQuery)) : watchlist;
+  patchWatchlistRoot($('#watchlist'), watchlist, bySymbol);
+  patchWatchlistRoot($('#watchlist-mobile'), visibleItems, bySymbol);
   renderWatchlistPicker();
   setText('.nav-count', String(watchlist.length));
   setText('#watch-metric', String(watchlist.length));
@@ -448,8 +498,8 @@ function setTechnicalPanelState(state) {
 function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indicatorBars = bars, dataState = 'delayed') {
   const host = $('#stock-price-chart');
   if (!host) return;
-  const rows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
-  if (!rows.length) {
+  const allRows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
+  if (!allRows.length) {
     const isError = chartLoadState === 'error';
     const isUnavailable = chartLoadState === 'unavailable';
     const message = chartLoadMessage || (isUnavailable ? 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้' : isError ? 'โหลดข้อมูลไม่สำเร็จ' : 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
@@ -460,12 +510,21 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   }
   const calculationRows = (indicatorBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
   const analysis = analyseTechnicals(calculationRows, levelBars);
-  const alignToChart = values => alignIndicatorSeries(calculationRows, values, rows);
-  const macdSeries = analysis ? alignToChart(analysis.macdSeries) : [];
-  const signalSeries = analysis ? alignToChart(analysis.signalSeries) : [];
-  const macdHistogram = analysis ? alignToChart(analysis.macdHistogram) : [];
-  const showMacd = chartIndicators.has('macd') && macdSeries.some(Number.isFinite);
   const hostWidth = Math.max(320, Math.floor(host.clientWidth || host.parentElement?.clientWidth || 640));
+  const viewportKey = `${activeSymbol}:${currentRange}`;
+  if (chartViewportKey !== viewportKey) {
+    chartViewportKey = viewportKey;
+    chartViewport = defaultChartViewport({ rowCount: allRows.length, hostWidth, range: currentRange });
+  } else {
+    chartViewport = normalizeChartViewport(chartViewport, allRows.length, { hostWidth, range: currentRange });
+  }
+  chartRowCount = allRows.length;
+  const rows = allRows.slice(chartViewport.start, chartViewport.end);
+  const alignToVisibleChart = values => alignIndicatorSeries(calculationRows, values, allRows).slice(chartViewport.start, chartViewport.end);
+  const macdSeries = analysis ? alignToVisibleChart(analysis.macdSeries) : [];
+  const signalSeries = analysis ? alignToVisibleChart(analysis.signalSeries) : [];
+  const macdHistogram = analysis ? alignToVisibleChart(analysis.macdHistogram) : [];
+  const showMacd = chartIndicators.has('macd') && macdSeries.some(Number.isFinite);
   const geometry = chartGeometry({ rowCount: rows.length, hostWidth, range: currentRange });
   const { left, right, width, plotWidth, step, candleWidth, x } = geometry;
   const top = 22;
@@ -473,24 +532,20 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   const priceBottom = 280, volumeBottom = 340, macdTop = 375, macdBottom = 475;
   const closes = rows.map(row => Number(row.close));
   const calculationCloses = calculationRows.map(row => Number(row.close));
-  const smaValues = alignToChart(computeSmaSeries(calculationCloses, 20));
+  const smaValues = alignToVisibleChart(computeSmaSeries(calculationCloses, 20));
   const indicatorSeries = [
     ['sma20', smaValues, 'sma20-chart-line'],
-    ['ema20', alignToChart(computeEma(calculationCloses, 20)), 'ema20-chart-line'],
-    ['ema50', alignToChart(computeEma(calculationCloses, 50)), 'ema50-chart-line'],
-    ['ema100', alignToChart(computeEma(calculationCloses, 100)), 'ema100-chart-line'],
-    ['ema200', alignToChart(computeEma(calculationCloses, 200)), 'ema200-chart-line']
+    ['ema20', alignToVisibleChart(computeEma(calculationCloses, 20)), 'ema20-chart-line'],
+    ['ema50', alignToVisibleChart(computeEma(calculationCloses, 50)), 'ema50-chart-line'],
+    ['ema100', alignToVisibleChart(computeEma(calculationCloses, 100)), 'ema100-chart-line'],
+    ['ema200', alignToVisibleChart(computeEma(calculationCloses, 200)), 'ema200-chart-line']
   ];
-  const chartLevels = analysis?.levels || findPriceLevels(levelBars, closes.at(-1));
-  const levelDetails = [...chartLevels.supportDetails, ...chartLevels.resistanceDetails];
-  const scaleValues = [
-    ...rows.flatMap(row => [Number(row.low), Number(row.high)]),
-    ...indicatorSeries.filter(([key]) => chartIndicators.has(key)).flatMap(([, values]) => values.filter(Number.isFinite)),
-    ...levelDetails.map(item => item.value)
-  ].filter(Number.isFinite);
-  const minPrice = Math.min(...scaleValues), maxPrice = Math.max(...scaleValues);
-  const pad = Math.max((maxPrice - minPrice) * .08, maxPrice * .003, .01);
-  const min = minPrice - pad, max = maxPrice + pad, span = max - min || 1;
+  const chartLevels = analysis?.levels || findPriceLevels(levelBars, Number(allRows.at(-1)?.close));
+  const indicatorValues = indicatorSeries.filter(([key]) => chartIndicators.has(key)).flatMap(([, values]) => values.filter(Number.isFinite));
+  const axis = chartPriceAxis(rows, indicatorValues);
+  const min = axis.min, max = axis.max, span = max - min || 1;
+  const levelDetails = [...chartLevels.supportDetails, ...chartLevels.resistanceDetails]
+    .filter(item => Number(item.value) >= min && Number(item.value) <= max);
   const y = value => top + (max - value) / span * (priceBottom - top);
   const volumeMax = Math.max(...rows.map(row => toFiniteNumber(row.volume)).filter(value => value !== null && value >= 0), 1);
   const grid = Array.from({ length: 5 }, (_, index) => {
@@ -505,7 +560,7 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
     const volumeHeight = volume === null ? 0 : volume / volumeMax * (volumeBottom - priceBottom - 6);
     const volumeBar = volume === null ? '' : `<rect class="volume-bar" x="${cx - candleWidth / 2}" y="${volumeBottom - volumeHeight}" width="${candleWidth}" height="${volumeHeight}"/>`;
     const date = new Date(bar.time);
-    const dateText = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: currentRange === '1D' || currentRange === '1W' ? '2-digit' : undefined, minute: currentRange === '1D' || currentRange === '1W' ? '2-digit' : undefined });
+    const dateText = Number.isNaN(+date) ? '' : (currentRange === '1D' || currentRange === '1W' ? chartIntradayFormatter : chartDateFormatter).format(date);
     const detail = `${dateText} · O ${number(open)} · H ${number(high)} · L ${number(low)} · C ${number(close)} · Vol ${number(volume)}`;
     return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/>${volumeBar}<rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
   }).join('');
@@ -536,10 +591,11 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   const labelIndices = [...new Set([0, Math.floor((rows.length - 1) / 3), Math.floor((rows.length - 1) * 2 / 3), rows.length - 1])];
   const dateLabels = labelIndices.map(index => {
     const date = new Date(rows[index].time);
-    const label = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', ...(currentRange === '1D' ? { hour: '2-digit', minute: '2-digit' } : {}) });
+    const label = Number.isNaN(+date) ? '' : (currentRange === '1D' ? chartIntradayFormatter : chartDateFormatter).format(date);
     return `<text class="chart-axis-text" x="${x(index)}" y="${showMacd ? 510 : 375}" text-anchor="middle">${escapeHtml(label)}</text>`;
   }).join('');
-  const updated = providerTime ? new Date(providerTime).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+  const providerDate = providerTime ? new Date(providerTime) : null;
+  const updated = providerDate && !Number.isNaN(+providerDate) ? chartIntradayFormatter.format(providerDate) : '—';
   const stateText = dataState === 'stale' ? ' · ข้อมูลเก่า' : dataState === 'suspect' || dataState === 'quarantined' ? ' · ข้อมูลต้องสงสัย' : '';
   setText('#chart-updated', `อัปเดตล่าสุด: ${updated} น. (เวลาไทย)${stateText}`);
   host.closest('.own-chart-wrap')?.classList.toggle('has-macd', showMacd);
@@ -549,6 +605,76 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
 function scheduleChartRedraw() {
   clearTimeout(chartResizeTimer);
   chartResizeTimer = setTimeout(updateTradingViewChart, 180);
+}
+
+function queueChartViewportRender() {
+  if (chartRenderFrame !== null) return;
+  chartRenderFrame = requestAnimationFrame(() => {
+    chartRenderFrame = null;
+    updateTradingViewChart();
+  });
+}
+
+function setChartZoom(factor, anchorRatio = .5) {
+  if (!chartRowCount) return;
+  chartViewport = zoomChartViewport(chartViewport, chartRowCount, factor, anchorRatio);
+  queueChartViewportRender();
+}
+
+function resetChartViewport() {
+  chartViewport = null;
+  chartViewportKey = '';
+  updateTradingViewChart();
+}
+
+function beginChartGesture() {
+  const points = [...chartPointers.values()];
+  if (points.length >= 2) {
+    const [first, second] = points;
+    chartGesture = {
+      type: 'pinch',
+      distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+      viewport: { ...chartViewport }
+    };
+  } else if (points.length === 1) {
+    chartGesture = { type: 'pan', x: points[0].x, viewport: { ...chartViewport } };
+  }
+}
+
+function setupChartGestures() {
+  const host = $('#stock-price-chart');
+  if (!host) return;
+  host.addEventListener('pointerdown', event => {
+    chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    host.setPointerCapture?.(event.pointerId);
+    beginChartGesture();
+  });
+  host.addEventListener('pointermove', event => {
+    if (!chartPointers.has(event.pointerId) || !chartRowCount) return;
+    chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const points = [...chartPointers.values()];
+    if (points.length >= 2) {
+      if (chartGesture?.type !== 'pinch') beginChartGesture();
+      const [first, second] = points;
+      const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+      const bounds = host.getBoundingClientRect();
+      const midpoint = (first.x + second.x) / 2;
+      const anchor = bounds.width ? (midpoint - bounds.left) / bounds.width : .5;
+      chartViewport = zoomChartViewport(chartGesture.viewport, chartRowCount, chartGesture.distance / distance, anchor);
+    } else if (points.length === 1 && chartGesture?.type === 'pan') {
+      const span = Math.max(1, chartGesture.viewport.end - chartGesture.viewport.start);
+      const pixelsPerBar = Math.max(1, host.clientWidth / span);
+      chartViewport = panChartViewport(chartGesture.viewport, chartRowCount, -(points[0].x - chartGesture.x) / pixelsPerBar);
+    }
+    event.preventDefault();
+    queueChartViewportRender();
+  }, { passive: false });
+  const finish = event => {
+    chartPointers.delete(event.pointerId);
+    if (chartPointers.size) beginChartGesture(); else chartGesture = null;
+  };
+  host.addEventListener('pointerup', finish);
+  host.addEventListener('pointercancel', finish);
 }
 
 function updateFullscreenControl() {
@@ -1122,9 +1248,10 @@ function renderNewsItemsInto(root, items, emptyText) {
 function watchlistEmptyText() {
   return watchlist.length ? 'ยังไม่มีข่าวของหุ้นในรายการติดตาม' : 'ยังไม่มีหุ้นในรายการติดตาม';
 }
-function scrollPageToTop() {
+function scrollToSection(selector) {
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+  const target = $(selector);
+  target?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
 }
 function renderWatchlistNews() {
   const root = $('#watchlist-news-list');
@@ -1134,7 +1261,7 @@ function renderWatchlistNews() {
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
-    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollPageToTop();
+    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToSection('#watchlist-news-list');
   });
 }
 function renderPagerInto(bar, current, total, count, onPick) {
@@ -1188,7 +1315,7 @@ function renderNews() {
   renderPagerInto($('#news-pager'), displayPage, total, availableCount, async page => {
     newsPage = page; writeNavigation('push', 'news');
     if (archiveConfigured) await getArchiveNews({ page }); else renderNews();
-    scrollPageToTop();
+    scrollToSection('#news-list');
   });
   const counter = $('#news-count');
   if (counter) counter.textContent = query ? `พบ ${archiveLoaded ? archiveTotal : all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
@@ -1255,6 +1382,17 @@ async function setup() {
   $('#watchlist-create')?.addEventListener('click', createWatchlist);
   $('#watchlist-create-mobile')?.addEventListener('click', createWatchlist);
   ['#watchlist-rename', '#watchlist-rename-mobile'].forEach(selector => $(selector)?.addEventListener('click', renameActiveWatchlist));
+  $('#watchlist-search')?.addEventListener('input', event => {
+    watchlistQuery = event.target.value;
+    renderWatchlist(latestMarket?.stocks || []);
+  });
+  $('#watchlist-toggle')?.addEventListener('click', event => {
+    watchlistCollapsed = !watchlistCollapsed;
+    $('#watchlist-page')?.classList.toggle('watchlist-collapsed', watchlistCollapsed);
+    event.currentTarget.setAttribute('aria-expanded', String(!watchlistCollapsed));
+    event.currentTarget.textContent = watchlistCollapsed ? 'ขยายรายการ' : 'ย่อรายการ';
+  });
+  $('#watchlist-news-jump')?.addEventListener('click', () => scrollToSection('#watchlist-news-list'));
   $('#mover-list').addEventListener('click', event => { const row = event.target.closest('[data-mover-symbol]'); if (row) selectStock(row.dataset.moverSymbol, row.dataset.moverName); });
   document.querySelectorAll('.movers-tabs button').forEach((button, index) => button.addEventListener('click', () => {
     document.querySelectorAll('.movers-tabs button').forEach(item => item.classList.remove('selected'));
@@ -1300,6 +1438,10 @@ async function setup() {
     updateTradingViewChart();
   });
   $('#chart-fullscreen')?.addEventListener('click', toggleChartFullscreen);
+  $('#chart-zoom-in')?.addEventListener('click', () => setChartZoom(.8));
+  $('#chart-zoom-out')?.addEventListener('click', () => setChartZoom(1.25));
+  $('#chart-reset')?.addEventListener('click', resetChartViewport);
+  setupChartGestures();
   $('#stock-price-chart')?.addEventListener('click', event => {
     if (event.target.closest('[data-chart-retry]')) getMarket();
   });
