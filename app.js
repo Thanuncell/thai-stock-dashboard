@@ -660,7 +660,12 @@ function beginChartGesture() {
       viewport: { ...chartViewport }
     };
   } else if (points.length === 1) {
-    chartGesture = { type: 'pan', x: points[0].x, viewport: { ...chartViewport } };
+    chartGesture = {
+      type: points[0].pointerType === 'touch' ? 'pending' : 'pan',
+      x: points[0].x,
+      y: points[0].y,
+      viewport: { ...chartViewport }
+    };
   }
 }
 
@@ -668,13 +673,14 @@ function setupChartGestures() {
   const host = $('#stock-price-chart');
   if (!host) return;
   host.addEventListener('pointerdown', event => {
-    chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    host.setPointerCapture?.(event.pointerId);
+    chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
     beginChartGesture();
+    if (event.pointerType !== 'touch') host.setPointerCapture?.(event.pointerId);
   });
   host.addEventListener('pointermove', event => {
     if (!chartPointers.has(event.pointerId) || !chartRowCount) return;
-    chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const current = chartPointers.get(event.pointerId);
+    chartPointers.set(event.pointerId, { ...current, x: event.clientX, y: event.clientY });
     const points = [...chartPointers.values()];
     if (points.length >= 2) {
       if (chartGesture?.type !== 'pinch') beginChartGesture();
@@ -684,16 +690,29 @@ function setupChartGestures() {
       const midpoint = (first.x + second.x) / 2;
       const anchor = bounds.width ? (midpoint - bounds.left) / bounds.width : .5;
       chartViewport = zoomChartViewport(chartGesture.viewport, chartRowCount, chartGesture.distance / distance, anchor);
-    } else if (points.length === 1 && chartGesture?.type === 'pan') {
+    } else if (points.length === 1) {
+      if (chartGesture?.type === 'pending') {
+        const dx = points[0].x - chartGesture.x;
+        const dy = points[0].y - chartGesture.y;
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < 8) return;
+        if (Math.abs(dy) > Math.abs(dx)) {
+          chartGesture = { type: 'vertical' };
+          return;
+        }
+        chartGesture.type = 'pan';
+      }
+      if (chartGesture?.type === 'vertical') return;
+      if (chartGesture?.type !== 'pan') return;
       const span = Math.max(1, chartGesture.viewport.end - chartGesture.viewport.start);
       const pixelsPerBar = Math.max(1, host.clientWidth / span);
       chartViewport = panChartViewport(chartGesture.viewport, chartRowCount, -(points[0].x - chartGesture.x) / pixelsPerBar);
     }
-    event.preventDefault();
+    if (event.pointerType !== 'touch') event.preventDefault();
     queueChartViewportRender();
   }, { passive: false });
   const finish = event => {
     chartPointers.delete(event.pointerId);
+    if (host.hasPointerCapture?.(event.pointerId)) host.releasePointerCapture?.(event.pointerId);
     if (chartPointers.size) beginChartGesture(); else chartGesture = null;
   };
   host.addEventListener('pointerup', finish);
@@ -1276,6 +1295,9 @@ function scrollToSection(selector) {
   const target = $(selector);
   target?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
 }
+function scrollToPageTop() {
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+}
 function renderWatchlistNews() {
   const root = $('#watchlist-news-list');
   if (!root) return;
@@ -1284,7 +1306,7 @@ function renderWatchlistNews() {
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
-    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToSection('#watchlist-news-list');
+    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToPageTop();
   });
 }
 function renderPagerInto(bar, current, total, count, onPick) {
@@ -1338,7 +1360,7 @@ function renderNews() {
   renderPagerInto($('#news-pager'), displayPage, total, availableCount, async page => {
     newsPage = page; writeNavigation('push', 'news');
     if (archiveConfigured) await getArchiveNews({ page }); else renderNews();
-    scrollToSection('#news-list');
+    scrollToPageTop();
   });
   const counter = $('#news-count');
   if (counter) counter.textContent = query ? `พบ ${archiveLoaded ? archiveTotal : all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
