@@ -90,6 +90,19 @@ export function toFiniteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+export function coverageDisplayState(data = {}) {
+  const unavailable = reason => ({ ready: false, reason, universe: null, currentVerified: null });
+  if (data?.configured !== true) return unavailable('unavailable');
+  if (data.dataState !== 'fresh') return unavailable(data.dataState === 'stale' ? 'stale' : 'unavailable');
+  if (data.provider !== 'Yahoo Finance' || !Number.isFinite(Date.parse(data.lastChecked))) return unavailable('invalid');
+  const universe = data.universe;
+  const currentVerified = data.currentVerified;
+  if (!Number.isSafeInteger(universe) || universe < 0
+    || !Number.isSafeInteger(currentVerified) || currentVerified < 0
+    || currentVerified > universe) return unavailable('invalid');
+  return { ready: true, reason: null, universe, currentVerified };
+}
+
 export function resolveMarketBannerFields(overviewIndex, marketIndex) {
   const overview = overviewIndex && typeof overviewIndex === 'object' ? overviewIndex : {};
   const market = marketIndex && typeof marketIndex === 'object' ? marketIndex : {};

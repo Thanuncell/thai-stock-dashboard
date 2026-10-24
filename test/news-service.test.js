@@ -376,3 +376,188 @@ test('AI analysis is not called when article extraction and snippet are both emp
   assert.equal(aiCalls, 0);
   assert.equal(result.items[0].summary, '');
 });
+
+test('targeted SET recruiting and SETTRADE company-board pages are rejected without keyword false positives', () => {
+  const pubDate = new Date().toISOString();
+  const rejected = [
+    {
+      title: 'SET Recruiting - ตลาดหลักทรัพย์แห่งประเทศไทย', sourceName: 'SET', source: 'settrade',
+      url: 'https://news.google.com/rss/articles/set-recruiting', pubDate
+    },
+    {
+      title: 'AMATA - กรรมการบริษัท - SETTRADE.COM', sourceName: 'SETTRADE.COM', source: 'settrade',
+      url: 'https://news.google.com/rss/articles/amata-company-board', pubDate
+    },
+    {
+      title: 'ร่วมงานกับเรา', sourceName: 'SET', source: 'settrade',
+      url: 'https://www.set.or.th/th/about/careers', pubDate
+    }
+  ];
+  assert.deepEqual(rejected.map(item => classifyNewsItem(item).accepted), [false, false, false]);
+
+  const genuine = [
+    {
+      title: 'AMATA แต่งตั้งกรรมการบริษัทคนใหม่', sourceName: 'ตลาดหลักทรัพย์แห่งประเทศไทย', source: 'settrade',
+      url: 'https://www.set.or.th/th/market/news-and-alert/newsdetails?id=999', pubDate,
+      snippet: 'บริษัทเปิดเผยมติคณะกรรมการและวันที่มีผลต่อตลาดหลักทรัพย์'
+    },
+    {
+      title: 'ผู้ถือหุ้นอนุมัติแผนลงทุนใหม่ของบริษัท', sourceName: 'ข่าวหุ้นธุรกิจออนไลน์', source: 'kaohoon',
+      url: 'https://www.kaohoon.com/news/999998', pubDate,
+      snippet: 'ที่ประชุมผู้ถือหุ้นอนุมัติวงเงินและกรอบเวลาดำเนินโครงการ'
+    }
+  ];
+  assert.ok(genuine.every(item => classifyNewsItem(item).accepted));
+});
+
+test('risky Thunhoon target checks reject proven missing pages but keep access-denied pages unverified', async () => {
+  const pubDate = new Date().toUTCString();
+  const item = {
+    title: 'THG รายงานความคืบหน้าธุรกิจล่าสุด',
+    url: 'https://news.google.com/rss/articles/thunhoon-risky-target',
+    pubDate,
+    sourceName: 'Thunhoon'
+  };
+  const body = rss([item]);
+  let targetCalls = 0;
+  const missing = createNewsService({
+    fetchImpl: async input => {
+      const url = String(input);
+      if (url.startsWith('https://news.google.com/rss/search?')) return new Response(body, { status: 200 });
+      targetCalls += 1;
+      if (url.includes('news.google.com/rss/articles')) {
+        return new Response('', { status: 302, headers: { location: 'https://thunhoon.com/article/missing' } });
+      }
+      return new Response('', { status: 404, headers: { 'content-type': 'text/html' } });
+    }
+  });
+  assert.deepEqual((await missing.getNews()).items, []);
+  assert.equal(targetCalls, 2, 'one bounded redirect probe is cached across all feed results');
+
+  const denied = createNewsService({
+    fetchImpl: async input => String(input).startsWith('https://news.google.com/rss/search?')
+      ? new Response(body, { status: 200 })
+      : new Response('', { status: 403, headers: { 'content-type': 'text/html' } })
+  });
+  const retained = await denied.getNews();
+  assert.deepEqual(retained.items.map(entry => entry.title), [item.title]);
+});
+
+test('risky target evidence distinguishes 410 and empty articles from 429 and timeout uncertainty', async () => {
+  const pubDate = new Date().toUTCString();
+  const item = {
+    title: 'THG เปิดเผยข้อมูลธุรกิจล่าสุด',
+    url: 'https://news.google.com/rss/articles/thunhoon-evidence',
+    pubDate,
+    sourceName: 'Thunhoon'
+  };
+  const body = rss([item]);
+  async function loadWith(targetResponse) {
+    const service = createNewsService({
+      fetchImpl: async input => {
+        const url = String(input);
+        if (url.startsWith('https://news.google.com/rss/search?')) return new Response(body, { status: 200 });
+        if (url.includes('news.google.com/rss/articles')) {
+          return new Response('', { status: 302, headers: { location: 'https://thunhoon.com/article/evidence' } });
+        }
+        if (targetResponse instanceof Error) throw targetResponse;
+        return targetResponse();
+      }
+    });
+    return service.getNews();
+  }
+
+  assert.deepEqual((await loadWith(() => new Response('', { status: 410 }))).items, []);
+  assert.deepEqual((await loadWith(() => new Response('<main><nav>เมนู</nav></main>', {
+    status: 200, headers: { 'content-type': 'text/html' }
+  }))).items, []);
+  assert.deepEqual((await loadWith(() => new Response('', { status: 429 }))).items.map(entry => entry.title), [item.title]);
+  assert.deepEqual((await loadWith(Error('timeout'))).items.map(entry => entry.title), [item.title]);
+});
+
+test('proven non-news items are excluded before AI article extraction', async () => {
+  let upstreamCalls = 0;
+  const service = createNewsService({
+    env: { OPENAI_API_KEY: 'test-only' },
+    fetchImpl: async () => { upstreamCalls += 1; return new Response('', { status: 200 }); }
+  });
+  const result = await service.analyse([{
+    title: 'AMATA - กรรมการบริษัท - SETTRADE.COM', sourceName: 'SETTRADE.COM', source: 'settrade',
+    url: 'https://news.google.com/rss/articles/amata-company-board', snippet: 'ข้อมูลอ้างอิงรายชื่อกรรมการ'
+  }]);
+  assert.deepEqual(result.items, [{ summary: '', mode: 'unavailable', basis: 'headline' }]);
+  assert.equal(upstreamCalls, 0);
+});
+
+test('Google RSS shares cooldown and validated stale fallback across News and Watchlist News', async () => {
+  let timestamp = Date.parse('2026-10-24T00:00:00.000Z');
+  let mode = 'success';
+  let rssCalls = 0;
+  const pubDate = new Date(timestamp).toUTCString();
+  const body = rss([{
+    title: 'PTT เดินหน้าลงทุนโครงการใหม่', url: 'https://news.google.com/rss/articles/ptt-good', pubDate,
+    sourceName: 'InfoQuest', snippet: 'PTT เปิดเผยวงเงินและกรอบเวลาดำเนินโครงการลงทุนใหม่'
+  }]);
+  const service = createNewsService({
+    now: () => timestamp,
+    fetchImpl: async input => {
+      assert.match(String(input), /^https:\/\/news\.google\.com\/rss\/search\?/);
+      rssCalls += 1;
+      if (mode === 'rate-limit') return new Response('', { status: 429, headers: { 'retry-after': '60' } });
+      return new Response(body, { status: 200 });
+    }
+  });
+
+  const freshNews = await service.getNews();
+  const freshWatchlist = await service.getWatchlistNews([{ symbol: 'PTT', name: 'ปตท.' }]);
+  assert.equal(freshNews.stale, false);
+  assert.equal(freshWatchlist.stale, false);
+
+  timestamp += 5 * 60 * 1000;
+  mode = 'rate-limit';
+  const beforeFailure = rssCalls;
+  const staleNews = await service.getNews();
+  const afterNewsFailure = rssCalls;
+  const staleWatchlist = await service.getWatchlistNews([{ symbol: 'PTT', name: 'ปตท.' }]);
+  assert.equal(afterNewsFailure - beforeFailure, 1, 'remaining feed requests stop when shared cooldown starts');
+  assert.equal(rssCalls, afterNewsFailure, 'Watchlist News cannot bypass the shared cooldown');
+  assert.equal(staleNews.dataState, 'stale');
+  assert.equal(staleWatchlist.dataState, 'stale');
+  assert.equal(staleNews.fetchedAt, freshNews.fetchedAt);
+  assert.equal(staleWatchlist.items[0].pubDate, freshWatchlist.items[0].pubDate);
+
+  timestamp += 61 * 1000;
+  mode = 'success';
+  const recovered = await service.getWatchlistNews([{ symbol: 'PTT', name: 'ปตท.' }]);
+  assert.equal(recovered.stale, false);
+  assert.equal(rssCalls, afterNewsFailure + 1);
+});
+
+test('invalid Retry-After still produces bounded 503 backoff and identical requests coalesce', async () => {
+  let timestamp = Date.parse('2026-10-24T00:00:00.000Z');
+  let mode = 'unavailable';
+  let calls = 0;
+  const pubDate = new Date(timestamp).toUTCString();
+  const body = rss([{
+    title: 'PTT รายงานผลประกอบการล่าสุด', url: 'https://news.google.com/rss/articles/ptt-results', pubDate,
+    sourceName: 'InfoQuest', snippet: 'PTT รายงานรายได้ กำไร และปัจจัยสำคัญของไตรมาสล่าสุด'
+  }]);
+  const service = createNewsService({
+    now: () => timestamp,
+    fetchImpl: async () => {
+      calls += 1;
+      if (mode === 'unavailable') return new Response('', { status: 503, headers: { 'retry-after': 'invalid' } });
+      return new Response(body, { status: 200 });
+    }
+  });
+  const stocks = [{ symbol: 'PTT', name: 'ปตท.' }];
+  await assert.rejects(service.getWatchlistNews(stocks), /503/);
+  await assert.rejects(service.getWatchlistNews(stocks), /cooldown/i);
+  assert.equal(calls, 1);
+
+  timestamp += 31 * 1000;
+  mode = 'success';
+  const [first, second] = await Promise.all([service.getWatchlistNews(stocks), service.getWatchlistNews(stocks)]);
+  assert.equal(calls, 2);
+  assert.deepEqual(first.items, second.items);
+});

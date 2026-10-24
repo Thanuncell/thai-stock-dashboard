@@ -86,7 +86,8 @@ test('chart viewport controls and cached gestures are single-shot and add no pro
   assert.match(indexSource, /id="chart-zoom-out"/);
   assert.match(indexSource, /id="chart-zoom-in"/);
   assert.match(indexSource, /id="chart-reset"/);
-  assert.match(styleSource, /#stock-price-chart\{touch-action:none/);
+  assert.match(styleSource, /#stock-price-chart\{touch-action:pan-y/);
+  assert.match(styleSource, /\.chart-svg-scroll\{[^}]*touch-action:pan-y/);
   assert.equal((appSource.match(/setupChartGestures\(\);/g) || []).length, 1);
   assert.equal((appSource.match(/host\.addEventListener\('pointerdown'/g) || []).length, 1);
   assert.equal((appSource.match(/host\.addEventListener\('pointermove'/g) || []).length, 1);
@@ -94,6 +95,10 @@ test('chart viewport controls and cached gestures are single-shot and add no pro
   const gestures = appSource.match(/function setupChartGestures[\s\S]*?\n\}/)?.[0] || '';
   assert.match(viewportControls, /zoomChartViewport/);
   assert.match(gestures, /panChartViewport/);
+  assert.match(appSource, /type: points\[0\]\.pointerType === 'touch' \? 'pending' : 'pan'/);
+  assert.match(gestures, /if \(event\.pointerType !== 'touch'\) event\.preventDefault\(\)/);
+  assert.match(gestures, /Math\.abs\(dy\) > Math\.abs\(dx\)[\s\S]*?type: 'vertical'/);
+  assert.match(gestures, /if \(chartGesture\?\.type === 'vertical'\) return/);
   assert.doesNotMatch(viewportControls, /getMarket\(|apiFetch\(/);
   assert.doesNotMatch(gestures, /getMarket\(|apiFetch\(/);
   assert.match(appSource, /allRows\.slice\(chartViewport\.start, chartViewport\.end\)/);
@@ -109,11 +114,16 @@ test('chart redraw reuses locale formatters instead of recreating them per candl
   assert.match(renderer, /chartDateFormatter/);
 });
 
-test('News pagers preserve state and scroll only their list with reduced-motion support', () => {
+test('News pagers move only user pagination to the actual window top', () => {
   assert.match(appSource, /window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
   assert.match(appSource, /target\?\.scrollIntoView\(\{ behavior: reduceMotion \? 'auto' : 'smooth', block: 'start' \}\)/);
-  assert.match(appSource, /watchNewsPage = page; renderWatchlistNews\(\); writeNavigation\('push', 'watchlist'\); scrollToSection\('#watchlist-news-list'\)/);
-  assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollToSection\('#news-list'\)/);
+  assert.match(appSource, /function scrollToPageTop\(\) \{\s*window\.scrollTo\(\{ top: 0, left: 0, behavior: 'auto' \}\);\s*\}/);
+  assert.match(appSource, /watchNewsPage = page; renderWatchlistNews\(\); writeNavigation\('push', 'watchlist'\); scrollToPageTop\(\)/);
+  assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollToPageTop\(\)/);
+  assert.equal([...appSource.matchAll(/scrollToPageTop\(/g)].length, 3);
+  assert.match(appSource, /\$\('#watchlist-news-jump'\)\?\.addEventListener\('click', \(\) => scrollToSection\('#watchlist-news-list'\)\)/);
+  assert.doesNotMatch(appSource.match(/async function getNews\([\s\S]*?\n\}/)?.[0] || '', /scrollToPageTop/);
+  assert.doesNotMatch(appSource.match(/async function getArchiveNews\([\s\S]*?\n\}/)?.[0] || '', /scrollToPageTop/);
 });
 
 test('Watchlist workspace search, collapse and News jump preserve membership and scroll state', () => {
@@ -122,6 +132,8 @@ test('Watchlist workspace search, collapse and News jump preserve membership and
   assert.match(indexSource, /id="watchlist-news-jump"/);
   assert.match(indexSource, /id="refresh-watchlist-news"[^>]*>↻ อัปเดตข่าว<\/button>/);
   assert.match(styleSource, /\.watchlist-workspace \.watch-list-mobile\s*\{[^}]*overflow:\s*auto/);
+  assert.match(styleSource, /\.watchlist-workspace \.watch-list-mobile\s*\{[^}]*overscroll-behavior:\s*auto/);
+  assert.doesNotMatch(styleSource, /\.watchlist-workspace \.watch-list-mobile\s*\{[^}]*overscroll-behavior:\s*contain/);
   assert.match(appSource, /function patchWatchlistRoot/);
   assert.match(appSource, /const scrollTop = root\.scrollTop/);
   assert.match(appSource, /root\.scrollTop = scrollTop/);
@@ -210,15 +222,16 @@ test('Market Overview has deterministic startup banner ownership and truthful fr
   assert.match(appSource, /updateTradingViewChart\(\); getMarket\(\); getSettradeOverview\(\);/);
 });
 
-test('Coverage UI uses persisted summary fields without a hard-coded count', () => {
+test('Footer Coverage uses validated persisted summary fields without a hard-coded count', () => {
   assert.match(indexSource, /id="coverage-summary"/);
+  assert.match(indexSource, /หุ้นในขอบเขตตรวจสอบ: <b id="coverage-universe">—<\/b> ตัว/);
+  assert.match(indexSource, /ตรวจสอบผ่านแล้ว: <b id="coverage-count">—<\/b> ตัว/);
   assert.match(indexSource, /id="coverage-count">—<\/b>/);
-  assert.match(indexSource, /id="coverage-checked">—<\/b>/);
-  assert.match(indexSource, /แหล่งข้อมูล Yahoo Finance/);
+  assert.match(indexSource, /แหล่งข้อมูล: Yahoo Finance/);
   assert.match(appSource, /apiFetch\('\/api\/coverage'\)/);
-  assert.match(appSource, /data\.currentVerified/);
-  assert.match(appSource, /!data\.lastChecked \|\| data\.dataState === 'unavailable'/);
-  assert.doesNotMatch(indexSource, /หลักทรัพย์ที่ตรวจสอบแล้ว\s*(?:291|500|900)/);
+  assert.match(appSource, /coverageDisplayState\(data\)/);
+  assert.match(appSource, /getCoverageSummary\(\); updateTradingViewChart\(\)/);
+  assert.doesNotMatch(indexSource, /หุ้นในขอบเขตตรวจสอบ:\s*(?:291|500|900)/);
 });
 
 test('Chart freshness uses the selected provider timestamp and exposes guarded state', () => {
@@ -236,4 +249,21 @@ test('suspect or stale market rows cannot drive alerts or mover rankings as fres
   assert.match(appSource, /item\.quote\?\.guardStatus === 'accepted'/);
   assert.match(appSource, /quoteState === 'stale' \? 'ข้อมูลเก่า'/);
   assert.match(appSource, /quoteState === 'suspect' \|\| quoteState === 'quarantined' \? 'ข้อมูลต้องสงสัย'/);
+});
+
+test('initial workspace routing completes before slow Watchlist sync and non-active views start hidden', () => {
+  const setup = appSource.match(/async function setup\(\) \{[\s\S]*?await initializeWatchlistCloudSync\(\)/)?.[0] || '';
+  assert.match(setup, /initializeUserScopedState\(\);[\s\S]*?setupWorkspaceNavigation\(\);[\s\S]*?await initializeWatchlistCloudSync\(\)/);
+  assert.match(indexSource, /class="workspace-section watchlist-workspace workspace-hidden" id="watchlist-page"/);
+  assert.match(indexSource, /class="content-grid workspace-section workspace-hidden" id="chart-section"/);
+  assert.match(indexSource, /class="bottom-grid workspace-section workspace-hidden" id="activity-section"/);
+});
+
+test('Watchlist and alert browser state is scoped to the authenticated account', () => {
+  assert.match(appSource, /userStorageScope = String\(window\.setscopeAuth\?\.user\?\.id \|\| ''\)/);
+  assert.match(appSource, /function scopedStorageKey\(key\) \{ return userStorageScope \? `\$\{key\}:\$\{userStorageScope\}` : ''; \}/);
+  assert.match(appSource, /readScopedLocal\('setscope-alert-prefs', \{\}\)/);
+  assert.match(appSource, /writeScopedLocal\('setscope-alert-history', alertHistory\)/);
+  assert.doesNotMatch(appSource, /localStorage\.getItem\('setscope-(?:watchlists-v2|active-watchlist|alert-(?:prefs|states|history))'/);
+  assert.doesNotMatch(appSource, /localStorage\.setItem\('setscope-(?:watchlists-v2|watchlist|active-watchlist|alert-(?:prefs|states|history))'/);
 });

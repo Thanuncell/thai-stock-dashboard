@@ -395,3 +395,45 @@ test('archive read and ingest gates reject navigation/reference landing pages', 
   }
   assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
 });
+
+test('archive read-time and ingest gates exclude targeted recruiting and company-board records without deleting stored rows', async () => {
+  const calls = [];
+  const publishedAt = '2026-10-23T00:00:00.000Z';
+  const badRows = [
+    {
+      fingerprint: 'set-recruiting', source: 'settrade', source_name: 'SET',
+      title: 'SET Recruiting - ตลาดหลักทรัพย์แห่งประเทศไทย',
+      url: 'https://news.google.com/rss/articles/set-recruiting', published_at: publishedAt, snippet: ''
+    },
+    {
+      fingerprint: 'amata-board', source: 'settrade', source_name: 'SETTRADE.COM',
+      title: 'AMATA - กรรมการบริษัท - SETTRADE.COM',
+      url: 'https://news.google.com/rss/articles/amata-company-board', published_at: publishedAt, snippet: ''
+    }
+  ];
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-24T00:00:00.000Z'),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (init.method === 'POST') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify(badRows), {
+        status: 200,
+        headers: { 'content-range': '0-1/2', 'content-type': 'application/json' }
+      });
+    }
+  });
+
+  const listed = await service.list({ page: 1, pageSize: 10 });
+  assert.deepEqual(listed.items, []);
+  assert.equal(listed.qualityFiltered, 2);
+  assert.equal(calls.filter(call => call.init.method === 'DELETE').length, 0);
+  for (const row of badRows) {
+    const result = await service.ingest([{
+      source: row.source, sourceName: row.source_name, title: row.title,
+      url: row.url, pubDate: row.published_at, snippet: row.snippet
+    }]);
+    assert.equal(result.ingested, 0);
+  }
+  assert.equal(calls.filter(call => call.init.method === 'POST').length, 0);
+});
