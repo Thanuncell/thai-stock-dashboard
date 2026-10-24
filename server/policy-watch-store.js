@@ -56,11 +56,25 @@ function createPolicyWatchStore({ filePath, fsImpl = fs, maxObservations = 500, 
   }
 
   async function write(revision, payload, { fault } = {}) {
+    validatePayload(payload);
+    const changes = payload.changes.slice(-maxChanges);
+    const requiredObservationIds = new Set([
+      ...Object.values(payload.baselines).map(item => item?.observationId).filter(Boolean),
+      ...changes.map(item => String(item?.evidenceRef || '').replace(/^observation:/, '')).filter(Boolean)
+    ]);
+    if (requiredObservationIds.size > maxObservations) throw Error('POLICY_STATE_RETENTION_TOO_SMALL');
+    for (let index = payload.observations.length - 1;
+      index >= 0 && requiredObservationIds.size < maxObservations;
+      index -= 1) {
+      const id = payload.observations[index]?.id;
+      if (id) requiredObservationIds.add(id);
+    }
     const bounded = {
-      ...validatePayload(payload),
-      observations: payload.observations.slice(-maxObservations),
-      changes: payload.changes.slice(-maxChanges)
+      ...payload,
+      observations: payload.observations.filter(item => requiredObservationIds.has(item?.id)),
+      changes
     };
+    validatePayload(bounded);
     const envelope = {
       schemaVersion: SCHEMA_VERSION,
       revision,

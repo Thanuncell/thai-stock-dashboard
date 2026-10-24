@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { runFixtureManual } = require('../scripts/run-policy-watch-fixture');
-const { createPolicyWatchStore, stateChecksum } = require('../server/policy-watch-store');
+const { createPolicyWatchStore, initialState, stateChecksum } = require('../server/policy-watch-store');
 const { createPolicyWatchService } = require('../server/policy-watch-service');
 
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures', 'policy-watch', name), 'utf8');
@@ -69,6 +69,32 @@ test('default OFF manual mode performs zero policy acquisition', async t => {
   assert.equal(result.requests, 0);
   assert.equal(requests, 0);
   await assert.rejects(fsp.access(statePath));
+});
+
+test('bounded history preserves retained evidence links across restart', async t => {
+  const { statePath } = await workspace(t);
+  const store = createPolicyWatchStore({ filePath: statePath, maxObservations: 3, maxChanges: 2 });
+  const state = initialState();
+  state.observations = [1, 2, 3, 4].map(id => ({ id: `observation-${id}`, verified: true }));
+  state.baselines[registry[0].sourceId] = { observationId: 'observation-4' };
+  state.changes = [
+    { id: 'change-1', evidenceRef: 'observation:observation-1' },
+    { id: 'change-2', evidenceRef: 'observation:observation-2' }
+  ];
+
+  await store.write(1, state);
+  const restarted = await createPolicyWatchStore({
+    filePath: statePath,
+    maxObservations: 3,
+    maxChanges: 2
+  }).read();
+
+  assert.deepEqual(restarted.payload.observations.map(item => item.id), [
+    'observation-1',
+    'observation-2',
+    'observation-4'
+  ]);
+  assert.equal(restarted.payload.changes.length, 2);
 });
 
 test('verified baseline, content, layout and unchanged history are durable and idempotent', async t => {
