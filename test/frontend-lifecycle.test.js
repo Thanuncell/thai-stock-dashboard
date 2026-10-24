@@ -100,6 +100,15 @@ test('chart viewport controls and cached gestures are single-shot and add no pro
   assert.match(appSource, /chartPriceAxis\(rows, indicatorValues\)/);
 });
 
+test('chart redraw reuses locale formatters instead of recreating them per candle', () => {
+  assert.match(appSource, /const decimalNumberFormatter = new Intl\.NumberFormat\('th-TH'/);
+  assert.match(appSource, /const chartIntradayFormatter = new Intl\.DateTimeFormat\('th-TH'/);
+  const renderer = appSource.match(/function renderPriceChart[\s\S]*?\n\}/)?.[0] || '';
+  assert.doesNotMatch(renderer, /\.toLocaleString\('th-TH'/);
+  assert.match(renderer, /chartIntradayFormatter/);
+  assert.match(renderer, /chartDateFormatter/);
+});
+
 test('News pagers preserve state and scroll only their list with reduced-motion support', () => {
   assert.match(appSource, /window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
   assert.match(appSource, /target\?\.scrollIntoView\(\{ behavior: reduceMotion \? 'auto' : 'smooth', block: 'start' \}\)/);

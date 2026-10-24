@@ -35,10 +35,14 @@ import {
 
 const $ = selector => document.querySelector(selector);
 const apiFetch = (url, options) => window.setscopeAuth.authorizedFetch(url, options);
+const decimalNumberFormatter = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const wholeNumberFormatter = new Intl.NumberFormat('th-TH', { maximumFractionDigits: 0 });
+const chartDateFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short' });
+const chartIntradayFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
-  ? Number(value).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+  ? decimalNumberFormatter.format(Number(value)) : '—';
 const wholeNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
-  ? Number(value).toLocaleString('th-TH', { maximumFractionDigits: 0 }) : '—';
+  ? wholeNumberFormatter.format(Number(value)) : '—';
 const marketRequestSequence = createRequestSequence();
 const NAVIGATION_FALLBACK_KEY = 'setscope-navigation-fallback-v1';
 const navigationFallback = (() => {
@@ -556,7 +560,7 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
     const volumeHeight = volume === null ? 0 : volume / volumeMax * (volumeBottom - priceBottom - 6);
     const volumeBar = volume === null ? '' : `<rect class="volume-bar" x="${cx - candleWidth / 2}" y="${volumeBottom - volumeHeight}" width="${candleWidth}" height="${volumeHeight}"/>`;
     const date = new Date(bar.time);
-    const dateText = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: currentRange === '1D' || currentRange === '1W' ? '2-digit' : undefined, minute: currentRange === '1D' || currentRange === '1W' ? '2-digit' : undefined });
+    const dateText = Number.isNaN(+date) ? '' : (currentRange === '1D' || currentRange === '1W' ? chartIntradayFormatter : chartDateFormatter).format(date);
     const detail = `${dateText} · O ${number(open)} · H ${number(high)} · L ${number(low)} · C ${number(close)} · Vol ${number(volume)}`;
     return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/>${volumeBar}<rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
   }).join('');
@@ -587,10 +591,11 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   const labelIndices = [...new Set([0, Math.floor((rows.length - 1) / 3), Math.floor((rows.length - 1) * 2 / 3), rows.length - 1])];
   const dateLabels = labelIndices.map(index => {
     const date = new Date(rows[index].time);
-    const label = Number.isNaN(+date) ? '' : date.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', ...(currentRange === '1D' ? { hour: '2-digit', minute: '2-digit' } : {}) });
+    const label = Number.isNaN(+date) ? '' : (currentRange === '1D' ? chartIntradayFormatter : chartDateFormatter).format(date);
     return `<text class="chart-axis-text" x="${x(index)}" y="${showMacd ? 510 : 375}" text-anchor="middle">${escapeHtml(label)}</text>`;
   }).join('');
-  const updated = providerTime ? new Date(providerTime).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+  const providerDate = providerTime ? new Date(providerTime) : null;
+  const updated = providerDate && !Number.isNaN(+providerDate) ? chartIntradayFormatter.format(providerDate) : '—';
   const stateText = dataState === 'stale' ? ' · ข้อมูลเก่า' : dataState === 'suspect' || dataState === 'quarantined' ? ' · ข้อมูลต้องสงสัย' : '';
   setText('#chart-updated', `อัปเดตล่าสุด: ${updated} น. (เวลาไทย)${stateText}`);
   host.closest('.own-chart-wrap')?.classList.toggle('has-macd', showMacd);
