@@ -146,6 +146,76 @@ test('archive applies source, symbol, search and featured exclusions before pagi
   assert.ok([...first.items, ...second.items].every(item => item.url !== excludedUrl));
 });
 
+test('archive returns a quality-gated seven-day Featured fallback before pagination', async () => {
+  const timestamp = Date.parse('2026-10-24T12:00:00.000Z');
+  const recent = Array.from({ length: 12 }, (_, index) => archiveRow(index + 1, {
+    title: `PTT กำไรเติบโตลำดับ ${index + 1}`,
+    published_at: new Date(timestamp - (index + 1) * 60_000).toISOString(),
+    analysis_summary: index === 0 ? 'สรุปที่บันทึกและตรวจสอบแล้ว' : null,
+    analysis_mode: index === 0 ? 'rules' : null
+  }));
+  const rows = [
+    ...recent,
+    archiveRow('official', {
+      title: 'ประกาศสำคัญจากตลาดหลักทรัพย์',
+      source: 'official',
+      source_name: 'ตลาดหลักทรัพย์แห่งประเทศไทย',
+      published_at: new Date(timestamp - 6 * 24 * 60 * 60 * 1000).toISOString()
+    }),
+    archiveRow('old', { published_at: new Date(timestamp - 8 * 24 * 60 * 60 * 1000).toISOString() }),
+    archiveRow('invalid-date', { published_at: 'not-a-date' }),
+    archiveRow('rejected', { title: '- SET' })
+  ];
+  let calls = 0;
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => timestamp,
+    scanChunkSize: 50,
+    fetchImpl: async (url, init) => { calls += 1; return rangeResponse(rows, init); }
+  });
+
+  const first = await service.list({ page: 1, pageSize: 10, source: 'all', query: '', featuredCount: 5 });
+  const second = await service.list({ page: 2, pageSize: 10, source: 'all', query: '', featuredCount: 5 });
+  const featuredKeys = new Set(first.featured.map(item => item.fingerprint));
+
+  assert.equal(first.featured.length, 5);
+  assert.equal(first.featured[0].fingerprint, 'row-official', 'source priority is preserved inside the seven-day window');
+  assert.ok(first.featured.every(item => Number.isFinite(Date.parse(item.pubDate))));
+  assert.ok(first.featured.every(item => Date.parse(item.pubDate) >= timestamp - 7 * 24 * 60 * 60 * 1000));
+  assert.ok(!featuredKeys.has('row-old'));
+  assert.ok(!featuredKeys.has('row-invalid-date'));
+  assert.ok([...first.items, ...second.items].every(item => !featuredKeys.has(item.fingerprint)));
+  assert.equal(first.total, rows.length - 1 - first.featured.length, 'quality-rejected row and Featured rows are excluded from the Latest total');
+  assert.equal(calls, 1, 'Featured and paginated Latest reuse one bounded archive snapshot');
+  assert.equal(first.featured.find(item => item.fingerprint === 'row-1').analysisSummary, 'สรุปที่บันทึกและตรวจสอบแล้ว');
+});
+
+test('archive Featured fallback keeps source, search, total and persisted-summary validation', async () => {
+  const timestamp = Date.parse('2026-10-24T12:00:00.000Z');
+  const rows = [
+    ...Array.from({ length: 8 }, (_, index) => archiveRow(index + 1, {
+      title: `PTT กำไรเติบโตลำดับ ${index + 1}`,
+      published_at: new Date(timestamp - index * 60_000).toISOString()
+    })),
+    archiveRow(20, { title: 'PTT รายงานยอดขาย', published_at: new Date(timestamp - 60_000).toISOString() }),
+    archiveRow(21, { title: 'PTT กำไรจากอีกสำนัก', source: 'efinance', source_name: 'efinanceThai', published_at: new Date(timestamp - 60_000).toISOString() }),
+    archiveRow(22, { title: 'PTT กำไรพร้อมข้อมูลไม่รับรอง', published_at: new Date(timestamp - 60_000).toISOString(), analysis_summary: 'ห้ามนำมาแสดง', analysis_mode: 'unknown' })
+  ];
+  const service = createNewsArchiveService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => timestamp,
+    fetchImpl: async (url, init) => rangeResponse(rows, init)
+  });
+
+  const result = await service.list({ page: 1, pageSize: 10, source: 'infoquest', query: 'กำไร', featuredCount: 5 });
+  assert.equal(result.featured.length, 5);
+  assert.equal(result.total, 4);
+  assert.ok([...result.featured, ...result.items].every(item => item.source === 'infoquest' && item.title.includes('กำไร')));
+  const unverified = [...result.featured, ...result.items].find(item => item.fingerprint === 'row-22');
+  assert.equal(unverified.analysisSummary, '');
+  assert.equal(unverified.analysisMode, '');
+});
+
 test('archive fails closed when the persisted dataset exceeds its bounded scan limit', async () => {
   let calls = 0;
   const service = createNewsArchiveService({

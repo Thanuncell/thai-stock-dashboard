@@ -561,3 +561,102 @@ test('invalid Retry-After still produces bounded 503 backoff and identical reque
   assert.equal(calls, 2);
   assert.deepEqual(first.items, second.items);
 });
+
+test('Google RSS requests carry a real q parameter for News and Watchlist News', async () => {
+  const pubDate = new Date().toUTCString();
+  const body = rss([{
+    title: 'PTT รายงานความคืบหน้าโครงการล่าสุด',
+    url: 'https://news.google.com/rss/articles/url-contract',
+    pubDate,
+    sourceName: 'InfoQuest',
+    snippet: 'PTT เปิดเผยรายละเอียดและกรอบเวลาดำเนินโครงการ'
+  }]);
+  const urls = [];
+  const service = createNewsService({
+    fetchImpl: async input => {
+      const url = new URL(String(input));
+      urls.push(url);
+      assert.equal(url.origin, 'https://news.google.com');
+      assert.equal(url.pathname, '/rss/search');
+      assert.ok(url.searchParams.get('q')?.includes('when:30d'));
+      assert.equal(url.searchParams.get('hl'), 'th');
+      assert.equal(url.searchParams.get('gl'), 'TH');
+      assert.equal(url.searchParams.get('ceid'), 'TH:th');
+      return new Response(body, { status: 200 });
+    }
+  });
+
+  await service.getNews();
+  await service.getWatchlistNews([{ symbol: 'PTT', name: 'ปตท.' }]);
+
+  assert.equal(urls.length, 9, 'one request per configured feed plus one Watchlist request');
+  assert.ok(urls.at(-1).searchParams.get('q').includes('PTT'));
+});
+
+test('cold-start 404 remains unavailable without retries and a later valid response recovers', async () => {
+  let mode = 'missing';
+  let calls = 0;
+  const pubDate = new Date().toUTCString();
+  const body = rss([{
+    title: 'ตลาดหุ้นไทยรับข่าวเศรษฐกิจล่าสุด',
+    url: 'https://news.google.com/rss/articles/recovered',
+    pubDate,
+    sourceName: 'InfoQuest',
+    snippet: 'รายงานปัจจัยเศรษฐกิจและผลกระทบต่อตลาดหุ้นไทย'
+  }]);
+  const service = createNewsService({
+    fetchImpl: async input => {
+      calls += 1;
+      assert.ok(new URL(String(input)).searchParams.get('q'));
+      return mode === 'missing' ? new Response('', { status: 404 }) : new Response(body, { status: 200 });
+    }
+  });
+
+  const unavailable = await service.getNews();
+  assert.equal(unavailable.dataState, 'unavailable');
+  assert.equal(unavailable.items.length, 0);
+  assert.equal(calls, 8, '404 is not retried beyond the normal configured feeds');
+
+  mode = 'success';
+  const recovered = await service.getNews();
+  assert.equal(recovered.dataState, 'fresh');
+  assert.equal(recovered.items.length, 1);
+  assert.equal(calls, 16, 'recovery performs exactly one normal pass over configured feeds');
+});
+
+test('Google RSS timeout enters shared cooldown, serves validated stale data and recovers', async () => {
+  let timestamp = Date.parse('2026-10-24T00:00:00.000Z');
+  let mode = 'success';
+  let calls = 0;
+  const body = rss([{
+    title: 'PTT รายงานแผนลงทุนล่าสุด',
+    url: 'https://news.google.com/rss/articles/timeout-recovery',
+    pubDate: new Date(timestamp).toUTCString(),
+    sourceName: 'InfoQuest',
+    snippet: 'PTT เปิดเผยวงเงินลงทุนและกรอบเวลาดำเนินโครงการ'
+  }]);
+  const service = createNewsService({
+    now: () => timestamp,
+    fetchImpl: async () => {
+      calls += 1;
+      if (mode === 'timeout') throw Error('fetch timeout');
+      return new Response(body, { status: 200 });
+    }
+  });
+
+  const fresh = await service.getNews();
+  assert.equal(fresh.dataState, 'fresh');
+  timestamp += 5 * 60 * 1000;
+  mode = 'timeout';
+  const beforeFailure = calls;
+  const stale = await service.getNews();
+  assert.equal(stale.dataState, 'stale');
+  assert.equal(stale.items[0].title, fresh.items[0].title);
+  assert.equal(calls - beforeFailure, 1, 'shared cooldown stops the remaining feed requests');
+
+  timestamp += 31 * 1000;
+  mode = 'success';
+  const recovered = await service.getNews();
+  assert.equal(recovered.dataState, 'fresh');
+  assert.equal(calls - beforeFailure, 9, 'recovery performs one normal eight-feed pass');
+});

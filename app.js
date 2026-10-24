@@ -67,6 +67,7 @@ let activeSource = initialNavigation.route === 'news' ? initialNavigation.source
 let latestNews = [];
 let latestWatchlistNews = [];
 let archiveNews = [];
+let archiveFeaturedNews = [];
 let archiveTotal = 0;
 let archiveConfigured = false;
 let archiveLoaded = false;
@@ -1141,6 +1142,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
     featuredCount: FEATURED_COUNT,
     sourceTier: SOURCE_TIER
   }).featured.map(item => item.url).filter(url => /^https:\/\//i.test(String(url || '')));
+  if (!featuredUrls.length) params.set('featuredCount', String(FEATURED_COUNT));
   featuredUrls.forEach(url => params.append('exclude', url));
   try {
     const response = await apiFetch(`/api/news-archive?${params}`);
@@ -1149,6 +1151,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
     if (requestId !== archiveNewsRequestId) return;
     archiveConfigured = Boolean(data.configured);
     archiveLoaded = archiveConfigured;
+    archiveFeaturedNews = data.dataState === 'fresh' && !data.stale && Array.isArray(data.featured) ? data.featured : [];
     archiveNews = Array.isArray(data.items) ? data.items : [];
     archiveTotal = Number.isFinite(Number(data.total)) ? Number(data.total) : archiveNews.length;
     const totalPages = Math.max(1, Math.ceil(archiveTotal / PAGE_SIZE));
@@ -1161,6 +1164,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
   } catch (_) {
     if (requestId !== archiveNewsRequestId) return;
     archiveLoaded = false;
+    archiveFeaturedNews = [];
     archiveNews = [];
     archiveTotal = 0;
   }
@@ -1229,10 +1233,12 @@ function renderNewsItem(item, options = {}) {
   const relatedSymbols = item.matchedSymbols || [];
   const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
   const analysis = newsAnalyses.get(newsKey(item));
-  const summary = analysis?.summary || 'กำลังอ่านและสรุปเนื้อหาข่าว…';
-  const mode = analysis?.mode === 'ai'
-    ? `โดย AI · ${analysis.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
-    : 'สรุปจากคำสำคัญ';
+  const persistedSummary = ['ai', 'rules'].includes(item.analysisMode) ? String(item.analysisSummary || '').trim() : '';
+  const summary = analysis?.summary || persistedSummary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้';
+  const analysisMode = analysis?.summary ? analysis.mode : persistedSummary ? item.analysisMode : 'unavailable';
+  const mode = analysisMode === 'ai'
+    ? `โดย AI · ${analysis?.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis?.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
+    : analysisMode === 'rules' ? 'สรุปจากคำสำคัญ' : 'สรุปไม่พร้อม';
   const article = document.createElement('article');
   article.className = 'news-item';
   const content = document.createElement('div');
@@ -1342,12 +1348,22 @@ function renderPagerInto(bar, current, total, count, onPick) {
 function renderNews() {
   const query = newsQuery.trim().toLocaleLowerCase('th');
   const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || '' }));
-  const { filtered: all, featured, latest: liveLatest } = selectNewsForDisplay(prepared, {
+  const { filtered: all, featured: liveFeatured, latest: liveLatest } = selectNewsForDisplay(prepared, {
     source: activeSource,
     query,
     featuredCount: FEATURED_COUNT,
     sourceTier: SOURCE_TIER
   });
+  const archiveFeatured = archiveFeaturedNews.map(item => ({
+    ...item,
+    analysisSummary: newsAnalyses.get(newsKey(item))?.summary || item.analysisSummary || ''
+  }));
+  const featured = liveFeatured.length ? liveFeatured : selectNewsForDisplay(archiveFeatured, {
+    source: activeSource,
+    query,
+    featuredCount: FEATURED_COUNT,
+    sourceTier: SOURCE_TIER
+  }).featured;
   const featuredKeys = new Set(featured.map(newsKey));
   const archived = archiveNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || item.analysisSummary || '' }))
     .filter(item => !featuredKeys.has(newsKey(item)));

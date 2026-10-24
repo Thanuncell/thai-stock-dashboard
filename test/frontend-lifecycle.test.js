@@ -170,9 +170,22 @@ test('News archive requests carry search and featured exclusions before server-s
 
   assert.match(archiveLoader, /query: newsQuery\.trim\(\)/);
   assert.match(archiveLoader, /params\.append\('exclude', url\)/);
+  assert.match(archiveLoader, /if \(!featuredUrls\.length\) params\.set\('featuredCount', String\(FEATURED_COUNT\)\)/);
+  assert.match(archiveLoader, /data\.dataState === 'fresh' && !data\.stale/);
   assert.match(searchHandler, /clearTimeout\(newsSearchTimer\)/);
   assert.match(searchHandler, /newsSearchTimer = setTimeout/);
   assert.match(searchHandler, /getArchiveNews\(\{ page: 1 \}\)/);
+});
+
+test('News uses fresh Archive Featured fallback and never leaves archived analysis loading forever', () => {
+  const renderNews = appSource.match(/function renderNews\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const renderNewsItem = appSource.match(/function renderNewsItem\([\s\S]*?\n\}/)?.[0] || '';
+  assert.match(renderNews, /liveFeatured\.length \? liveFeatured : selectNewsForDisplay\(archiveFeatured/);
+  assert.match(renderNewsItem, /\['ai', 'rules'\]\.includes\(item\.analysisMode\)/);
+  assert.match(renderNewsItem, /ยังไม่มีบทสรุปสำหรับข่าวนี้/);
+  assert.doesNotMatch(renderNewsItem, /กำลังอ่านและสรุปเนื้อหาข่าว/);
+  assert.match(appSource, /analyzeNewsBriefs\(\[\.\.\.latestNews, \.\.\.latestWatchlistNews\]\)/);
+  assert.doesNotMatch(appSource, /analyzeNewsBriefs\(\[\.\.\.latestNews, \.\.\.archiveNews/);
 });
 
 test('Technical Analysis wording and Overview anchors remain at baseline', () => {

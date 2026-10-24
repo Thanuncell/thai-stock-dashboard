@@ -44,7 +44,7 @@ test('cache keys include every public input and never cache watchlist responses 
 
 test('archive adds one bounded server-page read without increasing upstream polling', () => {
   assert.equal((appSource.match(/apiFetch\(`\/api\/news-archive\?\$\{params\}`\)/g) || []).length, 1);
-  assert.match(serverSource, /news-archive:\$\{page\}\|\$\{pageSize\}\|\$\{source\}\|\$\{symbol\}\|\$\{query\}\|\$\{exclusionKey\}/);
+  assert.match(serverSource, /news-archive:\$\{page\}\|\$\{pageSize\}\|\$\{source\}\|\$\{symbol\}\|\$\{query\}\|\$\{featuredCount\}\|\$\{exclusionKey\}/);
   assert.equal((appSource.match(/setInterval\(/g) || []).length, 4);
   assert.doesNotMatch([appSource, indexSource].join('\n'), /SUPABASE_(?:SECRET|SERVICE_ROLE)_KEY/);
 });

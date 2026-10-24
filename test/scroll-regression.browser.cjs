@@ -24,6 +24,11 @@ const chartBars = Array.from({ length: 120 }, (_, index) => {
     volume: 1_000_000 + index * 1000
   };
 });
+const archiveItems = newsItems(33).map((item, index) => ({
+  ...item,
+  analysisSummary: index === 0 ? 'สรุปข่าวที่บันทึกไว้สำหรับการทดสอบ' : '',
+  analysisMode: index === 0 ? 'ai' : ''
+}));
 
 function json(route, body, status = 200) {
   return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -94,13 +99,24 @@ async function mockRequest(route, baseUrl, metrics) {
     return json(route, { configured: true, universe: 400, currentVerified: 321, technicalReady: 280, lastChecked: new Date().toISOString(), provider: 'Yahoo Finance', dataState: 'fresh' });
   }
   if (url.pathname === '/api/news') {
-    return json(route, { items: newsItems(28), errors: [], fetchedAt: new Date().toISOString(), asOf: new Date().toISOString(), source: 'fixture', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30 });
+    return json(route, { items: [], errors: ['fixture-unavailable'], fetchedAt: new Date().toISOString(), asOf: null, source: 'fixture', stale: false, partial: false, dataState: 'unavailable', maxAgeDays: 30 });
   }
   if (url.pathname === '/api/watchlist-news') {
     return json(route, { items: newsItems(23, 'ข่าว Watchlist'), fetchedAt: new Date().toISOString(), asOf: new Date().toISOString(), source: 'fixture', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30 });
   }
   if (url.pathname === '/api/news-archive') {
-    return json(route, { configured: false, items: [], total: 0, page: 1, pageSize: 10, maxAgeDays: 365, stale: false, dataState: 'unavailable' });
+    const page = Math.max(1, Number.parseInt(url.searchParams.get('page'), 10) || 1);
+    const pageSize = Math.max(1, Number.parseInt(url.searchParams.get('pageSize'), 10) || 10);
+    const source = url.searchParams.get('source') || 'all';
+    const query = String(url.searchParams.get('query') || '').trim().toLocaleLowerCase('th');
+    const featuredCount = Math.max(0, Math.min(5, Number.parseInt(url.searchParams.get('featuredCount'), 10) || 0));
+    const filtered = archiveItems.filter(item => (source === 'all' || item.source === source)
+      && (!query || [item.title, item.sourceName, item.snippet, item.analysisSummary].some(value => String(value || '').toLocaleLowerCase('th').includes(query))));
+    const featured = filtered.slice(0, featuredCount);
+    const featuredUrls = new Set(featured.map(item => item.url));
+    const latest = filtered.filter(item => !featuredUrls.has(item.url));
+    const start = (page - 1) * pageSize;
+    return json(route, { configured: true, featured, items: latest.slice(start, start + pageSize), total: latest.length, page, pageSize, maxAgeDays: 365, stale: false, dataState: 'fresh' });
   }
   if (url.pathname === '/api/news-analysis') {
     const payload = request.postDataJSON();
@@ -289,6 +305,10 @@ async function run() {
     const watchPaginationSettledY = await page.evaluate(() => window.scrollY);
 
     await page.goto(`${baseUrl}/#news`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.querySelectorAll('#featured-news .news-item').length === 5);
+    assert.equal(await page.locator('#news-list .news-item').count(), 10);
+    assert.equal(await page.locator('#featured-news').textContent().then(text => text.includes('สรุปข่าวที่บันทึกไว้สำหรับการทดสอบ')), true);
+    assert.equal(await page.locator('#news-section').textContent().then(text => text.includes('กำลังอ่านและสรุปเนื้อหาข่าว')), false);
     await page.waitForSelector('body.authenticated #news-pager:not([hidden])');
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await page.locator('#news-pager .page-btn').filter({ hasText: /^2$/ }).click();
