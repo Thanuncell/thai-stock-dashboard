@@ -13,7 +13,10 @@ const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const ARCHIVE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 const ARCHIVE_SCAN_CHUNK_SIZE = 500;
 const MAX_ARCHIVE_SCAN_ROWS = 20_000;
+const FEATURED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_FEATURED_COUNT = 5;
 const SOURCE_KEYS = new Set(['all', 'thunhoon', 'kaohoon', 'settrade', 'official', 'infoquest', 'efinance', 'broker', 'other']);
+const SOURCE_TIER = Object.freeze({ official: 4, settrade: 3, infoquest: 2, efinance: 2, thunhoon: 2, kaohoon: 2, broker: 1 });
 
 function archiveFingerprint(item) {
   return createHash('sha256').update(newsFingerprint(item)).digest('hex');
@@ -113,8 +116,8 @@ function createNewsArchiveService({
       matchedSymbols: row?.matched_symbols || [],
       matchedBrokerFirms: row?.broker_firms || [],
       brokerCategory: Boolean(row?.broker_firms?.length),
-      analysisSummary: row?.analysis_summary,
-      analysisMode: row?.analysis_mode
+      analysisSummary: ['ai', 'rules'].includes(row?.analysis_mode) ? String(row?.analysis_summary || '').trim().slice(0, 450) : '',
+      analysisMode: ['ai', 'rules'].includes(row?.analysis_mode) && String(row?.analysis_summary || '').trim() ? row.analysis_mode : ''
     };
     return safeUrl && classifyNewsItem(item).accepted ? item : null;
   }
@@ -187,10 +190,11 @@ function createNewsArchiveService({
     });
   }
 
-  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [] } = {}) {
+  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [], featuredCount = 0 } = {}) {
     const safePage = Math.max(1, Math.min(100000, Number.parseInt(page, 10) || 1));
     const safePageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, Number.parseInt(pageSize, 10) || 10));
-    if (!configured) return { configured: false, items: [], page: safePage, pageSize: safePageSize, total: 0, maxAgeDays: RETENTION_DAYS, coverage: 'unavailable' };
+    const safeFeaturedCount = Math.max(0, Math.min(MAX_FEATURED_COUNT, Number.parseInt(featuredCount, 10) || 0));
+    if (!configured) return { configured: false, featured: [], items: [], page: safePage, pageSize: safePageSize, total: 0, maxAgeDays: RETENTION_DAYS, coverage: 'unavailable' };
     const safeSource = SOURCE_KEYS.has(source) ? source : 'all';
     const safeSymbol = normalizeSymbol(symbol);
     const snapshot = await getArchiveSnapshot();
@@ -200,13 +204,24 @@ function createNewsArchiveService({
       query,
       excludeUrls
     });
+    const timestamp = Number(now());
+    const featured = safeFeaturedCount > 0
+      ? displayable.filter(item => {
+        const published = Date.parse(item.pubDate);
+        return Number.isFinite(published) && published >= timestamp - FEATURED_WINDOW_MS && published <= timestamp + 10 * 60 * 1000;
+      }).sort((left, right) => (SOURCE_TIER[right.source] || 0) - (SOURCE_TIER[left.source] || 0)
+        || Date.parse(right.pubDate) - Date.parse(left.pubDate)).slice(0, safeFeaturedCount)
+      : [];
+    const featuredKeys = new Set(featured.map(newsFingerprint));
+    const paginated = featuredKeys.size ? displayable.filter(item => !featuredKeys.has(newsFingerprint(item))) : displayable;
     const start = (safePage - 1) * safePageSize;
     return {
       configured: true,
-      items: displayable.slice(start, start + safePageSize),
+      featured,
+      items: paginated.slice(start, start + safePageSize),
       page: safePage,
       pageSize: safePageSize,
-      total: displayable.length,
+      total: paginated.length,
       qualityFiltered: snapshot.qualityFiltered,
       deduplicated: snapshot.deduplicated,
       maxAgeDays: RETENTION_DAYS,

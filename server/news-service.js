@@ -26,7 +26,7 @@ const OUTLET_SOURCE = Object.freeze([
   [/efinance|อีไฟแนนซ์/i, 'efinance']
 ]);
 
-const GOOGLE_RSS_PREFIX = 'https://news.google.com/rss/search?';
+const GOOGLE_RSS_PREFIX = 'https://news.google.com/rss/search?q=';
 const GOOGLE_RSS_BACKOFF_BASE_MS = 30_000;
 const GOOGLE_RSS_BACKOFF_MAX_MS = 15 * 60 * 1000;
 const GOOGLE_RSS_RETRY_AFTER_MAX_MS = 30 * 60 * 1000;

@@ -323,11 +323,12 @@ async function handle(req, res) {
       const source = url.searchParams.get('source') || 'all';
       const symbol = url.searchParams.get('symbol') || '';
       const query = String(url.searchParams.get('query') || '').trim().slice(0, 80);
+      const featuredCount = url.searchParams.get('featuredCount') || '0';
       const excludeUrls = url.searchParams.getAll('exclude').slice(0, 10);
       const exclusionKey = createHash('sha256').update(JSON.stringify(excludeUrls)).digest('base64url').slice(0, 16);
-      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${exclusionKey}`;
+      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}`;
       const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({
-        page, pageSize, source, symbol, query, excludeUrls
+        page, pageSize, source, symbol, query, excludeUrls, featuredCount
       }));
       return send(res, 200, { ...data, dataState: data.stale ? 'stale' : data.configured ? 'fresh' : 'unavailable' });
     } catch (error) {
