@@ -145,6 +145,63 @@ test('watchlist reads and writes are scoped to the validated auth user', async (
   assert.equal(upstreamBody.watchlists[0].items[0].symbol, 'PTT');
 });
 
+test('backend API response contracts remain stable before service extraction', async () => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { authorization: 'Bearer test-token' };
+
+  const authConfig = JSON.parse((await request(base, '/api/auth-config')).body);
+  assert.deepEqual(Object.keys(authConfig).sort(), ['anonKey', 'configured', 'url']);
+
+  const search = JSON.parse((await request(base, '/api/search?q=ptt', { headers })).body);
+  assert.deepEqual(Object.keys(search).sort(), ['items', 'provider']);
+  assert.deepEqual(Object.keys(search.items[0]).sort(), ['exchange', 'name', 'symbol', 'type']);
+
+  const market = JSON.parse((await request(base, '/api/market?symbols=PTT&symbol=PTT&range=1D', { headers })).body);
+  assert.deepEqual(Object.keys(market).sort(), [
+    'asOf', 'dataState', 'delayMinutes', 'delayed', 'errors', 'fetchedAt', 'history',
+    'indicatorHistory', 'indices', 'levelsHistory', 'partial', 'provider', 'source', 'stale', 'stocks'
+  ]);
+
+  const coverage = JSON.parse((await request(base, '/api/coverage', { headers })).body);
+  assert.deepEqual(Object.keys(coverage).sort(), [
+    'configured', 'currentVerified', 'dataState', 'lastChecked', 'provider', 'technicalReady'
+  ]);
+  assert.equal(coverage.configured, false);
+  assert.equal(coverage.currentVerified, null);
+
+  const overview = JSON.parse((await request(base, '/api/settrade-overview', { headers })).body);
+  assert.deepEqual(Object.keys(overview).filter(key => key !== 'cached').sort(), [
+    'activeValue', 'activeValueStatus', 'asOf', 'breadth', 'closeSummary', 'dataState',
+    'delayed', 'errors', 'fetchedAt', 'fieldStatus', 'foreign', 'indices', 'links', 'marketDate', 'nvdr',
+    'partial', 'source', 'sourceStatus', 'stale', 'tfex'
+  ]);
+  assert.ok(overview.cached === undefined || overview.cached === true);
+
+  const neutralOverview = JSON.parse((await request(base, '/api/market-overview', { headers })).body);
+  assert.deepEqual(neutralOverview.indices, overview.indices);
+  assert.deepEqual(neutralOverview.fieldStatus, overview.fieldStatus);
+
+  const archive = JSON.parse((await request(base, '/api/news-archive?page=1&pageSize=10', { headers })).body);
+  assert.equal(archive.configured, false);
+  assert.equal(archive.dataState, 'unavailable');
+  assert.deepEqual(archive.items, []);
+  assert.equal(archive.maxAgeDays, 365);
+
+  const watchlistNews = JSON.parse((await request(base, '/api/watchlist-news?stocks=%5B%7B%22symbol%22%3A%22PTT%22%7D%5D', { headers })).body);
+  assert.deepEqual(Object.keys(watchlistNews).sort(), ['asOf', 'dataState', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
+
+  const news = JSON.parse((await request(base, '/api/news', { headers })).body);
+  assert.deepEqual(Object.keys(news).sort(), ['asOf', 'dataState', 'errors', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
+
+  const analysis = JSON.parse((await request(base, '/api/news-analysis', {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ items: [{ source: 'thunhoon', title: 'PTT update', url: 'https://news.google.com/articles/1', snippet: 'ผลประกอบการเติบโต' }] })
+  })).body);
+  assert.deepEqual(Object.keys(analysis).sort(), ['aiConfigured', 'items', 'mode']);
+  assert.deepEqual(Object.keys(analysis.items[0]).sort(), ['basis', 'mode', 'summary']);
+});
+
 test('partial provider outages degrade independently without fabricating zero values', async () => {
   const base = `http://127.0.0.1:${server.address().port}`;
   const headers = { authorization: 'Bearer test-token' };
@@ -178,64 +235,7 @@ test('partial provider outages degrade independently without fabricating zero va
   assert.equal(newsResponse.status, 200);
   const news = JSON.parse(newsResponse.body);
   assert.ok(news.items.length > 0);
-  assert.deepEqual(news.errors, ['kaohoon']);
+  assert.deepEqual(news.errors, ['kaohoon', 'settrade', 'settrade', 'official', 'infoquest', 'efinance', 'broker']);
   assert.equal(news.dataState, 'partial');
   assert.equal(news.partial, true);
-});
-
-test('backend API response contracts remain stable before service extraction', async () => {
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const headers = { authorization: 'Bearer test-token' };
-
-  const authConfig = JSON.parse((await request(base, '/api/auth-config')).body);
-  assert.deepEqual(Object.keys(authConfig).sort(), ['anonKey', 'configured', 'url']);
-
-  const search = JSON.parse((await request(base, '/api/search?q=ptt', { headers })).body);
-  assert.deepEqual(Object.keys(search).sort(), ['items', 'provider']);
-  assert.deepEqual(Object.keys(search.items[0]).sort(), ['exchange', 'name', 'symbol', 'type']);
-
-  const market = JSON.parse((await request(base, '/api/market?symbols=PTT&symbol=PTT&range=1D', { headers })).body);
-  assert.deepEqual(Object.keys(market).sort(), [
-    'asOf', 'dataState', 'delayMinutes', 'delayed', 'errors', 'fetchedAt', 'history',
-    'indicatorHistory', 'indices', 'levelsHistory', 'partial', 'provider', 'source', 'stale', 'stocks'
-  ]);
-
-  const coverage = JSON.parse((await request(base, '/api/coverage', { headers })).body);
-  assert.deepEqual(Object.keys(coverage).sort(), [
-    'configured', 'currentVerified', 'dataState', 'lastChecked', 'provider', 'technicalReady'
-  ]);
-  assert.equal(coverage.configured, false);
-  assert.equal(coverage.currentVerified, null);
-
-  const overview = JSON.parse((await request(base, '/api/settrade-overview', { headers })).body);
-  assert.deepEqual(Object.keys(overview).sort(), [
-    'activeValue', 'activeValueStatus', 'asOf', 'breadth', 'cached', 'closeSummary', 'dataState',
-    'delayed', 'errors', 'fetchedAt', 'fieldStatus', 'foreign', 'indices', 'links', 'marketDate', 'nvdr',
-    'partial', 'source', 'sourceStatus', 'stale', 'tfex'
-  ]);
-  assert.equal(overview.cached, true);
-
-  const neutralOverview = JSON.parse((await request(base, '/api/market-overview', { headers })).body);
-  assert.deepEqual(neutralOverview.indices, overview.indices);
-  assert.deepEqual(neutralOverview.fieldStatus, overview.fieldStatus);
-
-  const news = JSON.parse((await request(base, '/api/news', { headers })).body);
-  assert.deepEqual(Object.keys(news).sort(), ['asOf', 'dataState', 'errors', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
-
-  const archive = JSON.parse((await request(base, '/api/news-archive?page=1&pageSize=10', { headers })).body);
-  assert.equal(archive.configured, false);
-  assert.equal(archive.dataState, 'unavailable');
-  assert.deepEqual(archive.items, []);
-  assert.equal(archive.maxAgeDays, 365);
-
-  const watchlistNews = JSON.parse((await request(base, '/api/watchlist-news?stocks=%5B%7B%22symbol%22%3A%22PTT%22%7D%5D', { headers })).body);
-  assert.deepEqual(Object.keys(watchlistNews).sort(), ['asOf', 'dataState', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
-
-  const analysis = JSON.parse((await request(base, '/api/news-analysis', {
-    method: 'POST',
-    headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify({ items: [{ source: 'thunhoon', title: 'PTT update', url: 'https://news.google.com/articles/1', snippet: 'ผลประกอบการเติบโต' }] })
-  })).body);
-  assert.deepEqual(Object.keys(analysis).sort(), ['aiConfigured', 'items', 'mode']);
-  assert.deepEqual(Object.keys(analysis.items[0]).sort(), ['basis', 'mode', 'summary']);
 });

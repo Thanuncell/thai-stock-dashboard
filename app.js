@@ -49,12 +49,10 @@ const navigationFallback = (() => {
   try { return JSON.parse(sessionStorage.getItem(NAVIGATION_FALLBACK_KEY) || '{}'); } catch (_) { return {}; }
 })();
 const initialNavigation = parseNavigationState(location.href, navigationFallback);
-let watchlists = loadWatchlists();
+let userStorageScope = '';
+let watchlists = [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
 const requestedWatchlistId = initialNavigation.route === 'watchlist' ? initialNavigation.watchlistId : '';
-let activeWatchlistId = requestedWatchlistId
-  ? requestedWatchlistId
-  : localStorage.getItem('setscope-active-watchlist') || 'list-1';
-if (!requestedWatchlistId && !watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
+let activeWatchlistId = requestedWatchlistId || 'list-1';
 let watchlist = currentWatchlist().items;
 let activeSymbol = initialNavigation.route === 'chart' ? initialNavigation.symbol : watchlist[0]?.symbol || 'PTT';
 let activeName = initialNavigation.route === 'chart'
@@ -97,9 +95,9 @@ const chartPointers = new Map();
 let chartGesture = null;
 let chartRenderFrame = null;
 let coverageSummaryRequested = false;
-let alertPrefs = readLocal('setscope-alert-prefs', {});
-let alertStates = readLocal('setscope-alert-states', {});
-let alertHistory = readLocal('setscope-alert-history', []);
+let alertPrefs = {};
+let alertStates = {};
+let alertHistory = [];
 let unreadAlerts = 0;
 let watchlistCloudReady = false;
 let watchlistSyncTimer = null;
@@ -206,10 +204,11 @@ function setupWorkspaceNavigation() {
   writeNavigation('replace', initialNavigation.route);
 }
 function persistWatchlistsLocal() {
+  if (!userStorageScope) return;
   currentWatchlist().items = watchlist;
-  localStorage.setItem('setscope-watchlists-v2', JSON.stringify(watchlists));
-  localStorage.setItem('setscope-watchlist', JSON.stringify(watchlist));
-  localStorage.setItem('setscope-active-watchlist', activeWatchlistId);
+  localStorage.setItem(scopedStorageKey('setscope-watchlists-v2'), JSON.stringify(watchlists));
+  localStorage.setItem(scopedStorageKey('setscope-watchlist'), JSON.stringify(watchlist));
+  localStorage.setItem(scopedStorageKey('setscope-active-watchlist'), activeWatchlistId);
 }
 function scheduleWatchlistCloudSync() {
   persistWatchlistsLocal();
@@ -267,12 +266,36 @@ function readLocal(key, fallback) {
   try { const value = JSON.parse(localStorage.getItem(key)); return value ?? fallback; } catch (_) { return fallback; }
 }
 
+function scopedStorageKey(key) { return userStorageScope ? `${key}:${userStorageScope}` : ''; }
+function readScopedLocal(key, fallback) {
+  const scoped = scopedStorageKey(key);
+  return scoped ? readLocal(scoped, fallback) : fallback;
+}
+function writeScopedLocal(key, value) {
+  const scoped = scopedStorageKey(key);
+  if (scoped) localStorage.setItem(scoped, JSON.stringify(value));
+}
+
 function loadWatchlists() {
+  const key = scopedStorageKey('setscope-watchlists-v2');
+  if (!key) return [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
   try {
-    const saved = JSON.parse(localStorage.getItem('setscope-watchlists-v2') || 'null');
+    const saved = JSON.parse(localStorage.getItem(key) || 'null');
     if (Array.isArray(saved) && saved.length) return normalizeLists(saved);
   } catch (_) {}
   return [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
+}
+function initializeUserScopedState() {
+  userStorageScope = String(window.setscopeAuth?.user?.id || '');
+  watchlists = loadWatchlists();
+  const storedActive = userStorageScope ? localStorage.getItem(scopedStorageKey('setscope-active-watchlist')) : '';
+  activeWatchlistId = requestedWatchlistId || storedActive || watchlists[0].id;
+  if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
+  watchlist = currentWatchlist().items;
+  alertPrefs = readScopedLocal('setscope-alert-prefs', {});
+  alertStates = readScopedLocal('setscope-alert-states', {});
+  alertHistory = readScopedLocal('setscope-alert-history', []);
+  latestWatchlistNews = [];
 }
 function currentWatchlist() { return watchlists.find(list => list.id === activeWatchlistId) || watchlists[0]; }
 function saveWatchlist() { scheduleWatchlistCloudSync(); }
@@ -937,7 +960,7 @@ function updateNotificationStatus() {
 function recordAlert(symbol, title, body) {
   const item = { symbol, title, body, time: new Date().toISOString() };
   alertHistory.unshift(item); alertHistory = alertHistory.slice(0, 30);
-  localStorage.setItem('setscope-alert-history', JSON.stringify(alertHistory));
+  writeScopedLocal('setscope-alert-history', alertHistory);
   if ($('#alerts-panel').hidden) unreadAlerts++;
   if ('Notification' in window && Notification.permission === 'granted') {
     try { new Notification(`SETscope  ·  ${symbol}`, { body: `${title} — ${body}`, tag: `setscope-${symbol}-${title}` }); } catch (_) {}
@@ -965,7 +988,7 @@ function evaluateWatchlistAlerts(rows) {
     }
     alertStates[row.symbol] = { price, technical: analysis?.overall || previous?.technical || '', updatedAt: now };
   });
-  localStorage.setItem('setscope-alert-states', JSON.stringify(alertStates));
+  writeScopedLocal('setscope-alert-states', alertStates);
 }
 function updateStockCards(rows) {
   const activeQuote = rows.find(row => row.symbol === activeSymbol);
@@ -1322,10 +1345,11 @@ function renderNews() {
 }
 
 async function setup() {
+  initializeUserScopedState();
+  setupWorkspaceNavigation();
   await initializeWatchlistCloudSync();
   if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
   watchlist = currentWatchlist().items;
-  setupWorkspaceNavigation();
   renderWatchlistPicker();
   setTheme(localStorage.getItem('setscope-theme') || 'light');
   syncTechnicalSearch();
@@ -1365,14 +1389,14 @@ async function setup() {
     if (!field || !stock) return;
     const symbol = stock.dataset.alertSymbol, pref = getAlertPref(symbol);
     pref[field] = field === 'technical' ? event.target.checked : event.target.value;
-    alertPrefs[symbol] = pref; localStorage.setItem('setscope-alert-prefs', JSON.stringify(alertPrefs));
+    alertPrefs[symbol] = pref; writeScopedLocal('setscope-alert-prefs', alertPrefs);
   });
   $('#alerts-settings').addEventListener('input', event => {
     const field = event.target.dataset.field, stock = event.target.closest('[data-alert-symbol]');
     if (!field || field === 'technical' || !stock) return;
     const symbol = stock.dataset.alertSymbol, pref = getAlertPref(symbol);
     pref[field] = event.target.value; alertPrefs[symbol] = pref;
-    localStorage.setItem('setscope-alert-prefs', JSON.stringify(alertPrefs));
+    writeScopedLocal('setscope-alert-prefs', alertPrefs);
   });
   document.addEventListener('click', event => {
     if (!event.target.closest('.alerts-menu') && !alertsPanel.hidden) { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); }

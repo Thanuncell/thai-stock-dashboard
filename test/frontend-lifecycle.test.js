@@ -237,3 +237,20 @@ test('suspect or stale market rows cannot drive alerts or mover rankings as fres
   assert.match(appSource, /quoteState === 'stale' \? 'ข้อมูลเก่า'/);
   assert.match(appSource, /quoteState === 'suspect' \|\| quoteState === 'quarantined' \? 'ข้อมูลต้องสงสัย'/);
 });
+
+test('initial workspace routing completes before slow Watchlist sync and non-active views start hidden', () => {
+  const setup = appSource.match(/async function setup\(\) \{[\s\S]*?await initializeWatchlistCloudSync\(\)/)?.[0] || '';
+  assert.match(setup, /initializeUserScopedState\(\);[\s\S]*?setupWorkspaceNavigation\(\);[\s\S]*?await initializeWatchlistCloudSync\(\)/);
+  assert.match(indexSource, /class="workspace-section watchlist-workspace workspace-hidden" id="watchlist-page"/);
+  assert.match(indexSource, /class="content-grid workspace-section workspace-hidden" id="chart-section"/);
+  assert.match(indexSource, /class="bottom-grid workspace-section workspace-hidden" id="activity-section"/);
+});
+
+test('Watchlist and alert browser state is scoped to the authenticated account', () => {
+  assert.match(appSource, /userStorageScope = String\(window\.setscopeAuth\?\.user\?\.id \|\| ''\)/);
+  assert.match(appSource, /function scopedStorageKey\(key\) \{ return userStorageScope \? `\$\{key\}:\$\{userStorageScope\}` : ''; \}/);
+  assert.match(appSource, /readScopedLocal\('setscope-alert-prefs', \{\}\)/);
+  assert.match(appSource, /writeScopedLocal\('setscope-alert-history', alertHistory\)/);
+  assert.doesNotMatch(appSource, /localStorage\.getItem\('setscope-(?:watchlists-v2|active-watchlist|alert-(?:prefs|states|history))'/);
+  assert.doesNotMatch(appSource, /localStorage\.setItem\('setscope-(?:watchlists-v2|watchlist|active-watchlist|alert-(?:prefs|states|history))'/);
+});
