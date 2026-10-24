@@ -29,6 +29,12 @@ function coverageCounts(rows = []) {
   };
 }
 
+function persistedCount(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const count = Number(value);
+  return Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
 function coverageRunKey(value = new Date(), provider = PROVIDER) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -90,13 +96,14 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
   async function summary() {
     if (!configured) return {
       configured: false,
+      universe: null,
       currentVerified: null,
       technicalReady: null,
       lastChecked: null,
       provider: PROVIDER,
       dataState: 'unavailable'
     };
-    const response = await request('coverage_runs?select=current_verified,technical_ready,finished_at,provider,status&status=eq.completed&order=finished_at.desc&limit=1');
+    const response = await request('coverage_runs?select=universe,current_verified,technical_ready,finished_at,provider,status&status=eq.completed&order=finished_at.desc&limit=1');
     const [row] = await response.json();
     if (!row) {
       const current = await counts();
@@ -104,13 +111,19 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     }
     const finishedAt = row.finished_at || null;
     const age = finishedAt ? Number(now()) - Date.parse(finishedAt) : Number.POSITIVE_INFINITY;
+    const universe = persistedCount(row.universe);
+    const currentVerified = persistedCount(row.current_verified);
+    const technicalReady = persistedCount(row.technical_ready);
+    const countsValid = universe !== null && currentVerified !== null && technicalReady !== null
+      && currentVerified <= universe && technicalReady <= currentVerified;
     return {
       configured: true,
-      currentVerified: Number(row.current_verified) || 0,
-      technicalReady: Number(row.technical_ready) || 0,
+      universe: countsValid ? universe : null,
+      currentVerified: countsValid ? currentVerified : null,
+      technicalReady: countsValid ? technicalReady : null,
       lastChecked: finishedAt,
       provider: row.provider || PROVIDER,
-      dataState: Number.isFinite(age) && age >= 0 && age <= SUMMARY_STALE_MS ? 'fresh' : 'stale'
+      dataState: !countsValid ? 'unavailable' : Number.isFinite(age) && age >= 0 && age <= SUMMARY_STALE_MS ? 'fresh' : 'stale'
     };
   }
 
@@ -389,5 +402,6 @@ module.exports = {
   coverageRunKey,
   createCoverageRepository,
   createCoverageRunner,
-  mapWithConcurrency
+  mapWithConcurrency,
+  persistedCount
 };

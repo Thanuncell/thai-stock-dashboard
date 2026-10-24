@@ -222,15 +222,16 @@ test('Market Overview has deterministic startup banner ownership and truthful fr
   assert.match(appSource, /updateTradingViewChart\(\); getMarket\(\); getSettradeOverview\(\);/);
 });
 
-test('Coverage UI uses persisted summary fields without a hard-coded count', () => {
+test('Footer Coverage uses validated persisted summary fields without a hard-coded count', () => {
   assert.match(indexSource, /id="coverage-summary"/);
+  assert.match(indexSource, /หุ้นในขอบเขตตรวจสอบ: <b id="coverage-universe">—<\/b> ตัว/);
+  assert.match(indexSource, /ตรวจสอบผ่านแล้ว: <b id="coverage-count">—<\/b> ตัว/);
   assert.match(indexSource, /id="coverage-count">—<\/b>/);
-  assert.match(indexSource, /id="coverage-checked">—<\/b>/);
-  assert.match(indexSource, /แหล่งข้อมูล Yahoo Finance/);
+  assert.match(indexSource, /แหล่งข้อมูล: Yahoo Finance/);
   assert.match(appSource, /apiFetch\('\/api\/coverage'\)/);
-  assert.match(appSource, /data\.currentVerified/);
-  assert.match(appSource, /!data\.lastChecked \|\| data\.dataState === 'unavailable'/);
-  assert.doesNotMatch(indexSource, /หลักทรัพย์ที่ตรวจสอบแล้ว\s*(?:291|500|900)/);
+  assert.match(appSource, /coverageDisplayState\(data\)/);
+  assert.match(appSource, /getCoverageSummary\(\); updateTradingViewChart\(\)/);
+  assert.doesNotMatch(indexSource, /หุ้นในขอบเขตตรวจสอบ:\s*(?:291|500|900)/);
 });
 
 test('Chart freshness uses the selected provider timestamp and exposes guarded state', () => {

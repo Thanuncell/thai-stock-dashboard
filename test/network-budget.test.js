@@ -52,7 +52,7 @@ test('archive adds one bounded server-page read without increasing upstream poll
 test('Preventive Data Guard adds no upstream validation request or browser polling', () => {
   assert.doesNotMatch(guardSource, /fetch\s*\(|query1\.finance\.yahoo\.com|setInterval|setTimeout/);
   assert.equal((appSource.match(/apiFetch\('\/api\/coverage'\)/g) || []).length, 1);
-  assert.match(appSource, /if \(page === 'chart'\) getCoverageSummary\(\)/);
+  assert.equal((appSource.match(/getCoverageSummary\(\); updateTradingViewChart\(\)/g) || []).length, 1);
   assert.match(appSource, /if \(!root \|\| coverageSummaryRequested\) return/);
   assert.equal((appSource.match(/setInterval\(/g) || []).length, 4);
 });

@@ -9,6 +9,7 @@ import {
   chartGeometry,
   computeEma,
   computeSmaSeries,
+  coverageDisplayState,
   createRequestSequence,
   defaultChartViewport,
   escapeHtml,
@@ -155,7 +156,6 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   $('#workspace-title').innerHTML = heading.title;
   $('#workspace-description').textContent = heading.description;
   setText('#breadcrumb-current', heading.breadcrumb);
-  if (page === 'chart') getCoverageSummary();
   if (historyMode !== 'none') writeNavigation(historyMode, page);
   if (scroll && previousPage !== page) {
     const top = workspaceScrollPositions.get(page) || 0;
@@ -1045,19 +1045,28 @@ async function getCoverageSummary() {
   const root = $('#coverage-summary');
   if (!root || coverageSummaryRequested) return;
   coverageSummaryRequested = true;
+  const counts = $('#coverage-counts');
+  const status = $('#coverage-status');
+  const showUnavailable = reason => {
+    if (counts) counts.hidden = true;
+    if (status) {
+      status.textContent = reason === 'stale' ? 'สถานะ Coverage ยังไม่พร้อม · ข้อมูลล่าสุดหมดอายุ' : 'สถานะ Coverage ยังไม่พร้อม';
+      status.hidden = false;
+    }
+    root.dataset.state = 'unavailable';
+  };
   try {
     const response = await apiFetch('/api/coverage');
     const data = await response.json();
-    const count = Number(data.currentVerified);
-    if (!response.ok || !data.configured || !data.lastChecked || data.dataState === 'unavailable' || !Number.isFinite(count)) {
-      root.hidden = true;
-      return;
-    }
-    setText('#coverage-count', String(count));
-    setText('#coverage-checked', data.lastChecked ? stamp(data.lastChecked) : 'ยังไม่เคยตรวจสอบ');
-    root.hidden = false;
+    const display = coverageDisplayState(data);
+    if (!response.ok || !display.ready) return showUnavailable(display.reason);
+    setText('#coverage-universe', String(display.universe));
+    setText('#coverage-count', String(display.currentVerified));
+    if (counts) counts.hidden = false;
+    if (status) status.hidden = true;
+    root.dataset.state = 'ready';
   } catch (_) {
-    root.hidden = true;
+    showUnavailable('unavailable');
   }
 }
 async function getMarket() {
@@ -1519,7 +1528,7 @@ async function setup() {
   $('#refresh-watchlist-news').addEventListener('click', () => getWatchlistNews({ reason: 'manual', resetPage: true }));
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
-  updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews({ reason: 'startup' }); getWatchlistNews({ reason: 'startup' });
+  getCoverageSummary(); updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews({ reason: 'startup' }); getWatchlistNews({ reason: 'startup' });
   setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(() => getNews({ reason: 'poll' }), 300000); setInterval(() => getWatchlistNews({ reason: 'poll' }), 300000);
 }
 if (document.body.classList.contains('authenticated')) setup();

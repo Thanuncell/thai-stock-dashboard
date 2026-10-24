@@ -195,6 +195,7 @@ test('coverage repository is unavailable without a server secret and exposes no 
   assert.equal(repository.configured, false);
   assert.deepEqual(await repository.summary(), {
     configured: false,
+    universe: null,
     currentVerified: null,
     technicalReady: null,
     lastChecked: null,
@@ -232,6 +233,7 @@ test('persisted coverage summary becomes stale by age instead of fabricating fre
     env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
     now: () => Date.parse('2026-10-20T12:00:00.000Z'),
     fetchImpl: async () => new Response(JSON.stringify([{
+      universe: 400,
       current_verified: 321,
       technical_ready: 280,
       finished_at: '2026-10-18T12:00:00.000Z',
@@ -240,8 +242,67 @@ test('persisted coverage summary becomes stale by age instead of fabricating fre
     }]), { status: 200 })
   });
   const summary = await repository.summary();
+  assert.equal(summary.universe, 400);
   assert.equal(summary.currentVerified, 321);
   assert.equal(summary.technicalReady, 280);
   assert.equal(summary.dataState, 'stale');
   assert.equal(summary.lastChecked, '2026-10-18T12:00:00.000Z');
+});
+
+test('persisted coverage summary exposes validated fresh universe and verified counts', async () => {
+  const repository = createCoverageRepository({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-20T12:00:00.000Z'),
+    fetchImpl: async () => new Response(JSON.stringify([{
+      universe: 400,
+      current_verified: 321,
+      technical_ready: 280,
+      finished_at: '2026-10-20T11:00:00.000Z',
+      provider: 'Yahoo Finance',
+      status: 'completed'
+    }]), { status: 200 })
+  });
+  assert.deepEqual(await repository.summary(), {
+    configured: true,
+    universe: 400,
+    currentVerified: 321,
+    technicalReady: 280,
+    lastChecked: '2026-10-20T11:00:00.000Z',
+    provider: 'Yahoo Finance',
+    dataState: 'fresh'
+  });
+});
+
+test('missing completed coverage run never presents current table counts as fresh', async () => {
+  const repository = createCoverageRepository({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    fetchImpl: async (_url, init = {}) => (init.method === 'HEAD'
+      ? new Response('', { status: 200, headers: { 'content-range': '0-0/12' } })
+      : new Response('[]', { status: 200 }))
+  });
+  const summary = await repository.summary();
+  assert.equal(summary.universe, 12);
+  assert.equal(summary.currentVerified, 12);
+  assert.equal(summary.lastChecked, null);
+  assert.equal(summary.dataState, 'unavailable');
+});
+
+test('invalid persisted coverage counts fail closed instead of becoming zero', async () => {
+  const repository = createCoverageRepository({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
+    now: () => Date.parse('2026-10-20T12:00:00.000Z'),
+    fetchImpl: async () => new Response(JSON.stringify([{
+      universe: 100,
+      current_verified: 101,
+      technical_ready: 80,
+      finished_at: '2026-10-20T11:00:00.000Z',
+      provider: 'Yahoo Finance',
+      status: 'completed'
+    }]), { status: 200 })
+  });
+  const summary = await repository.summary();
+  assert.equal(summary.universe, null);
+  assert.equal(summary.currentVerified, null);
+  assert.equal(summary.technicalReady, null);
+  assert.equal(summary.dataState, 'unavailable');
 });

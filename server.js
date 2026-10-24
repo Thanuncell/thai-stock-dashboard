@@ -262,6 +262,7 @@ async function handle(req, res) {
     } catch (_) {
       return send(res, 200, {
         configured: coverageRepository.configured,
+        universe: null,
         currentVerified: null,
         technicalReady: null,
         lastChecked: null,

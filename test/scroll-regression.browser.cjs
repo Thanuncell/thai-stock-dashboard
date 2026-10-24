@@ -91,7 +91,7 @@ async function mockRequest(route, baseUrl, metrics) {
     });
   }
   if (url.pathname === '/api/coverage') {
-    return json(route, { configured: false, currentVerified: null, technicalReady: null, lastChecked: null, provider: 'fixture', dataState: 'unavailable' });
+    return json(route, { configured: true, universe: 400, currentVerified: 321, technicalReady: 280, lastChecked: new Date().toISOString(), provider: 'Yahoo Finance', dataState: 'fresh' });
   }
   if (url.pathname === '/api/news') {
     return json(route, { items: newsItems(28), errors: [], fetchedAt: new Date().toISOString(), asOf: new Date().toISOString(), source: 'fixture', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30 });
@@ -196,6 +196,10 @@ async function run() {
     await page.goto(`${baseUrl}/#watchlist`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('body.authenticated #watchlist-mobile .watch-item');
     await page.waitForFunction(() => document.querySelectorAll('#watchlist-mobile .watch-item').length === 24);
+    await page.waitForSelector('#coverage-summary[data-state="ready"]');
+    assert.equal(await page.locator('#coverage-universe').textContent(), '400');
+    assert.equal(await page.locator('#coverage-count').textContent(), '321');
+    assert.match(await page.locator('#coverage-summary').textContent(), /แหล่งข้อมูล:\s*Yahoo Finance/);
     const list = page.locator('#watchlist-mobile');
     await list.scrollIntoViewIfNeeded();
     const box = await list.boundingBox();

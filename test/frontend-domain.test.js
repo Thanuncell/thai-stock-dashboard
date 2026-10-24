@@ -15,6 +15,21 @@ test('dense intraday chart geometry stays within the viewport and preserves orde
   assert.ok(geometry.x(291) <= geometry.width - geometry.right);
 });
 
+test('Footer Coverage accepts only fresh, valid persisted counts', () => {
+  const valid = {
+    configured: true, universe: 400, currentVerified: 321,
+    lastChecked: '2026-10-24T01:00:00.000Z', provider: 'Yahoo Finance', dataState: 'fresh'
+  };
+  assert.deepEqual(domain.coverageDisplayState(valid), {
+    ready: true, reason: null, universe: 400, currentVerified: 321
+  });
+  assert.equal(domain.coverageDisplayState({ ...valid, universe: null }).reason, 'invalid');
+  assert.equal(domain.coverageDisplayState({ ...valid, dataState: 'stale' }).reason, 'stale');
+  assert.equal(domain.coverageDisplayState({ ...valid, currentVerified: 401 }).reason, 'invalid');
+  assert.equal(domain.coverageDisplayState({ ...valid, currentVerified: '321' }).reason, 'invalid');
+  assert.equal(domain.coverageDisplayState({ ...valid, provider: 'fixture' }).reason, 'invalid');
+});
+
 test('chart viewport defaults to a useful latest window without changing the dataset', () => {
   assert.deepEqual(domain.defaultChartViewport({ rowCount: 200, hostWidth: 390, range: '1D' }), {
     start: 158, end: 200, followLatest: true
