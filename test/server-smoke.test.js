@@ -14,6 +14,7 @@ delete process.env.OPENAI_API_KEY;
 
 const NativeResponse = globalThis.Response;
 const upstreamCalls = [];
+let watchlistReadFailure = false;
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
 globalThis.fetch = async (input, init = {}) => {
   const url = String(input);
@@ -26,6 +27,7 @@ globalThis.fetch = async (input, init = {}) => {
   }
   if (url.includes('/rest/v1/user_watchlists')) {
     if ((init.method || 'GET') === 'POST') return new NativeResponse('', { status: 201 });
+    if (watchlistReadFailure) return new NativeResponse('fixture unavailable', { status: 503 });
     return new NativeResponse(JSON.stringify([{ watchlists: [], active_watchlist_id: 'list-1' }]), {
       status: 200,
       headers: { 'content-type': 'application/json' }
@@ -126,6 +128,7 @@ test('watchlist reads and writes are scoped to the validated auth user', async (
   const headers = { authorization: 'Bearer test-token' };
   const read = await request(base, '/api/watchlists', { headers });
   assert.equal(read.status, 200);
+  assert.equal(read.headers['cache-control'], 'no-store');
   const readCall = upstreamCalls.find(call => call.url.includes('/rest/v1/user_watchlists') && !call.init.method);
   assert.match(readCall.url, /user_id=eq\.user-a/);
 
@@ -143,6 +146,12 @@ test('watchlist reads and writes are scoped to the validated auth user', async (
   const upstreamBody = JSON.parse(writeCall.init.body);
   assert.equal(upstreamBody.user_id, 'user-a');
   assert.equal(upstreamBody.watchlists[0].items[0].symbol, 'PTT');
+
+  watchlistReadFailure = true;
+  const failedRead = await request(base, '/api/watchlists', { headers });
+  watchlistReadFailure = false;
+  assert.equal(failedRead.status, 502);
+  assert.equal(failedRead.headers['cache-control'], 'no-store');
 });
 
 test('backend API response contracts remain stable before service extraction', async () => {

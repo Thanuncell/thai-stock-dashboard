@@ -25,7 +25,7 @@ test('frontend owns one timer per debounced search and one cloud sync timer', ()
   assert.equal((appSource.match(/let watchlistSyncTimer/g) || []).length, 1);
   assert.equal((appSource.match(/clearTimeout\(searchTimer\)/g) || []).length, 1);
   assert.equal((appSource.match(/clearTimeout\(newsSearchTimer\)/g) || []).length, 1);
-  assert.equal((appSource.match(/clearTimeout\(watchlistSyncTimer\)/g) || []).length, 1);
+  assert.equal((appSource.match(/clearTimeout\(watchlistSyncTimer\)/g) || []).length, 2);
 });
 
 test('breadcrumb, bell and broker controls preserve accessible UI contracts', () => {
@@ -265,15 +265,16 @@ test('suspect or stale market rows cannot drive alerts or mover rankings as fres
 });
 
 test('initial workspace routing completes before slow Watchlist sync and non-active views start hidden', () => {
-  const setup = appSource.match(/async function setup\(\) \{[\s\S]*?await initializeWatchlistCloudSync\(\)/)?.[0] || '';
-  assert.match(setup, /initializeUserScopedState\(\);[\s\S]*?setupWorkspaceNavigation\(\);[\s\S]*?await initializeWatchlistCloudSync\(\)/);
+  const setup = appSource.match(/async function setup\(\) \{[\s\S]*?await initializeWatchlistCloudSync\(identity\)/)?.[0] || '';
+  assert.match(setup, /const identity = initializeUserScopedState\(\);[\s\S]*?setupWorkspaceNavigation\(\);[\s\S]*?await initializeWatchlistCloudSync\(identity\)/);
   assert.match(indexSource, /class="workspace-section watchlist-workspace workspace-hidden" id="watchlist-page"/);
   assert.match(indexSource, /class="content-grid workspace-section workspace-hidden" id="chart-section"/);
   assert.match(indexSource, /class="bottom-grid workspace-section workspace-hidden" id="activity-section"/);
 });
 
 test('Watchlist and alert browser state is scoped to the authenticated account', () => {
-  assert.match(appSource, /userStorageScope = String\(window\.setscopeAuth\?\.user\?\.id \|\| ''\)/);
+  assert.match(appSource, /identity\.ownerId !== authenticatedUserId/);
+  assert.match(appSource, /userStorageScope = identity\.ownerId/);
   assert.match(appSource, /function scopedStorageKey\(key\) \{ return userStorageScope \? `\$\{key\}:\$\{userStorageScope\}` : ''; \}/);
   assert.match(appSource, /readScopedLocal\('setscope-alert-prefs', \{\}\)/);
   assert.match(appSource, /writeScopedLocal\('setscope-alert-history', alertHistory\)/);

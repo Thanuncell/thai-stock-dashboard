@@ -146,9 +146,10 @@ async function loadNewsAndArchive() {
 
 async function handleWatchlists(req, res, user) {
   if (req.method === 'GET') {
+    res.setHeader('cache-control', 'no-store');
     try {
       const record = await watchlistService.load(user.id, req.headers.authorization);
-      return send(res, 200, { record }, { 'cache-control': 'private, max-age=30' });
+      return send(res, 200, { record }, { 'cache-control': 'no-store' });
     } catch (error) {
       return send(res, 502, { error: 'โหลด Watchlist จาก Supabase ไม่สำเร็จ', detail: error.message });
     }
