@@ -265,6 +265,36 @@ test('pending login and signup responses cannot restore a session after logout',
   }
 });
 
+test('stale logout completion cannot replace or reload a newer account session', async () => {
+  const harness = await createHarness({ holds: ['logout'] });
+  const logout = harness.getNode('#logout-button').listeners.get('click')();
+  await harness.waitForPending('logout');
+  assert.equal(harness.currentSession(), null);
+  assert.equal(harness.window.reloadCount, 0);
+
+  await harness.submit('#login-form', { email: 'b@example.test', password: 'secret' });
+  assert.equal(harness.window.setscopeAuth.user.id, 'user-b');
+  assert.equal(harness.currentSession().access_token, 'token-user-b');
+
+  harness.resolvePending('logout', {});
+  await logout;
+  await harness.settle();
+  assert.equal(harness.window.setscopeAuth.user.id, 'user-b');
+  assert.equal(harness.currentSession().access_token, 'token-user-b');
+  assert.equal(harness.document.body.classList.contains('authenticated'), true);
+  assert.equal(harness.window.reloadCount, 0);
+});
+
+test('ordinary logout still clears the active session and reloads the login route', async () => {
+  const harness = await createHarness();
+  await harness.getNode('#logout-button').listeners.get('click')();
+  await harness.settle();
+  assert.equal(harness.window.setscopeAuth.user, null);
+  assert.equal(harness.currentSession(), null);
+  assert.equal(harness.document.body.classList.contains('authenticated'), false);
+  assert.equal(harness.window.reloadCount, 1);
+});
+
 test('401 refresh and an old refresh timer cannot expire a newer login', async () => {
   const harness = await createHarness({ holds: ['refresh:refresh-a'], protectedStatuses: [401] });
   const oldTimer = [...harness.timers.values()].find(timer => timer.delay >= 15_000)?.callback;
