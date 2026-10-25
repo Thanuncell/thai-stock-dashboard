@@ -84,7 +84,7 @@ async function createAuthHarness() {
   const window = {
     location: { origin: 'https://setscope.example', reload: () => { window.reloadCalled = true; } },
     addEventListener(type, listener) { listeners.set(type, listener); },
-    dispatchEvent(event) { window.lastEvent = event; },
+    dispatchEvent(event) { window.lastEvent = event; listeners.get(event.type)?.(event); },
     setscopeAuth: null
   };
   const document = {
@@ -103,6 +103,9 @@ async function createAuthHarness() {
     sessionStorage, setTimeout: () => 1, clearTimeout: () => {}, URL, URLSearchParams, window
   });
   vm.runInContext(authSource, context, { filename: 'auth.js' });
+  window.addEventListener('setscope:authenticated', event => window.setscopeAuth.markPrivateUiReady({
+    ownerId: event.detail.userId, generation: event.detail.generation
+  }));
   for (let index = 0; index < 6; index++) await flush();
   return { document, get delayedSignal() { return delayedSignal; }, listeners, localStorage, window };
 }
@@ -114,6 +117,13 @@ test('T01/T03/T04/T08/T15 user-owned state is gated before render and legacy key
   assert.doesNotMatch(appSource, /localStorage\.(?:getItem|setItem|removeItem)\('setscope-(?:watchlists-v2|active-watchlist|alert-)/);
   assert.match(styleSource, /body:not\(\.authenticated\) \.app-shell\{display:none\}/);
   assert.match(appSource, /window\.addEventListener\('setscope:session-boundary', clearPrivateState\)/);
+  assert.match(appSource, /function clearPrivateState\(\) \{[\s\S]*?clearPrivateDom\(\)/);
+  assert.match(appSource, /function clearPrivateDom\(\) \{[\s\S]*?'#mover-list'/);
+  assert.match(appSource, /function clearPrivateState\(\) \{[\s\S]*?marketRequestSequence\.begin\(\)[\s\S]*?latestMarket = null[\s\S]*?latestMarketSymbol = ''[\s\S]*?latestMarketRange = ''/);
+  assert.match(appSource, /function renderMovers\(rows = \[\]\) \{\s*if \(!isCurrentPrivateIdentity\(\)\) return;/);
+  assert.match(appSource, /window\.addEventListener\('setscope:authenticated', initializeAccountSession\)/);
+  assert.doesNotMatch(appSource, /setscope:authenticated'[^\n]*once:\s*true/);
+  assert.match(appSource, /await initializeWatchlistCloudSync\(identity\)[\s\S]*?isCurrentPrivateIdentity\(identity\)[\s\S]*?markPrivateUiReady\?\.\(identity\)/);
 });
 
 test('T02/T05/T18 cloud no-record, empty, malformed and failure paths cannot issue an unowned empty write', () => {

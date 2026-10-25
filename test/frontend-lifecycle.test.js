@@ -10,9 +10,11 @@ const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'u
 const styleSource = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
 const domainSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'domain.mjs'), 'utf8');
 
-test('frontend setup remains single-shot and global listeners are not duplicated', () => {
-  assert.equal((appSource.match(/addEventListener\('setscope:authenticated',\s*setup,\s*\{\s*once:\s*true\s*\}\)/g) || []).length, 1);
-  assert.match(appSource, /if\s*\(document\.body\.classList\.contains\('authenticated'\)\)\s*setup\(\)/);
+test('frontend wires global UI once and initializes every authenticated owner session', () => {
+  assert.equal((appSource.match(/addEventListener\('setscope:authenticated',\s*initializeAccountSession\)/g) || []).length, 1);
+  assert.doesNotMatch(appSource, /addEventListener\('setscope:authenticated'[^\n]*once:\s*true/);
+  assert.match(appSource, /function setupUiEventWiring\(\) \{[\s\S]*?if \(uiEventsWired\) return;[\s\S]*?uiEventsWired = true;/);
+  assert.match(appSource, /setupUiEventWiring\(\);[\s\S]*?window\.addEventListener\('setscope:authenticated', initializeAccountSession\);[\s\S]*?if \(window\.setscopeAuth\?\.user\) initializeAccountSession\(\)/);
   assert.equal((appSource.match(/window\.addEventListener\('resize'/g) || []).length, 1);
   assert.equal((appSource.match(/window\.addEventListener\('orientationchange'/g) || []).length, 1);
   assert.equal((appSource.match(/document\.addEventListener\('fullscreenchange'/g) || []).length, 1);
@@ -137,7 +139,7 @@ test('Watchlist workspace search, collapse and News jump preserve membership and
   assert.match(appSource, /function patchWatchlistRoot/);
   assert.match(appSource, /const scrollTop = root\.scrollTop/);
   assert.match(appSource, /root\.scrollTop = scrollTop/);
-  const watchlistSearch = appSource.match(/\$\('#watchlist-search'\)[\s\S]*?\n\s*}\);/)?.[0] || '';
+  const watchlistSearch = appSource.match(/\$\('#watchlist-search'\)\?\.addEventListener\('input'[\s\S]*?\n\s*}\);/)?.[0] || '';
   assert.match(watchlistSearch, /watchlistQuery = event\.target\.value/);
   assert.match(watchlistSearch, /renderWatchlist\(latestMarket\?\.stocks \|\| \[\]\)/);
   assert.doesNotMatch(watchlistSearch, /saveWatchlist|scheduleWatchlistCloudSync|getMarket/);
@@ -232,7 +234,7 @@ test('Market Overview has deterministic startup banner ownership and truthful fr
   assert.match(appSource, /marketOverviewStatus\(data\)/);
   assert.match(domainSource, /แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด:/);
   assert.match(domainSource, /ข้อมูลที่บันทึกล่าสุด \(LKG\)/);
-  assert.match(appSource, /updateTradingViewChart\(\); getMarket\(\); getSettradeOverview\(\);/);
+  assert.match(appSource, /updateTradingViewChart\(\);\s*getMarket\(\);\s*getSettradeOverview\(\);/);
 });
 
 test('Footer Coverage uses validated persisted summary fields without a hard-coded count', () => {
@@ -243,7 +245,7 @@ test('Footer Coverage uses validated persisted summary fields without a hard-cod
   assert.match(indexSource, /แหล่งข้อมูล: Yahoo Finance/);
   assert.match(appSource, /apiFetch\('\/api\/coverage'\)/);
   assert.match(appSource, /coverageDisplayState\(data\)/);
-  assert.match(appSource, /getCoverageSummary\(\); updateTradingViewChart\(\)/);
+  assert.match(appSource, /getCoverageSummary\(\);\s*updateTradingViewChart\(\)/);
   assert.doesNotMatch(indexSource, /หุ้นในขอบเขตตรวจสอบ:\s*(?:291|500|900)/);
 });
 
@@ -264,9 +266,12 @@ test('suspect or stale market rows cannot drive alerts or mover rankings as fres
   assert.match(appSource, /quoteState === 'suspect' \|\| quoteState === 'quarantined' \? 'ข้อมูลต้องสงสัย'/);
 });
 
-test('initial workspace routing completes before slow Watchlist sync and non-active views start hidden', () => {
-  const setup = appSource.match(/async function setup\(\) \{[\s\S]*?await initializeWatchlistCloudSync\(identity\)/)?.[0] || '';
-  assert.match(setup, /const identity = initializeUserScopedState\(\);[\s\S]*?setupWorkspaceNavigation\(\);[\s\S]*?await initializeWatchlistCloudSync\(identity\)/);
+test('workspace wiring is one-time while owner initialization gates private UI readiness', () => {
+  const accountInitialization = appSource.match(/async function initializeAccountSession\(event\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const eventWiring = appSource.match(/function setupUiEventWiring\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(eventWiring, /setupWorkspaceNavigation\(\)/);
+  assert.match(accountInitialization, /clearPrivateState\(\);[\s\S]*?initializeUserScopedState\(\)[\s\S]*?await initializeWatchlistCloudSync\(identity\)/);
+  assert.match(accountInitialization, /isCurrentPrivateIdentity\(identity\)[\s\S]*?markPrivateUiReady\?\.\(identity\)/);
   assert.match(indexSource, /class="workspace-section watchlist-workspace workspace-hidden" id="watchlist-page"/);
   assert.match(indexSource, /class="content-grid workspace-section workspace-hidden" id="chart-section"/);
   assert.match(indexSource, /class="bottom-grid workspace-section workspace-hidden" id="activity-section"/);

@@ -12,6 +12,7 @@
   let sessionGeneration = session ? 1 : 0;
   let authOperationGeneration = 0;
   let activeOwnerId = '';
+  let privateUiReadyGeneration = -1;
   let refreshInFlight = null;
   const pendingRequests = new Set();
   const AUTH_ROUTES = { login: '/login', signup: '/register' };
@@ -110,6 +111,7 @@
     refreshInFlight = null;
     authGeneration += 1;
     activeOwnerId = '';
+    privateUiReadyGeneration = -1;
     replaceSession(null);
     user = null;
     window.dispatchEvent(new CustomEvent('setscope:session-boundary', {
@@ -180,13 +182,28 @@
     if (activeOwnerId !== nextOwnerId) {
       authGeneration += 1;
       activeOwnerId = nextOwnerId;
+      privateUiReadyGeneration = -1;
     }
-    document.body.classList.remove('auth-checking');
-    $('#auth-gate').removeAttribute('aria-busy');
     const pathname = location.pathname.replace(/\/+$/, '') || '/';
     if (pathname === AUTH_ROUTES.login || pathname === AUTH_ROUTES.signup) {
       if (!restoreAppRoute()) history.replaceState(null, '', '/#overview');
     }
+    const identity = captureIdentity();
+    if (privateUiReadyGeneration === identity.generation && document.body.classList.contains('authenticated')) return;
+    document.body.classList.remove('authenticated');
+    document.body.classList.add('auth-checking');
+    $('#auth-gate').setAttribute('aria-busy', 'true');
+    $('#auth-gate').hidden = true;
+    $('#app-shell').setAttribute('aria-hidden', 'true');
+    window.dispatchEvent(new CustomEvent('setscope:authenticated', {
+      detail: { email: user?.email || '', userId: identity.ownerId, generation: identity.generation }
+    }));
+  }
+  function markPrivateUiReady(identity) {
+    if (!isCurrentIdentity(identity)) return false;
+    privateUiReadyGeneration = identity.generation;
+    document.body.classList.remove('auth-checking');
+    $('#auth-gate').removeAttribute('aria-busy');
     document.body.classList.add('authenticated');
     $('#auth-gate').hidden = true;
     $('#app-shell').setAttribute('aria-hidden', 'false');
@@ -194,9 +211,7 @@
     const email = user?.email || '';
     const avatar = $('#user-avatar'); if (avatar) { avatar.textContent = email.slice(0, 1).toUpperCase() || 'ก'; avatar.title = email; }
     message('');
-    window.dispatchEvent(new CustomEvent('setscope:authenticated', {
-      detail: { email, userId: activeOwnerId, generation: authGeneration }
-    }));
+    return true;
   }
   function showLogin(text = '', type = '') {
     document.body.classList.remove('auth-checking');
@@ -340,6 +355,7 @@
     get user() { return user; },
     captureIdentity,
     isCurrentIdentity,
+    markPrivateUiReady,
     refresh: refreshSession,
     authorizedFetch
   };
