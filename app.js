@@ -104,6 +104,8 @@ let unreadAlerts = 0;
 let watchlistCloudReady = false;
 let watchlistSyncTimer = null;
 let watchlistSyncChain = Promise.resolve();
+let privateSessionIdentity = null;
+let hasOwnedWatchlistData = false;
 let watchlistQuery = '';
 let watchlistCollapsed = false;
 const workspaceScrollPositions = new Map();
@@ -113,6 +115,32 @@ function setWatchlistSyncStatus(text, state = '') {
     const el = $(selector); if (el) { el.textContent = text; el.dataset.state = state; }
   });
 }
+function capturePrivateIdentity() {
+  return window.setscopeAuth?.captureIdentity?.() || null;
+}
+function isCurrentPrivateIdentity(identity = privateSessionIdentity) {
+  return Boolean(identity?.ownerId && identity.ownerId === userStorageScope
+    && window.setscopeAuth?.isCurrentIdentity?.(identity));
+}
+function clearPrivateState() {
+  clearTimeout(watchlistSyncTimer);
+  watchlistSyncTimer = null;
+  watchlistCloudReady = false;
+  watchlistSyncChain = Promise.resolve();
+  privateSessionIdentity = null;
+  hasOwnedWatchlistData = false;
+  userStorageScope = '';
+  watchlists = [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
+  activeWatchlistId = 'list-1';
+  watchlist = watchlists[0].items;
+  alertPrefs = {};
+  alertStates = {};
+  alertHistory = [];
+  unreadAlerts = 0;
+  latestWatchlistNews = [];
+  watchlistNewsRequestId += 1;
+}
+window.addEventListener('setscope:session-boundary', clearPrivateState);
 const workspaceRoutes = {
   overview: { nodes: ['#market-overview', '#market-data-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย', breadcrumb: 'ภาพรวม' },
   chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ', breadcrumb: 'กราฟเทคนิค' },
@@ -204,39 +232,77 @@ function setupWorkspaceNavigation() {
   setWorkspacePage(initialNavigation.route, { historyMode: 'none', scroll: false });
   writeNavigation('replace', initialNavigation.route);
 }
-function persistWatchlistsLocal() {
-  if (!userStorageScope) return;
+function persistWatchlistsLocal(identity = privateSessionIdentity) {
+  if (!isCurrentPrivateIdentity(identity)) return false;
   currentWatchlist().items = watchlist;
   localStorage.setItem(scopedStorageKey('setscope-watchlists-v2'), JSON.stringify(watchlists));
   localStorage.setItem(scopedStorageKey('setscope-watchlist'), JSON.stringify(watchlist));
   localStorage.setItem(scopedStorageKey('setscope-active-watchlist'), activeWatchlistId);
+  hasOwnedWatchlistData = true;
+  return true;
+}
+function watchlistSnapshotChecksum(lists, selectedId) {
+  const value = JSON.stringify({ watchlists: lists, activeWatchlistId: selectedId });
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+function preserveOwnedWatchlistRecovery(lists, selectedId, identity = privateSessionIdentity) {
+  if (!hasOwnedWatchlistData || !isCurrentPrivateIdentity(identity)) return;
+  const normalized = normalizeLists(lists);
+  const itemCount = normalized.reduce((total, list) => total + list.items.length, 0);
+  writeScopedLocal('setscope-watchlists-recovery-v1', {
+    ownerId: identity.ownerId,
+    createdAt: new Date().toISOString(),
+    reason: 'cloud-precedence',
+    watchlists: normalized,
+    activeWatchlistId: selectedId,
+    itemCount,
+    checksum: watchlistSnapshotChecksum(normalized, selectedId)
+  });
 }
 function scheduleWatchlistCloudSync() {
-  persistWatchlistsLocal();
+  const identity = capturePrivateIdentity();
+  if (!isCurrentPrivateIdentity(identity) || !persistWatchlistsLocal(identity)) return;
   if (!watchlistCloudReady) return;
   clearTimeout(watchlistSyncTimer);
   setWatchlistSyncStatus('กำลังซิงก์…', 'pending');
   watchlistSyncTimer = setTimeout(() => {
+    if (!isCurrentPrivateIdentity(identity)) return;
     const payload = { watchlists: JSON.parse(JSON.stringify(watchlists)), activeWatchlistId };
     watchlistSyncChain = watchlistSyncChain.catch(() => {}).then(async () => {
+      if (!isCurrentPrivateIdentity(identity)) return;
       const response = await apiFetch('/api/watchlists', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
+      if (!isCurrentPrivateIdentity(identity)) return;
       if (!response.ok) throw new Error(result.retryable ? 'ระบบกำลังเริ่มทำงาน' : (result.error || 'Sync failed'));
       setWatchlistSyncStatus('ซิงก์แล้ว', 'synced');
-    }).catch(error => setWatchlistSyncStatus(error?.message?.includes('กำลังเริ่มทำงาน') ? 'ระบบกำลังเริ่มทำงาน · เก็บในเครื่องชั่วคราว' : 'ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error'));
+    }).catch(error => {
+      if (isCurrentPrivateIdentity(identity)) setWatchlistSyncStatus(error?.message?.includes('กำลังเริ่มทำงาน') ? 'ระบบกำลังเริ่มทำงาน · เก็บในเครื่องชั่วคราว' : 'ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error');
+    });
   }, 450);
 }
-async function initializeWatchlistCloudSync() {
+async function initializeWatchlistCloudSync(identity = privateSessionIdentity) {
+  if (!isCurrentPrivateIdentity(identity)) return;
   watchlistCloudReady = false;
   setWatchlistSyncStatus('กำลังโหลด…', 'pending');
   const localLists = JSON.parse(JSON.stringify(watchlists));
   const localActive = requestedWatchlistId || activeWatchlistId;
+  const localOwned = hasOwnedWatchlistData;
   try {
     const response = await apiFetch('/api/watchlists');
     const data = await response.json();
+    if (!isCurrentPrivateIdentity(identity)) return;
     if (!response.ok) throw new Error(data.retryable ? 'ระบบกำลังเริ่มทำงาน' : (data.error || 'โหลด Watchlist ไม่สำเร็จ'));
     const record = data.record;
-    if (record && Array.isArray(record.watchlists)) {
+    if (record && !Array.isArray(record.watchlists)) throw new Error('รูปแบบข้อมูล Watchlist ไม่ถูกต้อง');
+    if (record) {
+      if (record.watchlists.length && localOwned && JSON.stringify(normalizeLists(record.watchlists)) !== JSON.stringify(localLists)) {
+        preserveOwnedWatchlistRecovery(localLists, localActive, identity);
+      }
       watchlists = mergeWatchlists(localLists, record.watchlists);
       activeWatchlistId = resolveActiveWatchlistId(watchlists, {
         requestedId: requestedWatchlistId,
@@ -252,12 +318,13 @@ async function initializeWatchlistCloudSync() {
       });
       watchlist = currentWatchlist().items;
     }
-    persistWatchlistsLocal();
+    if (record || localOwned) persistWatchlistsLocal(identity);
     watchlistCloudReady = true;
-    setWatchlistSyncStatus('ซิงก์แล้ว', 'synced');
-    // First-time sync also uploads this device's existing Watchlist.
-    scheduleWatchlistCloudSync();
+    setWatchlistSyncStatus(record ? 'ซิงก์แล้ว' : 'ยังไม่มีข้อมูลบนคลาวด์', record ? 'synced' : 'empty');
+    // Only owner-scoped local data may seed an empty/no-record cloud row.
+    if (localOwned && (!record || record.watchlists.length === 0)) scheduleWatchlistCloudSync();
   } catch (error) {
+    if (!isCurrentPrivateIdentity(identity)) return;
     watchlist = currentWatchlist().items;
     setWatchlistSyncStatus(error?.message?.includes('กำลังเริ่มทำงาน') ? 'ระบบกำลังเริ่มทำงาน · ใช้ข้อมูลในเครื่องชั่วคราว' : 'ซิงก์ไม่ได้ · เก็บในเครื่อง', 'error');
   }
@@ -273,22 +340,35 @@ function readScopedLocal(key, fallback) {
   return scoped ? readLocal(scoped, fallback) : fallback;
 }
 function writeScopedLocal(key, value) {
+  if (!isCurrentPrivateIdentity()) return;
   const scoped = scopedStorageKey(key);
   if (scoped) localStorage.setItem(scoped, JSON.stringify(value));
 }
 
-function loadWatchlists() {
+function loadWatchlistSnapshot() {
   const key = scopedStorageKey('setscope-watchlists-v2');
-  if (!key) return [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
+  const fallback = [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
+  if (!key) return { watchlists: fallback, owned: false };
   try {
-    const saved = JSON.parse(localStorage.getItem(key) || 'null');
-    if (Array.isArray(saved) && saved.length) return normalizeLists(saved);
+    const raw = localStorage.getItem(key);
+    if (!raw) return { watchlists: fallback, owned: false };
+    const saved = JSON.parse(raw);
+    if (Array.isArray(saved) && saved.length) return { watchlists: normalizeLists(saved), owned: true };
   } catch (_) {}
-  return [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
+  return { watchlists: fallback, owned: false };
 }
 function initializeUserScopedState() {
-  userStorageScope = String(window.setscopeAuth?.user?.id || '');
-  watchlists = loadWatchlists();
+  const identity = capturePrivateIdentity();
+  const authenticatedUserId = String(window.setscopeAuth?.user?.id || '');
+  if (!identity?.ownerId || identity.ownerId !== authenticatedUserId || !window.setscopeAuth.isCurrentIdentity(identity)) {
+    clearPrivateState();
+    return null;
+  }
+  privateSessionIdentity = identity;
+  userStorageScope = identity.ownerId;
+  const snapshot = loadWatchlistSnapshot();
+  watchlists = snapshot.watchlists;
+  hasOwnedWatchlistData = snapshot.owned;
   const storedActive = userStorageScope ? localStorage.getItem(scopedStorageKey('setscope-active-watchlist')) : '';
   activeWatchlistId = requestedWatchlistId || storedActive || watchlists[0].id;
   if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
@@ -296,7 +376,9 @@ function initializeUserScopedState() {
   alertPrefs = readScopedLocal('setscope-alert-prefs', {});
   alertStates = readScopedLocal('setscope-alert-states', {});
   alertHistory = readScopedLocal('setscope-alert-history', []);
+  unreadAlerts = 0;
   latestWatchlistNews = [];
+  return identity;
 }
 function currentWatchlist() { return watchlists.find(list => list.id === activeWatchlistId) || watchlists[0]; }
 function saveWatchlist() { scheduleWatchlistCloudSync(); }
@@ -978,6 +1060,7 @@ function updateNotificationStatus() {
   $('#notification-permission').disabled = permission === 'granted' || permission === 'unsupported' || permission === 'denied';
 }
 function recordAlert(symbol, title, body) {
+  if (!isCurrentPrivateIdentity()) return;
   const item = { symbol, title, body, time: new Date().toISOString() };
   alertHistory.unshift(item); alertHistory = alertHistory.slice(0, 30);
   writeScopedLocal('setscope-alert-history', alertHistory);
@@ -988,6 +1071,7 @@ function recordAlert(symbol, title, body) {
   renderAlertHistory();
 }
 function evaluateWatchlistAlerts(rows) {
+  if (!isCurrentPrivateIdentity()) return;
   const current = new Set(watchlist.map(item => item.symbol));
   const now = Date.now();
   rows.filter(row => current.has(row.symbol)).forEach(row => {
@@ -1071,6 +1155,8 @@ async function getCoverageSummary() {
   }
 }
 async function getMarket() {
+  const identity = capturePrivateIdentity();
+  if (!isCurrentPrivateIdentity(identity)) return;
   const requestId = marketRequestSequence.begin();
   const requestedSymbol = activeSymbol;
   const requestedRange = currentRange;
@@ -1087,7 +1173,7 @@ async function getMarket() {
     const response = await apiFetch(`/api/market?${params}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');
-    if (!marketRequestSequence.isCurrent(requestId) || requestedSymbol !== activeSymbol || requestedRange !== currentRange) return;
+    if (!isCurrentPrivateIdentity(identity) || !marketRequestSequence.isCurrent(requestId) || requestedSymbol !== activeSymbol || requestedRange !== currentRange) return;
     latestMarket = data;
     latestMarketSymbol = requestedSymbol;
     latestMarketRange = requestedRange;
@@ -1098,7 +1184,7 @@ async function getMarket() {
     renderMovers(stocks);
     renderMarketBanner();
   } catch (error) {
-    if (!marketRequestSequence.isCurrent(requestId)) return;
+    if (!isCurrentPrivateIdentity(identity) || !marketRequestSequence.isCurrent(requestId)) return;
     console.warn('Market data refresh failed', error);
     setChartLoadState('error', 'โหลดข้อมูลไม่สำเร็จ');
     setTechnicalPanelState('error');
@@ -1170,6 +1256,8 @@ async function getArchiveNews({ page = newsPage } = {}) {
   }
 }
 async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) {
+  const identity = capturePrivateIdentity();
+  if (!isCurrentPrivateIdentity(identity)) return;
   if (resetPage) {
     watchNewsPage = 1;
     if (document.body.dataset.workspacePage === 'watchlist') writeNavigation('push', 'watchlist');
@@ -1191,17 +1279,17 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
     const response = await apiFetch(`/api/watchlist-news?stocks=${stockQuery}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
-    if (requestId !== watchlistNewsRequestId) return;
+    if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId) return;
     latestWatchlistNews = data.items || [];
     renderWatchlistNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
   } catch (_) {
-    if (requestId !== watchlistNewsRequestId) return;
+    if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId) return;
     if (root) root.innerHTML = '<div class="news-item"><div class="news-title">โหลดข่าวไม่สำเร็จ ระบบจะลองใหม่อัตโนมัติ หรือกดปุ่มด้านบนเพื่อลองอีกครั้ง</div></div>';
     const pager = $('#watchlist-news-pager');
     if (pager) pager.hidden = true;
   } finally {
-    if (requestId === watchlistNewsRequestId && button) { button.disabled = false; button.classList.remove('is-loading'); }
+    if (isCurrentPrivateIdentity(identity) && requestId === watchlistNewsRequestId && button) { button.disabled = false; button.classList.remove('is-loading'); }
   }
 }
 async function analyzeNewsBriefs(items) {
@@ -1392,9 +1480,11 @@ function renderNews() {
 }
 
 async function setup() {
-  initializeUserScopedState();
+  const identity = initializeUserScopedState();
+  if (!identity) return;
   setupWorkspaceNavigation();
-  await initializeWatchlistCloudSync();
+  await initializeWatchlistCloudSync(identity);
+  if (!isCurrentPrivateIdentity(identity)) return;
   if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
   watchlist = currentWatchlist().items;
   renderWatchlistPicker();

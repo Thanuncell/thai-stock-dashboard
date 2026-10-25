@@ -144,6 +144,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   }
 
   const context = vm.createContext({
+    AbortController,
     AbortSignal,
     console,
     CustomEvent: FakeCustomEvent,
@@ -170,10 +171,12 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   assert.equal(`${location.pathname}${location.search}${location.hash}`, '/?s=PTT&source=infoquest&newsPage=12#news');
   assert.equal(JSON.parse(sessionStorage.getItem('setscope-auth-session-v1')).access_token, 'refreshed-1');
 
+  const identityBeforeRefresh = window.setscopeAuth.captureIdentity();
   const protectedResponse = await window.setscopeAuth.authorizedFetch('/api/protected');
   assert.equal(protectedResponse.status, 200);
   assert.equal(protectedCalls, 2);
   assert.equal(refreshCount, 2);
+  assert.deepEqual(window.setscopeAuth.captureIdentity(), identityBeforeRefresh);
 
   await getNode('#logout-button').listeners.get('click')();
   assert.equal(location.pathname, '/login');

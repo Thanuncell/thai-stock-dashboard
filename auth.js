@@ -1,5 +1,6 @@
 (() => {
   const STORAGE_KEY = 'setscope-auth-session-v1';
+  const AUTH_BOUNDARY_KEY = 'setscope-auth-boundary-v1';
   const THEME_KEY = 'setscope-theme';
   const APP_TITLE = 'SETscope — หุ้นไทยและกราฟเทคนิค';
   const APP_RETURN_KEY = 'setscope-auth-return-v1';
@@ -7,6 +8,9 @@
   let session = readSession();
   let user = null;
   let refreshTimer;
+  let authGeneration = 0;
+  let activeOwnerId = '';
+  const pendingRequests = new Set();
   const AUTH_ROUTES = { login: '/login', signup: '/register' };
   const $ = selector => document.querySelector(selector);
   function appRouteFromLocation() {
@@ -54,6 +58,41 @@
   function readSession() { try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null'); } catch (_) { return null; } }
   function saveSession(value) { session = value; if (value) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(value)); else sessionStorage.removeItem(STORAGE_KEY); }
   function sessionFrom(payload) { return { ...payload, expires_at: Date.now() + Number(payload.expires_in || 3600) * 1000 }; }
+  function captureIdentity() { return Object.freeze({ ownerId: activeOwnerId, generation: authGeneration }); }
+  function isCurrentIdentity(identity) {
+    return Boolean(identity?.ownerId && session?.access_token
+      && identity.ownerId === activeOwnerId && identity.generation === authGeneration);
+  }
+  function staleSessionError() {
+    const error = new Error('เซสชันเปลี่ยนระหว่างดำเนินการ');
+    error.code = 'STALE_SESSION';
+    return error;
+  }
+  function abortPendingRequests() {
+    for (const controller of pendingRequests) controller.abort();
+    pendingRequests.clear();
+  }
+  function publishAuthBoundary(ownerId, reason) {
+    if (!ownerId) return;
+    try {
+      localStorage.setItem(AUTH_BOUNDARY_KEY, JSON.stringify({ ownerId, reason, nonce: `${Date.now()}-${Math.random()}` }));
+    } catch (_) {}
+  }
+  function endPrivateSession(reason, { broadcast = false, reload = false, text = 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง' } = {}) {
+    const previousOwnerId = activeOwnerId || String(user?.id || '');
+    if (broadcast) publishAuthBoundary(previousOwnerId, reason);
+    clearTimeout(refreshTimer);
+    abortPendingRequests();
+    authGeneration += 1;
+    activeOwnerId = '';
+    saveSession(null);
+    user = null;
+    window.dispatchEvent(new CustomEvent('setscope:session-boundary', {
+      detail: { ownerId: previousOwnerId, generation: authGeneration, reason }
+    }));
+    showLogin(text, reason === 'logout' ? '' : 'error');
+    if (reload) window.location.reload();
+  }
   async function authRequest(path, options = {}) {
     const response = await fetch(`${config.url}/auth/v1/${path}`, { ...options, headers: { apikey: config.anonKey, 'Content-Type': 'application/json', ...(options.headers || {}) } });
     const payload = await response.json().catch(() => ({}));
@@ -76,6 +115,12 @@
     catch (_) { saveSession(null); return null; }
   }
   function showDashboard() {
+    const nextOwnerId = String(user?.id || '');
+    if (!nextOwnerId) { showLogin('ไม่สามารถยืนยันเจ้าของบัญชีได้', 'error'); return; }
+    if (activeOwnerId !== nextOwnerId) {
+      authGeneration += 1;
+      activeOwnerId = nextOwnerId;
+    }
     document.body.classList.remove('auth-checking');
     $('#auth-gate').removeAttribute('aria-busy');
     const pathname = location.pathname.replace(/\/+$/, '') || '/';
@@ -89,7 +134,9 @@
     const email = user?.email || '';
     const avatar = $('#user-avatar'); if (avatar) { avatar.textContent = email.slice(0, 1).toUpperCase() || 'ก'; avatar.title = email; }
     message('');
-    window.dispatchEvent(new CustomEvent('setscope:authenticated', { detail: { email } }));
+    window.dispatchEvent(new CustomEvent('setscope:authenticated', {
+      detail: { email, userId: activeOwnerId, generation: authGeneration }
+    }));
   }
   function showLogin(text = '', type = '') {
     document.body.classList.remove('auth-checking');
@@ -122,7 +169,9 @@
   function scheduleRefresh() {
     clearTimeout(refreshTimer);
     if (!session?.expires_at) return;
-    refreshTimer = setTimeout(async () => { if (!await refreshSession()) showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง'); }, Math.max(15_000, Number(session.expires_at) - Date.now() - 60_000));
+    refreshTimer = setTimeout(async () => {
+      if (!await refreshSession()) endPrivateSession('expiry', { broadcast: true, reload: true });
+    }, Math.max(15_000, Number(session.expires_at) - Date.now() - 60_000));
   }
   async function openDashboardIfValid() { const valid = await validateSession(); if (!valid) return false; scheduleRefresh(); showDashboard(); return true; }
   async function onLogin(event) {
@@ -145,17 +194,54 @@
   }
   async function logout() {
     rememberAppRoute();
-    try { if (await ensureFresh()) await authRequest('logout', { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}` } }); } catch (_) {}
-    clearTimeout(refreshTimer); saveSession(null); user = null; setMode('login', { replace: true }); window.location.reload();
+    const accessToken = session?.access_token || '';
+    endPrivateSession('logout', { broadcast: true, text: '' });
+    try { if (accessToken) await authRequest('logout', { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } }); } catch (_) {}
+    setMode('login', { replace: true }); window.location.reload();
   }
   async function authorizedFetch(url, options = {}) {
-    if (!await ensureFresh()) { const wasAuthenticated = document.body.classList.contains('authenticated'); saveSession(null); showLogin('เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง'); if (wasAuthenticated) window.location.reload(); throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง'); }
+    if (!await ensureFresh()) {
+      const wasAuthenticated = document.body.classList.contains('authenticated');
+      endPrivateSession('expiry', { broadcast: true, reload: wasAuthenticated });
+      throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง');
+    }
+    const identity = captureIdentity();
+    if (!isCurrentIdentity(identity)) throw staleSessionError();
+    const controller = new AbortController();
+    const externalSignal = options.signal;
+    if (externalSignal?.aborted) controller.abort();
+    else externalSignal?.addEventListener('abort', () => controller.abort(), { once: true });
+    pendingRequests.add(controller);
     const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${session.access_token}`);
-    let response = await fetch(url, { ...options, headers });
-    if (response.status === 401) { if (await refreshSession()) { headers.set('Authorization', `Bearer ${session.access_token}`); response = await fetch(url, { ...options, headers }); } else { saveSession(null); window.location.reload(); } }
-    return response;
+    try {
+      let response = await fetch(url, { ...options, headers, signal: controller.signal });
+      if (!isCurrentIdentity(identity)) throw staleSessionError();
+      if (response.status === 401) {
+        if (await refreshSession() && isCurrentIdentity(identity)) {
+          headers.set('Authorization', `Bearer ${session.access_token}`);
+          response = await fetch(url, { ...options, headers, signal: controller.signal });
+          if (!isCurrentIdentity(identity)) throw staleSessionError();
+        } else {
+          endPrivateSession('expiry', { broadcast: true, reload: true });
+          throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง');
+        }
+      }
+      return response;
+    } catch (error) {
+      if (!isCurrentIdentity(identity)) throw staleSessionError();
+      throw error;
+    } finally {
+      pendingRequests.delete(controller);
+    }
   }
-  window.setscopeAuth = { get accessToken() { return session?.access_token || ''; }, get user() { return user; }, refresh: refreshSession, authorizedFetch };
+  window.setscopeAuth = {
+    get accessToken() { return session?.access_token || ''; },
+    get user() { return user; },
+    captureIdentity,
+    isCurrentIdentity,
+    refresh: refreshSession,
+    authorizedFetch
+  };
   setAuthTheme(localStorage.getItem(THEME_KEY) || 'light');
   $('#auth-theme-toggle').addEventListener('click', () => setAuthTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
   $('#auth-login-tab').addEventListener('click', () => setMode('login'));
@@ -163,6 +249,13 @@
   $('#login-form').addEventListener('submit', onLogin);
   $('#signup-form').addEventListener('submit', onSignup);
   $('#logout-button').addEventListener('click', logout);
+  window.addEventListener('storage', event => {
+    if (event.key !== AUTH_BOUNDARY_KEY || !event.newValue || !activeOwnerId) return;
+    try {
+      const boundary = JSON.parse(event.newValue);
+      if (boundary?.ownerId === activeOwnerId) endPrivateSession('remote-logout', { reload: true, text: '' });
+    } catch (_) {}
+  });
   window.addEventListener('popstate', () => {
     if (document.body.classList.contains('authenticated')) showDashboard();
     else setMode(modeFromPath(), { updateUrl: false });
