@@ -106,6 +106,9 @@ let watchlistSyncTimer = null;
 let watchlistSyncChain = Promise.resolve();
 let privateSessionIdentity = null;
 let hasOwnedWatchlistData = false;
+let privateInitializationSequence = 0;
+let privateInitializationIdentityKey = '';
+let uiEventsWired = false;
 let watchlistQuery = '';
 let watchlistCollapsed = false;
 const workspaceScrollPositions = new Map();
@@ -122,7 +125,27 @@ function isCurrentPrivateIdentity(identity = privateSessionIdentity) {
   return Boolean(identity?.ownerId && identity.ownerId === userStorageScope
     && window.setscopeAuth?.isCurrentIdentity?.(identity));
 }
+function clearPrivateDom() {
+  ['#watchlist', '#watchlist-mobile', '#watchlist-news-list', '#watchlist-news-pager', '#alerts-settings', '#alerts-history'].forEach(selector => {
+    const node = $(selector); if (node) node.replaceChildren();
+  });
+  ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => {
+    const node = $(selector); if (node) node.replaceChildren();
+  });
+  const newsPager = $('#watchlist-news-pager'); if (newsPager) newsPager.hidden = true;
+  const alertsPanel = $('#alerts-panel'); if (alertsPanel) alertsPanel.hidden = true;
+  const alertsToggle = $('#alerts-toggle'); if (alertsToggle) alertsToggle.setAttribute('aria-expanded', 'false');
+  const alertBadge = $('#alert-badge'); if (alertBadge) { alertBadge.hidden = true; alertBadge.textContent = '0'; }
+  const addButton = $('#watchlist-add-active'); if (addButton) { addButton.disabled = true; addButton.textContent = '＋ เพิ่มเข้า Watchlist'; }
+  const search = $('#watchlist-search'); if (search) search.value = '';
+  setText('.nav-item[data-workspace-route="watchlist"] .nav-count', '0');
+  setText('#watch-metric', '0');
+  setText('#alerts-scope', '');
+  setWatchlistSyncStatus('', '');
+}
 function clearPrivateState() {
+  privateInitializationSequence += 1;
+  privateInitializationIdentityKey = '';
   clearTimeout(watchlistSyncTimer);
   watchlistSyncTimer = null;
   watchlistCloudReady = false;
@@ -139,6 +162,9 @@ function clearPrivateState() {
   unreadAlerts = 0;
   latestWatchlistNews = [];
   watchlistNewsRequestId += 1;
+  watchlistQuery = '';
+  watchNewsPage = 1;
+  clearPrivateDom();
 }
 window.addEventListener('setscope:session-boundary', clearPrivateState);
 const workspaceRoutes = {
@@ -383,6 +409,7 @@ function initializeUserScopedState() {
 function currentWatchlist() { return watchlists.find(list => list.id === activeWatchlistId) || watchlists[0]; }
 function saveWatchlist() { scheduleWatchlistCloudSync(); }
 function renderWatchlistPicker() {
+  if (!isCurrentPrivateIdentity()) return;
   const selected = currentWatchlist();
   const options = watchlists.map(list => `<option value="${escapeHtml(list.id)}" ${list.id === selected.id ? 'selected' : ''}>${escapeHtml(list.name)} (${list.items.length})</option>`).join('');
   ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => { const el = $(selector); if (el) el.innerHTML = options; });
@@ -396,6 +423,7 @@ function renderWatchlistPicker() {
   if (count) count.textContent = String(watchlist.length);
 }
 function switchWatchlist(id, { historyMode = 'push', resetPage = true } = {}) {
+  if (!isCurrentPrivateIdentity()) return;
   const chosen = watchlists.find(list => list.id === id); if (!chosen) return;
   activeWatchlistId = id; watchlist = chosen.items; scheduleWatchlistCloudSync();
   if (resetPage) watchNewsPage = 1;
@@ -503,6 +531,8 @@ function renderSettradeOverview(data) {
   setText('#settrade-updated', marketOverviewStatus(data));
 }
 async function getSettradeOverview(force = false) {
+  const identity = capturePrivateIdentity();
+  if (!isCurrentPrivateIdentity(identity)) return;
   const button = $('#refresh-market-data');
   if (button?.disabled) return;
   if (button) { button.disabled = true; button.classList.add('is-loading'); button.textContent = 'กำลังอัปเดต…'; }
@@ -510,9 +540,11 @@ async function getSettradeOverview(force = false) {
   try {
     const response = await apiFetch(`/api/market-overview${force ? '?refresh=1' : ''}`);
     const data = await response.json();
+    if (!isCurrentPrivateIdentity(identity)) return;
     if (!response.ok) throw new Error(data.error || 'ดึงข้อมูลจาก SETTRADE ไม่สำเร็จ');
     renderSettradeOverview(data);
   } catch (error) {
+    if (!isCurrentPrivateIdentity(identity)) return;
     console.warn('SETTRADE overview refresh failed', error);
     setText('#settrade-updated', 'อัปเดตข้อมูลไม่สำเร็จ');
   } finally {
@@ -523,6 +555,7 @@ function syncTechnicalSearch() { const input = $('#stock-search'); if (input && 
 function updateWatchlistAddButton() {
   const button = $('#watchlist-add-active');
   if (!button) return;
+  if (!isCurrentPrivateIdentity()) { button.disabled = true; return; }
   const saved = watchlist.some(item => item.symbol === activeSymbol);
   button.disabled = saved;
   button.textContent = saved ? 'ติดตามแล้ว' : '＋ เพิ่มเข้า Watchlist';
@@ -564,6 +597,7 @@ function patchWatchlistRoot(root, items, bySymbol) {
 }
 
 function renderWatchlist(rows = []) {
+  if (!isCurrentPrivateIdentity()) return;
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   const normalizedQuery = watchlistQuery.trim().toLocaleLowerCase('th');
   const visibleItems = normalizedQuery ? watchlist.filter(item => `${item.symbol} ${item.name || ''}`.toLocaleLowerCase('th').includes(normalizedQuery)) : watchlist;
@@ -1037,6 +1071,7 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
 }
 function getAlertPref(symbol) { return alertPrefs[symbol] || { technical: true, above: '', below: '' }; }
 function renderAlertSettings() {
+  if (!isCurrentPrivateIdentity()) return;
   const root = $('#alerts-settings');
   setText('#alerts-scope', `${currentWatchlist().name} · แจ้งเตือนเฉพาะหุ้นในรายการนี้ · ทำงานเมื่อเปิดเว็บไว้`);
   if (!watchlist.length) { root.innerHTML = `<p class="alert-empty">${escapeHtml(currentWatchlist().name)} ยังไม่มีหุ้น · เพิ่มหุ้นก่อนตั้งการเตือน</p>`; return; }
@@ -1046,6 +1081,7 @@ function renderAlertSettings() {
   }).join('');
 }
 function renderAlertHistory() {
+  if (!isCurrentPrivateIdentity()) return;
   const root = $('#alerts-history');
   root.innerHTML = alertHistory.length ? alertHistory.slice(0, 8).map(item => `<div class="alert-history-item"><b>${escapeHtml(item.symbol)} · ${escapeHtml(item.title)}</b><span>${escapeHtml(item.body)}</span><time>${escapeHtml(stamp(item.time))}</time></div>`).join('') : '<p class="alert-empty">ยังไม่มีรายการแจ้งเตือน</p>';
   const badge = $('#alert-badge');
@@ -1194,6 +1230,8 @@ async function getMarket() {
 }
 
 async function getNews({ reason = 'refresh', resetPage = false } = {}) {
+  const identity = capturePrivateIdentity();
+  if (!isCurrentPrivateIdentity(identity)) return;
   if (resetPage) {
     newsPage = 1;
     if (document.body.dataset.workspacePage === 'news') writeNavigation('push', 'news');
@@ -1203,6 +1241,7 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
   if (refreshButton) { refreshButton.disabled = true; refreshButton.classList.add('is-loading'); refreshButton.textContent = 'กำลังอัปเดตข่าว…'; }
   try {
     const response = await apiFetch('/api/news'); const data = await response.json();
+    if (!isCurrentPrivateIdentity(identity)) return;
     if (!response.ok) throw new Error(data.error);
     latestNews = data.items || [];
     await getArchiveNews({ page: newsPage, reason });
@@ -1402,6 +1441,7 @@ function scrollToPageTop() {
   window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
 }
 function renderWatchlistNews() {
+  if (!isCurrentPrivateIdentity()) return;
   const root = $('#watchlist-news-list');
   if (!root) return;
   const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
@@ -1479,19 +1519,40 @@ function renderNews() {
   if (counter) counter.textContent = query ? `พบ ${archiveLoaded ? archiveTotal : all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
 }
 
-async function setup() {
+async function initializeAccountSession(event) {
+  const announcedOwnerId = String(event?.detail?.userId || '');
+  const announcedGeneration = Number(event?.detail?.generation);
+  const announcedIdentity = capturePrivateIdentity();
+  if (!announcedIdentity?.ownerId || (announcedOwnerId && announcedOwnerId !== announcedIdentity.ownerId)
+    || (Number.isFinite(announcedGeneration) && announcedGeneration !== announcedIdentity.generation)) return;
+  const identityKey = `${announcedIdentity.ownerId}:${announcedIdentity.generation}`;
+  if (privateInitializationIdentityKey === identityKey) return;
+  clearPrivateState();
   const identity = initializeUserScopedState();
-  if (!identity) return;
-  setupWorkspaceNavigation();
+  if (!identity || identity.ownerId !== announcedIdentity.ownerId || identity.generation !== announcedIdentity.generation) return;
+  privateInitializationIdentityKey = identityKey;
+  const initializationSequence = privateInitializationSequence;
+  setTheme(localStorage.getItem('setscope-theme') || 'light');
+  syncTechnicalSearch();
+  updateNotificationStatus();
   await initializeWatchlistCloudSync(identity);
-  if (!isCurrentPrivateIdentity(identity)) return;
+  if (initializationSequence !== privateInitializationSequence || !isCurrentPrivateIdentity(identity)) return;
   if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
   watchlist = currentWatchlist().items;
   renderWatchlistPicker();
-  setTheme(localStorage.getItem('setscope-theme') || 'light');
-  syncTechnicalSearch();
   renderWatchlist();
-  renderAlertSettings(); renderAlertHistory(); updateNotificationStatus();
+  renderAlertSettings();
+  renderAlertHistory();
+  if (!window.setscopeAuth?.markPrivateUiReady?.(identity)) return;
+  getCoverageSummary(); updateTradingViewChart(); getMarket(); getSettradeOverview();
+  getNews({ reason: 'startup' });
+  getWatchlistNews({ reason: 'startup' });
+}
+
+function setupUiEventWiring() {
+  if (uiEventsWired) return;
+  uiEventsWired = true;
+  setupWorkspaceNavigation();
   const handleWatchlistClick = event => {
     const remove = event.target.closest('[data-remove]');
     if (remove) {
@@ -1540,8 +1601,9 @@ async function setup() {
   });
   $('#watchlist-add-active').addEventListener('click', addActiveToWatchlist);
   ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => $(selector)?.addEventListener('change', event => switchWatchlist(event.target.value)));
-  $('#watchlist-create')?.addEventListener('click', createWatchlist);
-  $('#watchlist-create-mobile')?.addEventListener('click', createWatchlist);
+  document.addEventListener('click', event => {
+    if (event.target.closest('#watchlist-create, #watchlist-create-mobile')) createWatchlist();
+  });
   ['#watchlist-rename', '#watchlist-rename-mobile'].forEach(selector => $(selector)?.addEventListener('click', renameActiveWatchlist));
   $('#watchlist-search')?.addEventListener('input', event => {
     watchlistQuery = event.target.value;
@@ -1634,8 +1696,11 @@ async function setup() {
   $('#refresh-watchlist-news').addEventListener('click', () => getWatchlistNews({ reason: 'manual', resetPage: true }));
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
-  getCoverageSummary(); updateTradingViewChart(); getMarket(); getSettradeOverview(); getNews({ reason: 'startup' }); getWatchlistNews({ reason: 'startup' });
-  setInterval(getMarket, 60000); setInterval(getSettradeOverview, 300000); setInterval(() => getNews({ reason: 'poll' }), 300000); setInterval(() => getWatchlistNews({ reason: 'poll' }), 300000);
+  setInterval(getMarket, 60000);
+  setInterval(getSettradeOverview, 300000);
+  setInterval(() => getNews({ reason: 'poll' }), 300000);
+  setInterval(() => getWatchlistNews({ reason: 'poll' }), 300000);
 }
-if (document.body.classList.contains('authenticated')) setup();
-else window.addEventListener('setscope:authenticated', setup, { once: true });
+setupUiEventWiring();
+window.addEventListener('setscope:authenticated', initializeAccountSession);
+if (window.setscopeAuth?.user) initializeAccountSession();

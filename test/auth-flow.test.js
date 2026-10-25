@@ -121,7 +121,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   const window = {
     location: { origin: 'https://setscope.example', reload: () => { window.reloadCalled = true; } },
     addEventListener: (type, listener) => windowListeners.set(type, listener),
-    dispatchEvent: event => { window.lastEvent = event; },
+    dispatchEvent: event => { window.lastEvent = event; windowListeners.get(event.type)?.(event); },
     setscopeAuth: null
   };
   const location = { pathname: '/', search: '?s=PTT&source=infoquest&newsPage=12', hash: '#news' };
@@ -163,6 +163,9 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'auth.js'), 'utf8');
   vm.runInContext(source, context, { filename: 'auth.js' });
+  window.addEventListener('setscope:authenticated', event => window.setscopeAuth.markPrivateUiReady({
+    ownerId: event.detail.userId, generation: event.detail.generation
+  }));
   for (let index = 0; index < 8; index++) await flush();
 
   assert.equal(refreshCount, 1);

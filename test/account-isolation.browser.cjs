@@ -48,7 +48,13 @@ async function mockRequest(route, baseUrl, state) {
       const owner = ownerFromRequest(request);
       return json(route, { id: owner, email: `${owner}@example.test` }, owner ? 200 : 401);
     }
-    if (url.pathname === '/auth/v1/logout') return route.fulfill({ status: 204, body: '' });
+    if (url.pathname === '/auth/v1/logout') {
+      if (state.holdNextLogout) {
+        state.holdNextLogout = false;
+        await new Promise(resolve => { state.releaseLogout = resolve; });
+      }
+      return route.fulfill({ status: 204, body: '' });
+    }
     return json(route, { error: 'unexpected auth request' }, 400);
   }
   if (url.origin !== baseUrl || !url.pathname.startsWith('/api/')) return route.continue();
@@ -66,7 +72,16 @@ async function mockRequest(route, baseUrl, state) {
       return json(route, { ok: true, syncedAt: new Date().toISOString() });
     }
     state.getOwners.push(owner);
-    if (owner === 'user-b') return json(route, { record: null }, 200, { 'cache-control': 'no-store' });
+    if (owner === 'user-a' && state.holdNextAGet) {
+      state.holdNextAGet = false;
+      await new Promise(resolve => { state.releaseAGet = resolve; });
+    }
+    if (owner === 'user-b') return json(route, {
+      record: {
+        watchlists: [{ id: 'list-1', name: 'B Cloud', items: [{ symbol: 'CPALL', name: 'B Private Stock' }] }],
+        active_watchlist_id: 'list-1'
+      }
+    }, 200, { 'cache-control': 'no-store' });
     return json(route, {
       record: {
         watchlists: [{ id: 'list-1', name: 'A Cloud', items: [{ symbol: 'PTT', name: 'A Private Stock' }] }],
@@ -103,6 +118,7 @@ async function seedPage(page, token) {
     }
     localStorage.setItem('setscope-watchlists-v2', JSON.stringify([{ id: 'legacy', name: 'LEGACY PRIVATE', items: [{ symbol: 'BAD', name: 'Legacy' }] }]));
     localStorage.setItem('setscope-watchlists-v2:user-a', JSON.stringify([{ id: 'list-1', name: 'A Local', items: [{ symbol: 'PTT', name: 'A Private Stock' }] }]));
+    localStorage.setItem('setscope-watchlists-v2:user-b', JSON.stringify([{ id: 'list-1', name: 'B Local', items: [{ symbol: 'CPALL', name: 'B Private Stock' }] }]));
   }, token);
 }
 
@@ -119,7 +135,7 @@ async function seedPage(page, token) {
     await waitForServer(`${baseUrl}/healthz`);
     browser = await chromium.launch({ headless: true, executablePath: process.env.SETSCOPE_BROWSER_EXECUTABLE || undefined });
     const context = await browser.newContext({ viewport: { width: 1000, height: 760 } });
-    const state = { getOwners: [], putOwners: [], holdNextAPut: true, releaseAPut: null };
+    const state = { getOwners: [], putOwners: [], holdNextAPut: true, releaseAPut: null, holdNextLogout: false, releaseLogout: null, holdNextAGet: false, releaseAGet: null };
     await context.route('**/*', route => mockRequest(route, baseUrl, state));
 
     const pageA1 = await context.newPage();
@@ -170,8 +186,9 @@ async function seedPage(page, token) {
     await pageA1.locator('#login-form input[name="password"]').fill('fixture-password');
     await pageA1.locator('#login-form button[type="submit"]').click();
     await pageA1.waitForSelector('body.authenticated');
-    await pageA1.waitForFunction(() => document.querySelector('#watchlist-sync-status')?.dataset.state === 'empty');
     assert.doesNotMatch(await pageA1.locator('#app-shell').textContent(), /A Private Stock|LEGACY PRIVATE/);
+    await pageA1.waitForFunction(() => document.querySelector('#watchlist-sync-status')?.dataset.state === 'synced');
+    assert.match(await pageA1.locator('#watchlist-page').textContent(), /B Private Stock/);
 
     await pageA1.locator('#logout-button').click();
     await pageB.waitForFunction(() => !document.body.classList.contains('authenticated'));
@@ -183,9 +200,44 @@ async function seedPage(page, token) {
     await pageA1.waitForFunction(() => document.querySelectorAll('#watchlist-mobile .watch-item').length > 0);
     assert.match(await pageA1.locator('#watchlist-page').textContent(), /A Private Stock/);
 
+    const raceContext = await browser.newContext({ viewport: { width: 1000, height: 760 } });
+    const raceState = { getOwners: [], putOwners: [], holdNextAPut: false, releaseAPut: null, holdNextLogout: true, releaseLogout: null, holdNextAGet: false, releaseAGet: null };
+    await raceContext.route('**/*', route => mockRequest(route, baseUrl, raceState));
+    const racePage = await raceContext.newPage();
+    await seedPage(racePage, 'token-b');
+    await racePage.goto(`${baseUrl}/#watchlist`, { waitUntil: 'domcontentloaded' });
+    await racePage.waitForSelector('body.authenticated #watchlist-mobile .watch-item');
+    assert.match(await racePage.locator('#watchlist-page').textContent(), /B Private Stock/);
+
+    await racePage.locator('#logout-button').click();
+    await racePage.waitForSelector('#login-form:not([hidden])');
+    for (let attempt = 0; attempt < 30 && !raceState.releaseLogout; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(raceState.releaseLogout, 'fixture must hold the B logout response');
+
+    raceState.holdNextAGet = true;
+    await racePage.locator('#login-form input[name="email"]').fill('a@example.test');
+    await racePage.locator('#login-form input[name="password"]').fill('fixture-password');
+    await racePage.locator('#login-form button[type="submit"]').click();
+    await racePage.waitForFunction(() => JSON.parse(sessionStorage.getItem('setscope-auth-session-v1') || 'null')?.access_token === 'token-a');
+    const pendingAText = await racePage.locator('#app-shell').textContent();
+    assert.equal(pendingAText.includes('B Private Stock'), false, 'B private DOM must clear before A can be shown');
+    assert.equal(await racePage.locator('#app-shell').getAttribute('aria-hidden'), 'true', 'new owner shell must stay hidden until owner-specific initialization completes');
+    for (let attempt = 0; attempt < 30 && !raceState.releaseAGet; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(raceState.releaseAGet, 'new A session must start a fresh owner-scoped cloud GET');
+    raceState.releaseAGet();
+    await racePage.waitForSelector('body.authenticated #watchlist-mobile .watch-item');
+    assert.match(await racePage.locator('#watchlist-page').textContent(), /A Private Stock/);
+    assert.doesNotMatch(await racePage.locator('#app-shell').textContent(), /B Private Stock/);
+
+    raceState.releaseLogout();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await racePage.evaluate(() => document.body.classList.contains('authenticated')), true, 'stale B logout completion must not hide or reload A');
+    assert.match(await racePage.locator('#watchlist-page').textContent(), /A Private Stock/);
+    await raceContext.close();
+
     console.log(JSON.stringify({
       secureInitialAndNoRecord: 'PASS', accountSequenceABBA: 'PASS', crossAccountDisplay: 'PASS', sameOwnerMultiTabLogout: 'PASS',
-      differentOwnerTabPreserved: 'PASS', pendingWriteOwners: state.putOwners, getOwners: state.getOwners
+      differentOwnerTabPreserved: 'PASS', delayedLogoutNewLogin: 'PASS', pendingWriteOwners: state.putOwners, getOwners: state.getOwners
     }));
   } finally {
     await browser?.close().catch(() => {});

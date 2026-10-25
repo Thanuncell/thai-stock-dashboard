@@ -134,7 +134,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
     location: { origin: 'https://setscope.example', reload: () => { window.reloadCount += 1; } },
     reloadCount: 0,
     addEventListener(type, listener) { listeners.set(type, listener); },
-    dispatchEvent(event) { events.push(event); },
+    dispatchEvent(event) { events.push(event); listeners.get(event.type)?.(event); },
     setscopeAuth: null
   };
   const document = {
@@ -163,6 +163,9 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
     URL, URLSearchParams, window
   });
   vm.runInContext(authSource, context, { filename: 'auth.js' });
+  window.addEventListener('setscope:authenticated', event => window.setscopeAuth.markPrivateUiReady({
+    ownerId: event.detail.userId, generation: event.detail.generation
+  }));
 
   async function settle(turns = 8) { for (let index = 0; index < turns; index++) await flush(); }
   async function waitForPending(key, count = 1) {
