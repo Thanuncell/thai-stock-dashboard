@@ -9,7 +9,10 @@
   let user = null;
   let refreshTimer;
   let authGeneration = 0;
+  let sessionGeneration = session ? 1 : 0;
+  let authOperationGeneration = 0;
   let activeOwnerId = '';
+  let refreshInFlight = null;
   const pendingRequests = new Set();
   const AUTH_ROUTES = { login: '/login', signup: '/register' };
   const $ = selector => document.querySelector(selector);
@@ -56,8 +59,30 @@
     throw lastError;
   }
   function readSession() { try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null'); } catch (_) { return null; } }
-  function saveSession(value) { session = value; if (value) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(value)); else sessionStorage.removeItem(STORAGE_KEY); }
+  function writeSession(value) { session = value; if (value) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(value)); else sessionStorage.removeItem(STORAGE_KEY); }
+  function replaceSession(value) { sessionGeneration += 1; writeSession(value); }
   function sessionFrom(payload) { return { ...payload, expires_at: Date.now() + Number(payload.expires_in || 3600) * 1000 }; }
+  function captureSession() {
+    return Object.freeze({
+      generation: sessionGeneration,
+      operationGeneration: authOperationGeneration,
+      accessToken: session?.access_token || '',
+      refreshToken: session?.refresh_token || ''
+    });
+  }
+  function isCurrentSession(original, { requireRefreshToken = false } = {}) {
+    return Boolean(original && original.generation === sessionGeneration
+      && original.operationGeneration === authOperationGeneration
+      && session?.access_token
+      && (!requireRefreshToken || original.refreshToken === session?.refresh_token));
+  }
+  function beginAuthOperation() {
+    authOperationGeneration += 1;
+    clearTimeout(refreshTimer);
+    abortPendingRequests();
+    return authOperationGeneration;
+  }
+  function isCurrentAuthOperation(generation) { return generation === authOperationGeneration; }
   function captureIdentity() { return Object.freeze({ ownerId: activeOwnerId, generation: authGeneration }); }
   function isCurrentIdentity(identity) {
     return Boolean(identity?.ownerId && session?.access_token
@@ -81,11 +106,11 @@
   function endPrivateSession(reason, { broadcast = false, reload = false, text = 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง' } = {}) {
     const previousOwnerId = activeOwnerId || String(user?.id || '');
     if (broadcast) publishAuthBoundary(previousOwnerId, reason);
-    clearTimeout(refreshTimer);
-    abortPendingRequests();
+    beginAuthOperation();
+    refreshInFlight = null;
     authGeneration += 1;
     activeOwnerId = '';
-    saveSession(null);
+    replaceSession(null);
     user = null;
     window.dispatchEvent(new CustomEvent('setscope:session-boundary', {
       detail: { ownerId: previousOwnerId, generation: authGeneration, reason }
@@ -101,18 +126,53 @@
   }
   async function refreshSession() {
     if (!config?.configured || !session?.refresh_token) return false;
-    try { const refreshed = await authRequest('token?grant_type=refresh_token', { method: 'POST', body: JSON.stringify({ refresh_token: session.refresh_token }) }); saveSession(sessionFrom(refreshed)); scheduleRefresh(); return true; }
-    catch (_) { saveSession(null); return false; }
+    const original = captureSession();
+    if (refreshInFlight?.generation === original.generation
+      && refreshInFlight.operationGeneration === original.operationGeneration
+      && refreshInFlight.refreshToken === original.refreshToken) return refreshInFlight.promise;
+    const promise = (async () => {
+      try {
+        const refreshed = await authRequest('token?grant_type=refresh_token', {
+          method: 'POST', body: JSON.stringify({ refresh_token: original.refreshToken })
+        });
+        if (!isCurrentSession(original, { requireRefreshToken: true })) return false;
+        writeSession(sessionFrom(refreshed));
+        scheduleRefresh();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    })();
+    refreshInFlight = {
+      generation: original.generation,
+      operationGeneration: original.operationGeneration,
+      refreshToken: original.refreshToken,
+      promise
+    };
+    try { return await promise; }
+    finally { if (refreshInFlight?.promise === promise) refreshInFlight = null; }
   }
   async function ensureFresh() {
     if (!session?.access_token) return false;
     if (Number(session.expires_at) < Date.now() + 60_000 && !await refreshSession()) return false;
     return true;
   }
-  async function validateSession() {
-    if (!await ensureFresh()) return null;
-    try { user = await authRequest('user', { headers: { Authorization: `Bearer ${session.access_token}` } }); return user; }
-    catch (_) { saveSession(null); return null; }
+  async function validateSession(operationGeneration = authOperationGeneration) {
+    const beforeRefresh = captureSession();
+    if (!isCurrentAuthOperation(operationGeneration) || !await ensureFresh() || !isCurrentAuthOperation(operationGeneration)) {
+      if (isCurrentSession(beforeRefresh)) { replaceSession(null); user = null; }
+      return null;
+    }
+    const original = captureSession();
+    try {
+      const validatedUser = await authRequest('user', { headers: { Authorization: `Bearer ${original.accessToken}` } });
+      if (!isCurrentSession(original)) return null;
+      user = validatedUser;
+      return user;
+    } catch (_) {
+      if (isCurrentSession(original)) { replaceSession(null); user = null; }
+      return null;
+    }
   }
   function showDashboard() {
     const nextOwnerId = String(user?.id || '');
@@ -169,28 +229,62 @@
   function scheduleRefresh() {
     clearTimeout(refreshTimer);
     if (!session?.expires_at) return;
+    const scheduled = captureSession();
     refreshTimer = setTimeout(async () => {
-      if (!await refreshSession()) endPrivateSession('expiry', { broadcast: true, reload: true });
+      if (!isCurrentSession(scheduled)) return;
+      const refreshed = await refreshSession();
+      if (!isCurrentAuthOperation(scheduled.operationGeneration) || scheduled.generation !== sessionGeneration) return;
+      if (!refreshed) endPrivateSession('expiry', { broadcast: true, reload: true });
     }, Math.max(15_000, Number(session.expires_at) - Date.now() - 60_000));
   }
-  async function openDashboardIfValid() { const valid = await validateSession(); if (!valid) return false; scheduleRefresh(); showDashboard(); return true; }
+  async function openDashboardIfValid(operationGeneration = authOperationGeneration) {
+    const valid = await validateSession(operationGeneration);
+    if (!valid || !isCurrentAuthOperation(operationGeneration) || user !== valid) return false;
+    scheduleRefresh(); showDashboard(); return true;
+  }
   async function onLogin(event) {
     event.preventDefault(); const form = new FormData(event.currentTarget); const submit = event.currentTarget.querySelector('[type=submit]');
+    const operationGeneration = beginAuthOperation();
     submit.disabled = true; message('กำลังตรวจสอบบัญชี…');
-    try { const result = await authRequest('token?grant_type=password', { method: 'POST', body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) }); saveSession(sessionFrom(result)); user = result.user || await authRequest('user', { headers: { Authorization: `Bearer ${session.access_token}` } }); scheduleRefresh(); showDashboard(); }
-    catch (error) { message(error.message, 'error'); }
-    finally { submit.disabled = false; }
+    try {
+      const result = await authRequest('token?grant_type=password', { method: 'POST', body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) });
+      if (!isCurrentAuthOperation(operationGeneration)) return;
+      replaceSession(sessionFrom(result));
+      const original = captureSession();
+      const authenticatedUser = result.user || await authRequest('user', { headers: { Authorization: `Bearer ${original.accessToken}` } });
+      if (!isCurrentSession(original)) return;
+      user = authenticatedUser;
+      scheduleRefresh(); showDashboard();
+    } catch (error) {
+      if (isCurrentAuthOperation(operationGeneration)) message(error.message, 'error');
+    } finally {
+      if (isCurrentAuthOperation(operationGeneration)) submit.disabled = false;
+    }
   }
   async function onSignup(event) {
     event.preventDefault(); const signupForm = event.currentTarget; const form = new FormData(signupForm); const password = String(form.get('password') || ''); const submit = signupForm.querySelector('[type=submit]');
     if (password !== form.get('confirmPassword')) { message('รหัสผ่านที่กรอกไม่ตรงกัน', 'error'); return; }
+    const operationGeneration = beginAuthOperation();
     submit.disabled = true; message('กำลังสร้างบัญชี…');
     try {
       const result = await authRequest(`signup?redirect_to=${encodeURIComponent(window.location.origin)}`, { method: 'POST', body: JSON.stringify({ email: form.get('email'), password, data: { terms_accepted_at: new Date().toISOString(), terms_version: '2026-10-13' } }) });
-      if (result.access_token) { saveSession(sessionFrom(result)); user = result.user || await authRequest('user', { headers: { Authorization: `Bearer ${session.access_token}` } }); scheduleRefresh(); showDashboard(); }
-      else { signupForm.reset(); setMode('login', { replace: true }); message('สมัครสมาชิกแล้ว กรุณากดยืนยันจากอีเมลก่อน แล้วกลับมาเข้าสู่ระบบ', 'success'); }
-    } catch (error) { message(error.message, 'error'); }
-    finally { submit.disabled = false; }
+      if (!isCurrentAuthOperation(operationGeneration)) return;
+      if (result.access_token) {
+        replaceSession(sessionFrom(result));
+        const original = captureSession();
+        const authenticatedUser = result.user || await authRequest('user', { headers: { Authorization: `Bearer ${original.accessToken}` } });
+        if (!isCurrentSession(original)) return;
+        user = authenticatedUser;
+        scheduleRefresh(); showDashboard();
+      } else {
+        signupForm.reset(); setMode('login', { replace: true });
+        message('สมัครสมาชิกแล้ว กรุณากดยืนยันจากอีเมลก่อน แล้วกลับมาเข้าสู่ระบบ', 'success');
+      }
+    } catch (error) {
+      if (isCurrentAuthOperation(operationGeneration)) message(error.message, 'error');
+    } finally {
+      if (isCurrentAuthOperation(operationGeneration)) submit.disabled = false;
+    }
   }
   async function logout() {
     rememberAppRoute();
@@ -200,7 +294,10 @@
     setMode('login', { replace: true }); window.location.reload();
   }
   async function authorizedFetch(url, options = {}) {
+    const operationGeneration = authOperationGeneration;
+    const sessionState = captureSession();
     if (!await ensureFresh()) {
+      if (!isCurrentAuthOperation(operationGeneration) || sessionState.generation !== sessionGeneration) throw staleSessionError();
       const wasAuthenticated = document.body.classList.contains('authenticated');
       endPrivateSession('expiry', { broadcast: true, reload: wasAuthenticated });
       throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง');
@@ -215,12 +312,14 @@
     const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${session.access_token}`);
     try {
       let response = await fetch(url, { ...options, headers, signal: controller.signal });
-      if (!isCurrentIdentity(identity)) throw staleSessionError();
+      if (!isCurrentIdentity(identity) || !isCurrentAuthOperation(operationGeneration)) throw staleSessionError();
       if (response.status === 401) {
-        if (await refreshSession() && isCurrentIdentity(identity)) {
+        const refreshed = await refreshSession();
+        if (!isCurrentIdentity(identity) || !isCurrentAuthOperation(operationGeneration)) throw staleSessionError();
+        if (refreshed) {
           headers.set('Authorization', `Bearer ${session.access_token}`);
           response = await fetch(url, { ...options, headers, signal: controller.signal });
-          if (!isCurrentIdentity(identity)) throw staleSessionError();
+          if (!isCurrentIdentity(identity) || !isCurrentAuthOperation(operationGeneration)) throw staleSessionError();
         } else {
           endPrivateSession('expiry', { broadcast: true, reload: true });
           throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง');
@@ -228,7 +327,7 @@
       }
       return response;
     } catch (error) {
-      if (!isCurrentIdentity(identity)) throw staleSessionError();
+      if (!isCurrentIdentity(identity) || !isCurrentAuthOperation(operationGeneration)) throw staleSessionError();
       throw error;
     } finally {
       pendingRequests.delete(controller);
@@ -280,9 +379,14 @@
       document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = false; });
       if (location.hash.includes('access_token=')) {
         const params = new URLSearchParams(location.hash.slice(1));
-        if (params.get('access_token')) { saveSession(sessionFrom({ access_token: params.get('access_token'), refresh_token: params.get('refresh_token'), expires_in: params.get('expires_in') })); history.replaceState(null, '', location.pathname + location.search); }
+        if (params.get('access_token')) {
+          beginAuthOperation();
+          replaceSession(sessionFrom({ access_token: params.get('access_token'), refresh_token: params.get('refresh_token'), expires_in: params.get('expires_in') }));
+          history.replaceState(null, '', location.pathname + location.search);
+        }
       }
-      if (!await openDashboardIfValid()) showLogin();
+      const operationGeneration = authOperationGeneration;
+      if (!await openDashboardIfValid(operationGeneration) && isCurrentAuthOperation(operationGeneration)) showLogin();
     } catch (_) { showLogin('เชื่อมต่อระบบสมาชิกไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ', 'error'); }
   })();
 })();
