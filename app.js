@@ -126,7 +126,7 @@ function isCurrentPrivateIdentity(identity = privateSessionIdentity) {
     && window.setscopeAuth?.isCurrentIdentity?.(identity));
 }
 function clearPrivateDom() {
-  ['#watchlist', '#watchlist-mobile', '#watchlist-news-list', '#watchlist-news-pager', '#alerts-settings', '#alerts-history'].forEach(selector => {
+  ['#watchlist', '#watchlist-mobile', '#watchlist-news-list', '#watchlist-news-pager', '#mover-list', '#alerts-settings', '#alerts-history'].forEach(selector => {
     const node = $(selector); if (node) node.replaceChildren();
   });
   ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => {
@@ -144,6 +144,7 @@ function clearPrivateDom() {
   setWatchlistSyncStatus('', '');
 }
 function clearPrivateState() {
+  const preserveInitialChartSelection = privateInitializationSequence === 0 && initialNavigation.route === 'chart';
   privateInitializationSequence += 1;
   privateInitializationIdentityKey = '';
   clearTimeout(watchlistSyncTimer);
@@ -164,6 +165,23 @@ function clearPrivateState() {
   watchlistNewsRequestId += 1;
   watchlistQuery = '';
   watchNewsPage = 1;
+  marketRequestSequence.begin();
+  latestMarket = null;
+  latestMarketSymbol = '';
+  latestMarketRange = '';
+  activeSymbol = preserveInitialChartSelection ? initialNavigation.symbol : 'PTT';
+  activeName = preserveInitialChartSelection ? initialNavigation.symbol : (THAI_NAMES.PTT || 'PTT');
+  chartViewport = null;
+  chartViewportKey = '';
+  chartRowCount = 0;
+  setChartLoadState('loading', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
+  drawSignals([], [], []);
+  setTechnicalPanelState('loading');
+  renderPriceChart([]);
+  setText('#chart-price', '—');
+  setText('#chart-change', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
+  setText('#analysis-note', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
+  setText('#history-count', '0');
   clearPrivateDom();
 }
 window.addEventListener('setscope:session-boundary', clearPrivateState);
@@ -965,6 +983,7 @@ function renameActiveWatchlist() {
 
 let moverMode = 'up';
 function renderMovers(rows = []) {
+  if (!isCurrentPrivateIdentity()) return;
   const list = $('#mover-list'); if (!list) return;
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   const values = watchlist.map(item => ({ ...item, quote: bySymbol[item.symbol] })).filter(item => item.quote?.guardStatus === 'accepted' && Number.isFinite(Number(item.quote.last)));

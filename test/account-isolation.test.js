@@ -118,6 +118,9 @@ test('T01/T03/T04/T08/T15 user-owned state is gated before render and legacy key
   assert.match(styleSource, /body:not\(\.authenticated\) \.app-shell\{display:none\}/);
   assert.match(appSource, /window\.addEventListener\('setscope:session-boundary', clearPrivateState\)/);
   assert.match(appSource, /function clearPrivateState\(\) \{[\s\S]*?clearPrivateDom\(\)/);
+  assert.match(appSource, /function clearPrivateDom\(\) \{[\s\S]*?'#mover-list'/);
+  assert.match(appSource, /function clearPrivateState\(\) \{[\s\S]*?marketRequestSequence\.begin\(\)[\s\S]*?latestMarket = null[\s\S]*?latestMarketSymbol = ''[\s\S]*?latestMarketRange = ''/);
+  assert.match(appSource, /function renderMovers\(rows = \[\]\) \{\s*if \(!isCurrentPrivateIdentity\(\)\) return;/);
   assert.match(appSource, /window\.addEventListener\('setscope:authenticated', initializeAccountSession\)/);
   assert.doesNotMatch(appSource, /setscope:authenticated'[^\n]*once:\s*true/);
   assert.match(appSource, /await initializeWatchlistCloudSync\(identity\)[\s\S]*?isCurrentPrivateIdentity\(identity\)[\s\S]*?markPrivateUiReady\?\.\(identity\)/);

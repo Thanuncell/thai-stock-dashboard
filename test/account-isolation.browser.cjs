@@ -90,8 +90,15 @@ async function mockRequest(route, baseUrl, state) {
     }, 200, { 'cache-control': 'no-store' });
   }
   if (url.pathname === '/api/market') {
+    if (owner === 'user-a' && state.holdNextAMarket) {
+      state.holdNextAMarket = false;
+      await new Promise(resolve => { state.releaseAMarket = resolve; });
+    }
+    const stock = owner === 'user-b'
+      ? { symbol: 'CPALL', fullName: 'B Private Mover', last: 70, prior: 60, volume: 1000, guardStatus: 'accepted', dataState: 'delayed', history: [] }
+      : { symbol: 'PTT', fullName: 'A Private Mover', last: 35, prior: 34, volume: 900, guardStatus: 'accepted', dataState: 'delayed', history: [] };
     return json(route, {
-      stocks: [], indices: [], history: [], indicatorHistory: [], levelsHistory: [], errors: [],
+      stocks: [stock], indices: [], history: [], indicatorHistory: [], levelsHistory: [], errors: [],
       fetchedAt: new Date().toISOString(), asOf: new Date().toISOString(), source: 'fixture',
       stale: false, partial: false, delayed: true, delayMinutes: 15, dataState: 'delayed', provider: 'fixture'
     });
@@ -135,7 +142,7 @@ async function seedPage(page, token) {
     await waitForServer(`${baseUrl}/healthz`);
     browser = await chromium.launch({ headless: true, executablePath: process.env.SETSCOPE_BROWSER_EXECUTABLE || undefined });
     const context = await browser.newContext({ viewport: { width: 1000, height: 760 } });
-    const state = { getOwners: [], putOwners: [], holdNextAPut: true, releaseAPut: null, holdNextLogout: false, releaseLogout: null, holdNextAGet: false, releaseAGet: null };
+    const state = { getOwners: [], putOwners: [], holdNextAPut: true, releaseAPut: null, holdNextLogout: false, releaseLogout: null, holdNextAGet: false, releaseAGet: null, holdNextAMarket: false, releaseAMarket: null };
     await context.route('**/*', route => mockRequest(route, baseUrl, state));
 
     const pageA1 = await context.newPage();
@@ -201,13 +208,17 @@ async function seedPage(page, token) {
     assert.match(await pageA1.locator('#watchlist-page').textContent(), /A Private Stock/);
 
     const raceContext = await browser.newContext({ viewport: { width: 1000, height: 760 } });
-    const raceState = { getOwners: [], putOwners: [], holdNextAPut: false, releaseAPut: null, holdNextLogout: true, releaseLogout: null, holdNextAGet: false, releaseAGet: null };
+    const raceState = { getOwners: [], putOwners: [], holdNextAPut: false, releaseAPut: null, holdNextLogout: true, releaseLogout: null, holdNextAGet: false, releaseAGet: null, holdNextAMarket: false, releaseAMarket: null };
     await raceContext.route('**/*', route => mockRequest(route, baseUrl, raceState));
     const racePage = await raceContext.newPage();
     await seedPage(racePage, 'token-b');
     await racePage.goto(`${baseUrl}/#watchlist`, { waitUntil: 'domcontentloaded' });
     await racePage.waitForSelector('body.authenticated #watchlist-mobile .watch-item');
+    await racePage.waitForSelector('#mover-list [data-mover-symbol="CPALL"]', { state: 'attached' });
     assert.match(await racePage.locator('#watchlist-page').textContent(), /B Private Stock/);
+    assert.match(await racePage.locator('#mover-list').textContent(), /B Private Stock/);
+    await racePage.locator('#mover-list [data-mover-symbol="CPALL"]').dispatchEvent('click');
+    await racePage.waitForFunction(() => document.querySelector('#stock-search')?.value === 'CPALL');
 
     await racePage.locator('#logout-button').click();
     await racePage.waitForSelector('#login-form:not([hidden])');
@@ -215,12 +226,15 @@ async function seedPage(page, token) {
     assert.ok(raceState.releaseLogout, 'fixture must hold the B logout response');
 
     raceState.holdNextAGet = true;
+    raceState.holdNextAMarket = true;
     await racePage.locator('#login-form input[name="email"]').fill('a@example.test');
     await racePage.locator('#login-form input[name="password"]').fill('fixture-password');
     await racePage.locator('#login-form button[type="submit"]').click();
     await racePage.waitForFunction(() => JSON.parse(sessionStorage.getItem('setscope-auth-session-v1') || 'null')?.access_token === 'token-a');
     const pendingAText = await racePage.locator('#app-shell').textContent();
     assert.equal(pendingAText.includes('B Private Stock'), false, 'B private DOM must clear before A can be shown');
+    assert.equal((await racePage.locator('#mover-list').textContent()).includes('B Private Stock'), false, 'B mover DOM must clear while A watchlist ownership is pending');
+    assert.equal(await racePage.locator('#stock-search').inputValue(), 'PTT', 'B owner-selected chart symbol must reset before A can be shown');
     assert.equal(await racePage.locator('#app-shell').getAttribute('aria-hidden'), 'true', 'new owner shell must stay hidden until owner-specific initialization completes');
     for (let attempt = 0; attempt < 30 && !raceState.releaseAGet; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
     assert.ok(raceState.releaseAGet, 'new A session must start a fresh owner-scoped cloud GET');
@@ -228,6 +242,14 @@ async function seedPage(page, token) {
     await racePage.waitForSelector('body.authenticated #watchlist-mobile .watch-item');
     assert.match(await racePage.locator('#watchlist-page').textContent(), /A Private Stock/);
     assert.doesNotMatch(await racePage.locator('#app-shell').textContent(), /B Private Stock/);
+    assert.equal(await racePage.locator('#stock-search').inputValue(), 'PTT', 'A session must not inherit B chart selection');
+    for (let attempt = 0; attempt < 30 && !raceState.releaseAMarket; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(raceState.releaseAMarket, 'fixture must hold the new A market response');
+    assert.equal((await racePage.locator('#mover-list').textContent()).includes('B Private Stock'), false, 'B mover must stay absent while A market data is pending');
+    raceState.releaseAMarket();
+    await racePage.waitForSelector('#mover-list [data-mover-symbol="PTT"]', { state: 'attached' });
+    assert.match(await racePage.locator('#mover-list').textContent(), /A Private Stock/);
+    assert.doesNotMatch(await racePage.locator('#mover-list').textContent(), /B Private Stock/);
 
     raceState.releaseLogout();
     await new Promise(resolve => setTimeout(resolve, 100));
