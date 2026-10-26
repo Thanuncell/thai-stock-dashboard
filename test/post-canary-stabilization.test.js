@@ -12,7 +12,7 @@ const row=symbol=>({symbol,provider_symbol:symbol+'.BK',provider:'Yahoo Finance'
  last_checked_at:iso(NOW-8*86400000),last_success_at:iso(NOW-8*86400000),last_verified_at:iso(NOW-8*86400000)});
 const env=stage=>({SUPABASE_URL:'https://fixture.supabase.co',SUPABASE_SECRET_KEY:'synthetic-fixture',SETSCOPE_V156_MANUAL_VERIFY:'1',
  SETSCOPE_V156_SCALE_APPROVAL:JSON.stringify({ownerApproved:true,stage,approvedStages:[5,20,100,500].filter(n=>n<=stage),
- maxJobsPerDay:Math.max(2,stage/5),providerDailyLimit:Math.max(2,stage/5)*10,databaseDailyLimit:Math.max(2,stage/5)*200})});
+ maxJobsPerDay:stage===5?2:4,providerDailyLimit:stage===5?20:40,databaseDailyLimit:stage===5?400:800})});
 
 test('truth separates historical, fresh LKG, stale, temporary failure and confirmed unavailability',async()=>{
  const fresh={...row('FRESH'),last_success_at:iso(NOW-1000)};

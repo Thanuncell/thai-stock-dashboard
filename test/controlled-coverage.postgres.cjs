@@ -254,9 +254,11 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       const settings={...env,GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_REPOSITORY:'Thanuncell/thai-stock-dashboard',GITHUB_REPOSITORY_OWNER:'Thanuncell',GITHUB_ACTOR:'Thanuncell',GITHUB_RUN_ATTEMPT:'1',
         GITHUB_RUN_ID:'880000',SETSCOPE_SCALE_CONFIRMATION:'RUN COVERAGE 20'};
       const first=await main({env:settings,fetchImpl:transport,now:()=>time,mode:'run'});assert.equal(first.status,'STAGE_PASS');assert.equal(first.verified,20);
+      time+=86400000;provider.advance(time,35);
       const nextSettings={...settings,GITHUB_RUN_ID:'880001',SETSCOPE_SCALE_STAGE:'100',SETSCOPE_SCALE_CONFIRMATION:'RUN COVERAGE 100'};
       const next=await main({env:nextSettings,fetchImpl:transport,now:()=>time,mode:'run'});assert.equal(next.status,'ROUND_PASS');assert.equal(next.stageProgress.completed,20);
       await assert.rejects(main({env:{...nextSettings,GITHUB_RUN_ID:'880002',SETSCOPE_SCALE_ID:'880001'},fetchImpl:transport,now:()=>time,mode:'run'}));assert.equal(calls,40);
+      time+=86400000;provider.advance(time,35);
       const continued=await main({env:{...nextSettings,GITHUB_RUN_ID:'880002',SETSCOPE_SCALE_ID:'880001',SETSCOPE_SCALE_REVIEW:'REVIEWED 880001'},fetchImpl:transport,now:()=>time,mode:'run'});
       assert.equal(continued.stageProgress.completed,40);assert.equal(calls,60);
       const row=(await pool.query("select automation_state from public.coverage_runs where run_key='v156:control'")).rows[0];

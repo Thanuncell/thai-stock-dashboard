@@ -3,6 +3,8 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {main}=require('../scripts/run-v156-scaling');
 const {backend}=require('./fixtures/controlled-backend.cjs');
 const {createControlledCoverageStore,CONTROL_KEY}=require('../server/controlled-coverage-store');
+const {createControlledCoverage}=require('../server/controlled-coverage');
+const {approval}=require('../server/manual-batch-policy');
 const {createRequestDeadline}=require('../server/request-deadline');
 const {bangkokDay,tradingDay}=require('../server/automation-policy');
 const {RUN_KEY:CANARY}=require('../server/canary-policy');
@@ -94,14 +96,15 @@ test('clean round continuation requires new Owner approval and never selects an 
  const before=providerCalls(db),saved=structuredClone(db.runs.get(CONTROL_KEY));
  await assert.rejects(main({env:{...options(100,'4000','4001'),SETSCOPE_SCALE_REVIEW:''},fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}),e=>e.report.reasonCode==='SCALING_CONTINUATION_APPROVAL_REQUIRED');
  assert.equal(providerCalls(db),before);assert.deepEqual(db.runs.get(CONTROL_KEY),saved);
- const next=await main({env:options(100,'4000','4001'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'});
+ db.advance(NOW+86400000,35);
+ const next=await main({env:options(100,'4000','4001'),fetchImpl:db.fetchImpl,now:()=>NOW+86400000,mode:'run'});
  assert.equal(next.stageProgress.completed,40);assert.ok(next.plan.targets.every(t=>!first.plan.targets.some(p=>p.symbol===t.symbol)));
 });
 
 test('quota-limited round freezes only its approved capacity and cannot refund reservations',async()=>{
- const db=fixture(100);await seedPrevious(db,100,{day:'2026-10-26',reservations:19});
+ const db=fixture(100);await seedPrevious(db,100,{day:'2026-10-26',reservations:3});
  const r=await main({env:options(100,'5000'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'});
- assert.equal(r.plan.targets.length,5);assert.equal(r.stageProgress.completed,5);assert.equal(db.runs.get(CONTROL_KEY).automation_state.metadata.reservations,20);
+ assert.equal(r.plan.targets.length,5);assert.equal(r.stageProgress.completed,5);assert.equal(db.runs.get(CONTROL_KEY).automation_state.metadata.reservations,4);
  const before=writes(db);await assert.rejects(main({env:options(100,'5000','5001'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}),e=>e.report.reasonCode==='SCALING_DAILY_CAPACITY');assert.equal(writes(db),before);
 });
 
@@ -109,8 +112,28 @@ test('crash after a clean durable round can continue only through reviewed state
  const db=fixture(100);await seedPrevious(db,100);
  await assert.rejects(main({env:options(100,'6000'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run',onReport:()=>{throw Error('process died after durable commit');}}));
  assert.equal(db.runs.get(CONTROL_KEY).automation_state.metadata.scaling.phase,'awaiting_approval');
- const next=await main({env:options(100,'6000','6001'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'});
+ db.advance(NOW+86400000,35);
+ const next=await main({env:options(100,'6000','6001'),fetchImpl:db.fetchImpl,now:()=>NOW+86400000,mode:'run'});
  assert.equal(next.stageProgress.completed,40);assert.equal(providerCalls(db),40);
+});
+
+for(const stage of [100,500])test(`stage ${stage} shares four daily reservations with other jobs and continues only after a new day and approval`,async()=>{
+ const db=fixture(40);await seedPrevious(db,stage);
+ const settings={...env,SETSCOPE_V156_MANUAL_VERIFY:'1',SETSCOPE_V156_SCALE_APPROVAL:JSON.stringify(approval(stage))};
+ assert.equal((await createControlledCoverage({env:settings,fetchImpl:db.fetchImpl,now:()=>NOW}).execute({tag:'other-job'})).verified,5);
+ const first=await main({env:options(stage,'9000'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'});
+ assert.equal(first.preflight.quotaRemaining.jobs,3);assert.equal(first.preflight.quotaRemaining.providerRequests,30);assert.equal(first.preflight.quotaRemaining.databaseRequests,600);
+ assert.equal(first.attempted,15);assert.equal(first.stageProgress.completed,15);assert.equal(first.jobs.length,3);
+ const meta=structuredClone(db.runs.get(CONTROL_KEY).automation_state.metadata);assert.equal(meta.reservations,4);
+ const before=providerCalls(db),beforeWrites=writes(db);
+ await assert.rejects(main({env:options(stage,'9000','9001'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}),e=>e.report.reasonCode==='SCALING_DAILY_CAPACITY');
+ assert.equal(providerCalls(db),before);assert.equal(writes(db),beforeWrites);assert.deepEqual(db.runs.get(CONTROL_KEY).automation_state.metadata,meta);
+ assert.ok(db.calls.filter(c=>c.url.hostname==='fixture.supabase.co').length<=800);assert.ok(providerCalls(db)<=40);
+ const time=NOW+86400000;db.advance(time,35);
+ const next=await main({env:options(stage,'9000','9001'),fetchImpl:db.fetchImpl,now:()=>time,mode:'run'});
+ assert.equal(next.stageProgress.completed,35);assert.ok(next.plan.targets.every(t=>!first.plan.targets.some(p=>p.symbol===t.symbol)));
+ const current=db.runs.get(CONTROL_KEY).automation_state.metadata;assert.equal(current.reservations,4);
+ for(const target of first.plan.targets)assert.equal(current.coverageChecks[target.symbol],meta.coverageChecks[target.symbol]);
 });
 
 test('absolute cancellation preserves uncertain checkpoint and cannot advance to job two',async()=>{

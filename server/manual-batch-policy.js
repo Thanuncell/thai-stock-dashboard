@@ -1,7 +1,7 @@
 'use strict';
 const {createHash}=require('node:crypto');
 const {selectCoverage,bangkokDay,executionWindow}=require('./automation-policy');
-const {JOB_BUDGET,readScalePolicy,STAGES}=require('./automation-scaling');
+const {JOB_BUDGET,DAILY_BUDGET,readScalePolicy,STAGES}=require('./automation-scaling');
 const {stopped,CONTROL_KEY}=require('./controlled-coverage-store');
 const {coverageTruth}=require('./coverage-truth');
 const APPROVAL=Object.freeze({ownerApproved:true,stage:20,approvedStages:[5,20],maxJobsPerDay:4,providerDailyLimit:40,databaseDailyLimit:800});
@@ -23,7 +23,7 @@ function assertControl(row,now){
 }
 function approval(stage=20){
  if(![20,100,500].includes(stage))throw stopped('SCALING_INPUT_INVALID');
- const jobs=stage/5;return {ownerApproved:true,stage,approvedStages:STAGES.slice(0,STAGES.indexOf(stage)+1),maxJobsPerDay:jobs,providerDailyLimit:jobs*10,databaseDailyLimit:jobs*200};
+ return {ownerApproved:true,stage,approvedStages:STAGES.slice(0,STAGES.indexOf(stage)+1),...DAILY_BUDGET};
 }
 function assertCapacity(meta,now,jobs=4,stage=20){
  const used=meta.day===bangkokDay(now)?meta.reservations||0:0;
