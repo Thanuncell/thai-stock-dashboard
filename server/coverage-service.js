@@ -300,7 +300,8 @@ function createCoverageRunner({
   provider = PROVIDER,
   retrySleep,
   checkpointStore,
-  onResult = async () => {}
+  onResult = async () => {},
+  verificationAttempts = 2
 } = {}) {
   const safeBatchSize = clampInteger(batchSize, DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE);
   const safeConcurrency = clampInteger(concurrency, DEFAULT_CONCURRENCY, 1, MAX_CONCURRENCY);
@@ -333,7 +334,7 @@ function createCoverageRunner({
         const verification = await retryWithBackoff(
           () => verifySymbol(row.symbol, row.provider_symbol),
           {
-            maxAttempts: 2,
+            maxAttempts: clampInteger(verificationAttempts, 2, 1, 2),
             baseDelayMs: 250,
             shouldRetry: error => !error.stopBatch && !error.skipAttempt && ![401,403,429].includes(error.status) && !error.accessDenied && isTransientProviderError(error),
             ...(retrySleep ? { sleep: retrySleep } : {})
