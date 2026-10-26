@@ -103,7 +103,6 @@ function normalizeHistory(result, { now, futureToleranceMs, maxPriceMoveRatio = 
     const neighborsAgree = Math.abs(previous.close - next.close) / previous.close <= 0.1;
     if (jumpFromPrevious > maxPriceMoveRatio && jumpToNext > maxPriceMoveRatio && neighborsAgree) {
       reasons.add('HISTORICAL_ANOMALY');
-      return false;
     }
     return true;
   });
@@ -152,15 +151,15 @@ function createMarketDataGuard({
     };
   }
 
-  function assess(result, requestedSymbol, { contextKey = 'default' } = {}) {
+  function assess(result, requestedSymbol, { contextKey = 'default', providerSymbol: mappedProviderSymbol } = {}) {
     const symbol = normalizeSymbol(requestedSymbol);
-    const storageKey = `${symbol}|${String(contextKey || 'default')}`;
+    const storageKey = `${symbol}|${mappedProviderSymbol || expectedProviderSymbol(symbol)}|${String(contextKey || 'default')}`;
     const timestamp = Number(now());
     const checkedAt = new Date(timestamp).toISOString();
     const reasons = new Set();
     const meta = result?.meta || {};
     const providerSymbol = normalizeProviderSymbol(meta.symbol);
-    const expectedSymbol = expectedProviderSymbol(symbol);
+    const expectedSymbol = mappedProviderSymbol || expectedProviderSymbol(symbol);
     if (!providerSymbol) reasons.add('SYMBOL_UNVERIFIED');
     else if (providerSymbol !== expectedSymbol) reasons.add('SYMBOL_MISMATCH');
     if (!validMarket(meta)) reasons.add('MARKET_MISMATCH');
@@ -176,12 +175,17 @@ function createMarketDataGuard({
     const quoteMetaOlderThanHistory = Boolean(providerTimeMs && latestBar?.time && providerTimeMs < latestBar.time);
     const rawLast = meta.regularMarketPrice;
     const metaLast = finiteNumber(rawLast);
-    if (rawLast !== null && rawLast !== undefined && rawLast !== '' && (metaLast === null || metaLast <= 0)) reasons.add('INVALID_NUMERIC');
-    const last = quoteMetaOlderThanHistory
+    const invalidLast = rawLast !== null && rawLast !== undefined && rawLast !== '' && (metaLast === null || metaLast <= 0);
+    if (invalidLast) reasons.add('INVALID_NUMERIC');
+    const last = invalidLast ? null : quoteMetaOlderThanHistory
       ? latestBar?.close ?? null
       : metaLast && metaLast > 0 ? metaLast : latestBar?.close ?? null;
-    const sessionPrior = previousSessionClose(normalized.history);
-    const rawPrior = meta.previousClose ?? sessionPrior ?? meta.chartPreviousClose;
+    const historyMatchesQuoteSession = quoteMetaOlderThanHistory || !providerTimeMs
+      || latestBar?.time && bangkokDateKey(latestBar.time) === bangkokDateKey(providerTimeMs);
+    const sessionPrior = historyMatchesQuoteSession ? previousSessionClose(normalized.history) : null;
+    // For multi-day ranges chartPreviousClose is the range-start reference, not yesterday's close.
+    const rawPrior = meta.previousClose ?? meta.regularMarketPreviousClose ?? sessionPrior
+      ?? (meta.range === '1d' ? meta.chartPreviousClose : null);
     const metaPrior = finiteNumber(rawPrior);
     if (rawPrior !== null && rawPrior !== undefined && rawPrior !== '' && (metaPrior === null || metaPrior <= 0)) reasons.add('INVALID_NUMERIC');
     const prior = metaPrior && metaPrior > 0 ? metaPrior : null;
@@ -206,6 +210,9 @@ function createMarketDataGuard({
       const impliedPercent = prior === 0 ? null : impliedChange / prior * 100;
       if (change !== null && Math.abs(change - impliedChange) > Math.max(0.02, Math.abs(last) * 0.001)) reasons.add('PRICE_CHANGE_MISMATCH');
       if (changePercent !== null && impliedPercent !== null && Math.abs(changePercent - impliedPercent) > 0.15) reasons.add('PRICE_CHANGE_MISMATCH');
+    } else if (last !== null && change !== null && changePercent !== null) {
+      const impliedBase = last - change;
+      if (impliedBase <= 0 || Math.abs(change / impliedBase * 100 - changePercent) > 0.15) reasons.add('PRICE_CHANGE_MISMATCH');
     }
 
     const rawHigh = meta.regularMarketDayHigh;
@@ -232,21 +239,22 @@ function createMarketDataGuard({
     if (previous?.last > 0 && last > 0 && Math.abs(last - previous.last) / previous.last > maxPriceMoveRatio) reasons.add('DATA_ANOMALY');
 
     const guardReasons = [...reasons];
+    if (normalized.reasons.includes('HISTORICAL_ANOMALY')) guardReasons.push('HISTORICAL_ANOMALY');
     const identityStatus = guardReasons.some(reason => ['SYMBOL_MISMATCH', 'MARKET_MISMATCH'].includes(reason))
       ? 'quarantined' : providerSymbol ? 'accepted' : 'unverified';
     const historyStatus = identityStatus === 'quarantined'
       ? 'blocked'
       : normalized.history.length === 0
         ? 'insufficient'
-        : normalized.rejectedBars === 0
+        : normalized.rejectedBars === 0 && normalized.reasons.length === 0
           ? 'usable'
           : normalized.history.length >= normalized.rejectedBars
             ? 'usable_with_warnings'
             : 'insufficient';
     const critical = providerTimeFuture || guardReasons.some(reason => [
-      'SYMBOL_MISMATCH', 'MARKET_MISMATCH', 'LAST_CLOSE_MISMATCH', 'PRICE_CHANGE_MISMATCH', 'DATA_ANOMALY'
+      'SYMBOL_MISMATCH', 'MARKET_MISMATCH', 'INVALID_TIMESTAMP'
     ].includes(reason));
-    if (critical || last === null) {
+    if (critical || last === null && normalized.history.length === 0) {
       const value = fallback(storageKey, guardReasons, checkedAt, timestamp);
       return {
         value,
@@ -287,9 +295,9 @@ function createMarketDataGuard({
       historyStatus,
       identityStatus,
       stale,
-      dataState: stale ? 'stale' : suspect ? 'suspect' : 'delayed',
+      dataState: stale ? 'stale' : last === null ? 'partial' : suspect ? 'suspect' : 'delayed',
       guardStatus,
-      quoteStatus: guardStatus,
+      quoteStatus: last === null ? 'quarantined' : guardStatus,
       guardReasons,
       fallbackFromLastKnown: false
     };

@@ -96,7 +96,7 @@ export function coverageDisplayState(data = {}) {
   if (data.dataState !== 'fresh') return unavailable(data.dataState === 'stale' ? 'stale' : 'unavailable');
   if (data.provider !== 'Yahoo Finance' || !Number.isFinite(Date.parse(data.lastChecked))) return unavailable('invalid');
   const universe = data.universe;
-  const currentVerified = data.currentVerified;
+  const currentVerified = Object.hasOwn(data, 'currentUsable') ? data.currentUsable : data.currentVerified;
   if (!Number.isSafeInteger(universe) || universe < 0
     || !Number.isSafeInteger(currentVerified) || currentVerified < 0
     || currentVerified > universe) return unavailable('invalid');

@@ -133,6 +133,7 @@ async function retryWithBackoff(action, {
 }
 
 function isTransientProviderError(error) {
+  if (error?.stopBatch || error?.skipAttempt || error?.accessDenied) return false;
   return Boolean(error?.retryable)
     || /(?:HTTP\s+(?:429|502|503|504)|timeout|timed out|fetch failed)/i.test(String(error?.message || ''));
 }

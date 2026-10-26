@@ -28,6 +28,8 @@ test('Footer Coverage accepts only fresh, valid persisted counts', () => {
   assert.equal(domain.coverageDisplayState({ ...valid, currentVerified: 401 }).reason, 'invalid');
   assert.equal(domain.coverageDisplayState({ ...valid, currentVerified: '321' }).reason, 'invalid');
   assert.equal(domain.coverageDisplayState({ ...valid, provider: 'fixture' }).reason, 'invalid');
+  assert.equal(domain.coverageDisplayState({ ...valid, currentUsable: 0 }).currentVerified, 0);
+  assert.equal(domain.coverageDisplayState({ ...valid, currentUsable: null }).reason, 'invalid');
 });
 
 test('chart viewport defaults to a useful latest window without changing the dataset', () => {

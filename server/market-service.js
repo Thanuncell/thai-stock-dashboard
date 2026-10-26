@@ -38,13 +38,42 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       },
       signal: AbortSignal.timeout(9000)
     });
-    if (!response.ok) throw Error(`Yahoo Finance ${symbol}: HTTP ${response.status}`);
-    const body = await response.json(), result = body?.chart?.result?.[0];
-    if (!result) throw Error(body?.chart?.error?.description || `ไม่มีข้อมูล ${symbol} จาก Yahoo Finance`);
+    if (!response.ok) {
+      const error = Error(`Yahoo Finance ${symbol}: HTTP ${response.status}`);
+      error.status = response.status;
+      error.code = [404, 410].includes(response.status) ? 'SOURCE_NO_DATA'
+        : [401, 403].includes(response.status) ? 'SOURCE_DENIED'
+          : response.status === 429 ? 'SOURCE_RATE_LIMITED' : 'ACQUISITION_GAP';
+      error.accessDenied = [401, 403].includes(response.status);
+      error.stopBatch = error.accessDenied || response.status === 429;
+      throw error;
+    }
+    let body;
+    try { body = await response.json(); }
+    catch { throw Object.assign(Error('Yahoo Finance response schema unavailable'), { code: 'PARSER_MISMATCH', stopBatch: true }); }
+    const result = body?.chart?.result?.[0];
+    if (!result) {
+      const providerError = body?.chart?.error;
+      const denied = /unauthorized|forbidden/i.test(providerError?.code || '');
+      throw Object.assign(Error(providerError?.description || `ไม่มีข้อมูล ${symbol} จาก Yahoo Finance`), {
+        code: denied ? 'SOURCE_DENIED' : providerError ? 'SOURCE_NO_DATA' : 'PARSER_MISMATCH',
+        accessDenied: denied, stopBatch: denied || !providerError
+      });
+    }
     return result;
   }
 
   async function search(query) {
+    const items = await searchOnce(query);
+    const canonical = String(query || '').trim().toUpperCase();
+    // Ambiguous short tickers can be crowded out by foreign equities in Yahoo's first page.
+    if (!items.length && /^[A-Z0-9&.-]{1,20}$/.test(canonical) && !canonical.endsWith('.BK')) {
+      return searchOnce(`${canonical}.BK`);
+    }
+    return items;
+  }
+
+  async function searchOnce(query) {
     const endpoint = new URL('https://query1.finance.yahoo.com/v1/finance/search');
     endpoint.searchParams.set('q', query);
     endpoint.searchParams.set('quotesCount', '20');
@@ -53,7 +82,12 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       headers: { 'user-agent': 'Mozilla/5.0 SETscope stock search', accept: 'application/json' },
       signal: AbortSignal.timeout(9000)
     });
-    if (!response.ok) throw Error(`Yahoo Finance search HTTP ${response.status}`);
+    if (!response.ok) {
+      const stopped = [401,403,429].includes(response.status);
+      throw Object.assign(Error(`Yahoo Finance search HTTP ${response.status}`), {
+        status: response.status, accessDenied: [401,403].includes(response.status), stopBatch: stopped
+      });
+    }
     const body = await response.json();
     return (body.quotes || [])
       .filter(quote => /\.BK$/i.test(quote.symbol || '') && quote.quoteType === 'EQUITY')
@@ -66,8 +100,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       }));
   }
 
-  function shapeChart(result, symbol, contextKey = 'default') {
-    const assessed = dataGuard.assess(result, symbol, { contextKey });
+  function shapeChart(result, symbol, contextKey = 'default', providerSymbol) {
+    const assessed = dataGuard.assess(result, symbol, { contextKey, providerSymbol });
     if (assessed.value) return assessed.value;
     const error = Error(`Data Guard ${symbol}: ${assessed.guardReasons.join(',') || 'UNAVAILABLE'}`);
     error.code = assessed.guardReasons[0] || 'DATA_GUARD_REJECTED';
@@ -76,15 +110,18 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     throw error;
   }
 
-  async function verifySymbol(symbol) {
+  async function verifySymbol(symbol, providerSymbol) {
     const canonical = String(symbol || '').trim().toUpperCase().replace(/\.BK$/, '');
-    const value = shapeChart(await yahooChart(`${canonical}.BK`, '3mo', '1d'), canonical, 'chart:3mo:1d');
-    const trusted = value.identityStatus === 'accepted' && value.quoteStatus === 'accepted';
-    const chartReady = ['usable', 'usable_with_warnings'].includes(value.historyStatus) && value.history.length > 0;
+    const mapped = providerSymbol || `${canonical}.BK`;
+    if (!/^[A-Z0-9&.-]{1,32}\.BK$/.test(mapped)) throw Error('Invalid stored provider mapping');
+    const value = shapeChart(await yahooChart(mapped, '3mo', '1d'), canonical, `chart:${mapped}:3mo:1d`, mapped);
+    const trusted = value.identityStatus === 'accepted';
+    const chartReady = trusted && ['usable', 'usable_with_warnings'].includes(value.historyStatus) && value.history.length > 0;
     return {
       symbolVerified: trusted,
-      chartReady: trusted && chartReady,
-      technicalReady: trusted && chartReady && value.history.length >= 30,
+      quoteReady: trusted && value.quoteStatus === 'accepted',
+      chartReady,
+      technicalReady: chartReady && value.history.length >= 30,
       guardStatus: value.guardStatus,
       guardReason: value.guardReasons[0] || null,
       asOf: value.time ? new Date(value.time).toISOString() : null
