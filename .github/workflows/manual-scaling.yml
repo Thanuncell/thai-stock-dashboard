@@ -1,0 +1,62 @@
+name: SETscope Manual Scaling
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [preflight, run]
+        default: preflight
+        description: 'Read-only inspection or separately approved round'
+        required: true
+      stage:
+        type: choice
+        options: ['20', '100', '500']
+        default: '20'
+        required: true
+      round_jobs:
+        type: choice
+        options: ['1', '2', '3', '4']
+        default: '4'
+        required: true
+      stage_id:
+        type: string
+        description: 'Original stage run ID for a separately approved continuation'
+        required: false
+      confirmation:
+        type: string
+        description: 'Owner approval: RUN COVERAGE followed by the stage number'
+        required: false
+      reviewed_state:
+        type: string
+        description: 'Continuation only: REVIEWED followed by the original stage ID'
+        required: false
+
+permissions:
+  contents: read
+concurrency:
+  group: setscope-manual-coverage-20
+  cancel-in-progress: false
+jobs:
+  sequential-round:
+    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Inspect durable state and execute only the approved round
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SETSCOPE_SCALE_MODE: ${{ inputs.mode }}
+          SETSCOPE_SCALE_STAGE: ${{ inputs.stage }}
+          SETSCOPE_SCALE_ROUND_JOBS: ${{ inputs.round_jobs }}
+          SETSCOPE_SCALE_ID: ${{ inputs.stage_id }}
+          SETSCOPE_SCALE_CONFIRMATION: ${{ inputs.confirmation }}
+          SETSCOPE_SCALE_REVIEW: ${{ inputs.reviewed_state }}
+        run: node scripts/run-v156-scaling.js

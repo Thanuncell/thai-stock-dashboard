@@ -9,6 +9,7 @@ const { bangkokDay, executionWindow, selectCoverage, sessionReady, calendarReadi
 const { JOB_SIZE,JOB_BUDGET,readScalePolicy,planBatchScale } = require('./automation-scaling');
 const canaryPolicy = require('./canary-policy');
 const batchPolicy = require('./manual-batch-policy');
+const scalingPolicy = require('./scaling-policy');
 // Keep a strict majority of the initial five-stock batch unwritten on repeated
 // temporary failures: stop before persisting the third. The streak spans jobs.
 const FAILED_SECURITIES_LIMIT = Math.ceil(JOB_SIZE / 2);
@@ -29,7 +30,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
   }
   async function execute({ tag = 'manual-1', resume = false, operation = 'run', runKey, mode = 'coverage', reviewed = false, targetSize = 5 } = {}) {
     enabled();
-    if(batchPlan){batchPolicy.validatePlan(batchPlan);if(canary||operation!=='run'||resume||mode!=='coverage'||runKey||batchIndex<0||batchIndex>3)throw stopped('BATCH_INPUT_INVALID');}
+    if(batchPlan){batchPolicy.validatePlan(batchPlan);if(canary||operation!=='run'||resume||mode!=='coverage'||runKey||batchIndex<0||batchIndex>=batchPlan.runKeys.length)throw stopped('BATCH_INPUT_INVALID');}
     if (canary && (operation!=='run' || resume || mode!=='coverage' || runKey)) throw stopped('CANARY_INPUT_INVALID');
     if (!['run', 'status', 'pause', 'stop','reconcile','plan'].includes(operation) || typeof resume !== 'boolean' || typeof reviewed !== 'boolean') throw stopped('INVALID_OPERATION');
     const scalePolicy=['run','plan'].includes(operation)?readScalePolicy(env):null;
@@ -89,6 +90,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
       ownsCoordinator = true;
       metadata = await coordinator.metadata();
       if(metadata.manualBatch&&metadata.manualBatch.phase!=='completed'&&!batchPlan)throw stopped('BATCH_RECOVERY_REQUIRED');
+      if(metadata.scaling?.phase==='stopped'||metadata.scaling?.phase==='running'&&!batchPlan?.scaling)throw stopped('SCALING_REVIEW_REQUIRED');
       if (metadata.denied || Date.parse(metadata.blockedUntil || '') > Number(now())) throw stopped('PROVIDER_CIRCUIT_OPEN');
       if (metadata.activeJob && metadata.activeJob !== key) {
         const previous = await store.status(metadata.activeJob);
@@ -101,11 +103,15 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
         if(batchIndex===0){if(prior&&prior.phase!=='completed')throw stopped('BATCH_RECOVERY_REQUIRED');}
         else if(!prior||prior.fingerprint!==batchPlan.fingerprint||prior.phase!=='running'||prior.next!==batchIndex)throw stopped('BATCH_SEQUENCE_INVALID');
         if(reservations!==batchPlan.initialReservations+batchIndex)throw stopped('BATCH_RESERVATIONS_CHANGED');
-        batchPolicy.assertCapacity(metadata,Number(now()),4-batchIndex);
+        batchPolicy.assertCapacity(metadata,Number(now()),batchPlan.runKeys.length-batchIndex,batchPlan.scaling?.stage||20);
         batchBefore=await repository.listCandidates();
         batchPolicy.selectPinned(batchPlan,batchIndex,batchBefore,metadata,Number(now()));
+        if(batchPlan.scaling){
+          const canaryRow=batchIndex===0&&batchPlan.scaling.stage===20?await store.inspect(canaryPolicy.RUN_KEY):null;
+          metadata.scaling=scalingPolicy.admit(metadata,batchPlan,batchIndex,canaryRow);
+        }
         const manualBatch={...batchPlan,next:batchIndex,phase:'running'};
-        await coordinator.updateMetadata({manualBatch});metadata.manualBatch=manualBatch;
+        await coordinator.updateMetadata({manualBatch,...(batchPlan.scaling?{scaling:metadata.scaling}:{})});metadata.manualBatch=manualBatch;
       }
       // Reserve worst-case capacity before starting. Crashes never refund it.
       if (reservations >= scalePolicy.maxJobsPerDay
@@ -195,11 +201,13 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
       const result = await runner.run({ runKey: key, resume });
       if(batchPlan){
         if(result.alreadyCompleted||result.alreadyRunning||result.attempted!==5||result.temporaryFailed)throw stopped('BATCH_JOB_NOT_SUCCESSFUL');
+        if(batchPlan.scaling&&(result.verified!==5||result.partial))throw stopped('SCALING_JOB_NOT_VERIFIED');
         const after=await repository.listCandidates();
         if(!batchPolicy.unchangedOutside(batchBefore,after,batchPlan.targets.slice(batchIndex*5,batchIndex*5+5).map(r=>r.symbol)))throw stopped('BATCH_OUTSIDE_CHANGED');
         batchCounts={before:batchPolicy.counts(batchBefore,Number(now())),after:batchPolicy.counts(after,Number(now())),outsideUnchanged:true};
-        const manualBatch={...metadata.manualBatch,next:batchIndex+1,phase:batchIndex===3?'completed':'running'};
-        await coordinator.updateMetadata({manualBatch});metadata.manualBatch=manualBatch;
+        const manualBatch={...metadata.manualBatch,next:batchIndex+1,phase:batchIndex===batchPlan.runKeys.length-1?'completed':'running'};
+        if(batchPlan.scaling)metadata.scaling=scalingPolicy.complete(metadata.scaling,batchPlan,batchIndex,result);
+        await coordinator.updateMetadata({manualBatch,...(batchPlan.scaling?{scaling:metadata.scaling}:{})});metadata.manualBatch=manualBatch;
       }
       let canaryCounts;
       if (canary) {
@@ -214,7 +222,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
         schedulerEnabled: false };
     } catch (error) {
       if(batchPlan&&ownsCoordinator&&metadata?.manualBatch?.fingerprint===batchPlan.fingerprint){
-        try{await coordinator.updateMetadata({manualBatch:{...metadata.manualBatch,phase:'stopped'}});}catch{/* Preserve the last durable sequence fence. */}
+        try{await coordinator.updateMetadata({manualBatch:{...metadata.manualBatch,phase:'stopped'},...(batchPlan.scaling&&metadata.scaling?{scaling:{...metadata.scaling,phase:'stopped'}}:{})});}catch{/* Preserve the last durable sequence fence. */}
       }
       // Preserve uncertain entries; never turn a failed response into a replay.
       if (jobStarted) try { await store.updateMetadata({ metrics: { ...metrics, elapsedMs: Math.max(0, Number(now()) - start) } }); await store.failRun(); } catch { /* Keep uncertain state. */ }
