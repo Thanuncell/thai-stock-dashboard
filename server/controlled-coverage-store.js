@@ -139,21 +139,23 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
   };
   async function metadata() { return structuredClone(validate(await current()).metadata || {}); }
   async function updateMetadata(patch) {
-    const allowed = new Set(['day','reservations','activeJob','providerFailures','failedSecurities','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks','manualBatch']);
+    const allowed = new Set(['day','reservations','activeJob','providerFailures','failedSecurities','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks','manualBatch','scaling']);
     if (!patch || Object.keys(patch).some(key => !allowed.has(key))) throw stopped('INVALID_METADATA');
     for (const key of ['reservations','providerFailures','failedSecurities']) if (patch[key] !== undefined && (!Number.isSafeInteger(patch[key]) || patch[key] < 0 || patch[key] > 100000)) throw stopped('INVALID_METADATA');
     if (patch.activeJob != null && !KEY.test(patch.activeJob)) throw stopped('INVALID_METADATA');
+    if(patch.scaling!==undefined)require('./scaling-policy').validateState(patch.scaling);
     if(patch.manualBatch!==undefined){
       if(!patch.manualBatch||!['running','completed','stopped'].includes(patch.manualBatch.phase)
         ||!Number.isInteger(patch.manualBatch.next)||patch.manualBatch.next<0||patch.manualBatch.next>4
         ||Buffer.byteLength(JSON.stringify(patch.manualBatch))>16384)throw stopped('INVALID_METADATA');
       const b=patch.manualBatch;
-      if(Object.keys(b).some(k=>!['version','id','day','targets','runKeys','initialReservations','fingerprint','next','phase'].includes(k))
-        ||!Array.isArray(b.targets)||b.targets.length!==20||b.targets.some(r=>!r||Object.keys(r).some(k=>!['symbol','provider_symbol','provider','active'].includes(k))
+      if(Object.keys(b).some(k=>!['version','id','day','targets','runKeys','initialReservations','fingerprint','next','phase','targetSize','scaling'].includes(k))
+        ||!Array.isArray(b.targets)||![5,10,15,20].includes(b.targets.length)||b.targets.some(r=>!r||Object.keys(r).some(k=>!['symbol','provider_symbol','provider','active'].includes(k))
           ||!/^[A-Z0-9&.-]{1,20}$/.test(r.symbol)||r.provider_symbol!==r.symbol+'.BK'||r.provider!=='Yahoo Finance'||r.active!==true)
-        ||!Array.isArray(b.runKeys)||b.runKeys.length!==4||b.runKeys.some(k=>!KEY.test(k))
+        ||!Array.isArray(b.runKeys)||b.runKeys.length!==b.targets.length/5||b.runKeys.some(k=>!KEY.test(k))
         ||!/^\d{1,15}$/.test(b.id||'')||!/^\d{4}-\d\d-\d\d$/.test(b.day||'')||!Number.isSafeInteger(b.initialReservations)
         ||b.version!==1||!/^[a-f0-9]{64}$/.test(b.fingerprint||''))throw stopped('INVALID_METADATA');
+      if(b.scaling)require('./scaling-policy').validateContext(b.scaling);
     }
     for (const key of ['day','session']) if (patch[key] !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(patch[key])) throw stopped('INVALID_METADATA');
     if (patch.mode !== undefined && !['coverage','eod'].includes(patch.mode)) throw stopped('INVALID_METADATA');

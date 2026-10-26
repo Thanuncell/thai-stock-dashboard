@@ -239,6 +239,33 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       assert.deepEqual((await pool.query('select row_to_json(r) value from public.coverage_runs r where run_key=$1',[canaryKey])).rows[0].value,canary);
       assert.deepEqual((await pool.query("select row_to_json(r) value from public.security_coverage r where symbol not like 'B0%' order by symbol")).rows.map(r=>r.value),outside);
     });
+    await t.test('scaling receipts survive restart and require approved continuation on native PostgreSQL',async()=>{
+      const {main}=require('../scripts/run-v156-scaling');
+      time=Date.parse('2026-10-28T11:00:00Z');
+      for(let i=0;i<120;i++){
+        const symbol='C'+String(i).padStart(3,'0');
+        await pool.query("insert into public.security_coverage(symbol,provider_symbol,provider,active,status) values($1,$2,'Yahoo Finance',true,'pending')",[symbol,symbol+'.BK']);
+      }
+      const provider=backend();provider.advance(time,35);let calls=0;
+      const transport=(input,init)=>{
+        if(new URL(String(input)).hostname==='query1.finance.yahoo.com'){calls++;return provider.fetchImpl(input,init);}
+        return fetchImpl(input,init);
+      };
+      const settings={...env,GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',GITHUB_REPOSITORY:'Thanuncell/thai-stock-dashboard',GITHUB_REPOSITORY_OWNER:'Thanuncell',GITHUB_ACTOR:'Thanuncell',GITHUB_RUN_ATTEMPT:'1',
+        GITHUB_RUN_ID:'880000',SETSCOPE_SCALE_CONFIRMATION:'RUN COVERAGE 20'};
+      const first=await main({env:settings,fetchImpl:transport,now:()=>time,mode:'run'});assert.equal(first.status,'STAGE_PASS');assert.equal(first.verified,20);
+      time+=86400000;provider.advance(time,35);
+      const nextSettings={...settings,GITHUB_RUN_ID:'880001',SETSCOPE_SCALE_STAGE:'100',SETSCOPE_SCALE_CONFIRMATION:'RUN COVERAGE 100'};
+      const next=await main({env:nextSettings,fetchImpl:transport,now:()=>time,mode:'run'});assert.equal(next.status,'ROUND_PASS');assert.equal(next.stageProgress.completed,20);
+      await assert.rejects(main({env:{...nextSettings,GITHUB_RUN_ID:'880002',SETSCOPE_SCALE_ID:'880001'},fetchImpl:transport,now:()=>time,mode:'run'}));assert.equal(calls,40);
+      time+=86400000;provider.advance(time,35);
+      const continued=await main({env:{...nextSettings,GITHUB_RUN_ID:'880002',SETSCOPE_SCALE_ID:'880001',SETSCOPE_SCALE_REVIEW:'REVIEWED 880001'},fetchImpl:transport,now:()=>time,mode:'run'});
+      assert.equal(continued.stageProgress.completed,40);assert.equal(calls,60);
+      const row=(await pool.query("select automation_state from public.coverage_runs where run_key='v156:control'")).rows[0];
+      assert.equal(row.automation_state.metadata.scaling.completedSymbols.length,40);assert.equal(row.automation_state.metadata.scaling.phase,'awaiting_approval');
+      assert.equal(row.automation_state.metadata.scaling.acceptedStages[0].verified,20);
+      assert.equal((await pool.query("select verified from public.coverage_runs where run_key='v156:coverage:2026-10-26:canary-5'")).rows[0].verified,5);
+    });
     await t.test('rollback refuses to destroy checkpoints, then supports an empty-column rollback and reapply', async () => {
       const archived=(await pool.query('select run_key,automation_state from public.coverage_runs where automation_state is not null')).rows;
       const client=await pool.connect();
