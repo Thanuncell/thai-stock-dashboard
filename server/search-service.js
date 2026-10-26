@@ -1,5 +1,6 @@
 'use strict';
 const {normalizeSymbol}=require('../lib/validation');
+const {registryCompanyName}=require('./search-company-names');
 const SEARCH_ENRICHMENT_MS=750;
 function rankStockSearchResults(query,items){
  const q=String(query||'').trim().toUpperCase().replace(/\.BK$/,'');
@@ -19,10 +20,13 @@ function createStockSearchService({providerSearch,registrySearch=async()=>[],enr
   const q=String(query||'').trim().toUpperCase().replace(/\.BK$/,'');
   let registry=[];
   if(/^[A-Z0-9&.-]{1,20}$/.test(q)){
-   try{registry=(await registrySearch()).filter(r=>r.active===true&&!['inactive','unsupported'].includes(r.status)
+   try{const rows=await registrySearch(),counts=new Map();for(const r of rows)counts.set(r.symbol,(counts.get(r.symbol)||0)+1);
+    registry=rows.filter(r=>counts.get(r.symbol)===1&&r.symbol===normalizeSymbol(r.symbol)&&r.active===true&&!['inactive','unsupported'].includes(r.status)
     &&r.provider==='Yahoo Finance'&&r.provider_symbol===r.symbol+'.BK'&&r.symbol.startsWith(q))
-    .map(r=>({symbol:r.symbol,name:r.symbol,exchange:'หุ้นไทย',type:'EQUITY'}));}catch{/* Search can still use the independent provider. */}
+    .map(r=>({symbol:r.symbol,name:registryCompanyName(r)||r.symbol,exchange:'หุ้นไทย',type:'EQUITY'}));}catch{/* Search can still use the independent provider. */}
   }
+  // Reviewed names are authoritative. A complete registry match needs no enrichment request.
+  if(registry.length&&(registry.some(r=>r.symbol===q&&r.name!==r.symbol)||registry.every(r=>r.name!==r.symbol)))return rankStockSearchResults(query,registry);
   let provided=[];
   let timer;
   try{
@@ -37,7 +41,7 @@ function createStockSearchService({providerSearch,registrySearch=async()=>[],enr
   }
   catch(error){if(!registry.length)throw error;}
   finally{clearTimeout(timer);}
-  return rankStockSearchResults(query,[...provided,...registry]);
+  return rankStockSearchResults(query,[...registry,...provided]);
  }};
 }
 module.exports={createStockSearchService,rankStockSearchResults,SEARCH_ENRICHMENT_MS};

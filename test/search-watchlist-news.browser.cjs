@@ -22,7 +22,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     if(url.origin===base&&url.pathname==='/api/search'){
      const q=url.searchParams.get('q').toLowerCase();
      if(state.searchHold===q){state.searchHold=null;await new Promise(resolve=>{state.releaseSearch=resolve;});}
-     const items=(q==='tha'?['THAI','THANI']:q==='ptt'?['PTT']:q==='thani'?['THANI']:q==='thai'?['THAI']:[]).map(symbol=>({symbol,name:symbol,exchange:'SET'}));return json({items});
+     const items=(q==='tha'?['THAI','THANI']:q==='ptt'?['PTT']:q==='thani'?['THANI']:q==='thai'?['THAI']:[]).map(symbol=>({symbol,name:({THAI:'Thai Airways International Public Company Limited',THANI:'Ratchthani Leasing Public Company Limited'})[symbol]||symbol,exchange:'SET'}));return json({items});
     }
     if(url.origin===base&&url.pathname==='/api/watchlist-news'){
      const stocks=JSON.parse(url.searchParams.get('stocks')),symbol=stocks[0]?.symbol||'NONE';
@@ -41,6 +41,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    await seedPage(page,'token-a');await page.goto(base+'/?symbol=PTT#chart',{waitUntil:'domcontentloaded'});
    await page.waitForSelector('body.authenticated');await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.dataset.state==='fresh');
    const input=page.locator('#stock-search');await input.fill('tha');await page.waitForSelector('.suggestion-item[data-symbol="THANI"]');
+   assert.match(await page.locator('#symbol-suggestions').textContent(),/Public Company Limited/);
    await input.press('Enter');await pause(100);assert.equal(new URL(page.url()).searchParams.get('symbol'),'PTT','ambiguous prefix must not open first result');
    await page.locator('.suggestion-item[data-symbol="THANI"]').click();await page.waitForFunction(()=>new URL(location.href).searchParams.get('symbol')==='THANI');
    state.searchHold='ptt';await input.fill('ptt');await page.waitForFunction(()=>document.querySelector('#symbol-suggestions')?.textContent.includes('กำลัง'));

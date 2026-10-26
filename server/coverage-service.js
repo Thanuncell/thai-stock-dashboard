@@ -54,7 +54,7 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     return { apikey: secretKey, ...(secretKey.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${secretKey}` }), ...extra };
   }
 
-  async function request(path, init = {}) {
+  async function request(path, init = {}, readErrorCode = false) {
     if (!configured) throw Error('Coverage persistence is not configured');
     const response = await fetchImpl(`${baseUrl}/rest/v1/${path}`, {
       ...init,
@@ -64,6 +64,9 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     if (!response.ok) {
       const error = Error(`Coverage persistence ${path.split('?')[0]} HTTP ${response.status}`);
       error.status = response.status;
+      if (readErrorCode && response.status === 400) {
+        try { error.code = (await response.json()).code; } catch { /* Preserve the HTTP failure. */ }
+      }
       error.retryable = [429, 502, 503, 504].includes(response.status);
       throw error;
     }
@@ -169,6 +172,24 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     return rows;
   }
 
+  // Search metadata has its own projection; verification candidates keep their existing contract.
+  async function listSearchCandidates() {
+    let response;
+    try {
+      response = await request('security_coverage?select=symbol,provider_symbol,provider,active,status,company_name_en,name_source,name_checked_at&order=symbol&limit=1000',
+        { headers: { Prefer: 'count=exact' } }, true);
+    } catch (error) {
+      // App rollback / staged migration compatibility. The legacy read still validates its snapshot.
+      if (error.status === 400 && ['42703', 'PGRST204'].includes(error.code)) return listCandidates();
+      throw error;
+    }
+    const rows = await response.json();
+    const total = String(response.headers.get('content-range') || '').match(/\/(\d+)$/);
+    if (!Array.isArray(rows) || rows.length > 1000 || rows.length === 1000 && !total
+      || total && Number(total[1]) !== rows.length) throw Error('Incomplete bounded search registry snapshot');
+    return rows;
+  }
+
   async function findRun(runKey) {
     const params = new URLSearchParams({ select: '*', run_key: `eq.${runKey}`, limit: '1' });
     const response = await request(`coverage_runs?${params}`);
@@ -271,7 +292,7 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     });
   }
 
-  return { beginRun, configured, counts, finishRun, listBatch, listCandidates, saveResults, seedSymbols, summary };
+  return { beginRun, configured, counts, finishRun, listBatch, listCandidates, listSearchCandidates, saveResults, seedSymbols, summary };
 }
 
 async function mapWithConcurrency(items, limit, mapper) {
