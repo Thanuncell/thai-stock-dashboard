@@ -101,12 +101,13 @@ export function coverageDisplayState(data = {}) {
     || !Number.isSafeInteger(currentVerified) || currentVerified < 0
     || currentVerified > universe) return unavailable('invalid');
   const details={};
-  for(const key of ['historicalVerified','retainedUsable','stale','temporaryFailed','confirmedUnavailable']) {
+  for(const key of ['historicalVerified','verifiedInScope','retainedUsable','stale','temporaryFailed','confirmedUnavailable']) {
     if(Object.hasOwn(data,key)) {
       if(!Number.isSafeInteger(data[key]) || data[key]<0) return unavailable('invalid');
       details[key]=data[key];
     }
   }
+  if(details.verifiedInScope!==undefined&&details.verifiedInScope>universe)return unavailable('invalid');
   return { ready: true, reason: data.dataState==='stale'?'stale':null, universe, currentVerified, ...details };
 }
 

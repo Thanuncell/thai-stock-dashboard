@@ -63,11 +63,26 @@ function selectPinned(plan,index,rows,metadata,now){
 }
 async function inspectOptional(store,key){try{return await store.inspect(key);}catch(e){if(e.code==='JOB_NOT_FOUND')return null;throw e;}}
 async function preflight({repository,store,now,id}){
- const control=await inspectOptional(store,CONTROL_KEY),metadata=assertControl(control,now);
- if(metadata.activeJob){const previous=await store.status(metadata.activeJob);if(previous.requiresReconciliation||!['completed','stopped'].includes(previous.phase))throw stopped('BATCH_RECOVERY_REQUIRED');}
- const rows=await repository.listCandidates(),plan=makePlan({rows,metadata,now,id});
- for(const key of plan.runKeys)if(await inspectOptional(store,key))throw stopped('BATCH_ALREADY_ATTEMPTED');
- return {plan,rows};
+ const report={status:'BLOCKED',dueCount:null,requiredCount:20,quotaRemaining:null,coordinator:'NOT_CHECKED',checkpoint:'NOT_CHECKED',reasonCode:null};
+ try{
+  const control=await inspectOptional(store,CONTROL_KEY),metadata=control?.automation_state?.metadata||{};
+  report.coordinator=control?control.automation_state.phase:'NOT_CREATED';
+  const used=metadata.day===bangkokDay(now)?metadata.reservations||0:0;
+  report.quotaRemaining={jobs:Math.max(0,4-used),providerRequests:Math.max(0,40-used*10),databaseRequests:Math.max(0,800-used*200)};
+  const rows=await repository.listCandidates();validateRows(rows);
+  report.dueCount=dueCandidates(rows,metadata,now).length;
+  assertControl(control,now);report.checkpoint='CLEAR';
+  if(metadata.activeJob){const previous=await store.status(metadata.activeJob);report.checkpoint=previous.requiresReconciliation?'UNCERTAIN':previous.phase;
+   if(previous.requiresReconciliation||!['completed','stopped'].includes(previous.phase))throw stopped('BATCH_RECOVERY_REQUIRED');}
+  const plan=makePlan({rows,metadata,now,id});
+  for(const key of plan.runKeys)if(await inspectOptional(store,key))throw stopped('BATCH_ALREADY_ATTEMPTED');
+  report.status='READY';return {plan,rows,preflight:report};
+ }catch(error){report.reasonCode=/^[A-Z_]{1,80}$/.test(error.code||'')?error.code:'BATCH_PREFLIGHT_UNAVAILABLE';error.preflight=report;throw error;}
+}
+function dueCandidates(rows,metadata,now){
+ const selected=[];
+ while(selected.length<rows.length){const next=selectCoverage(rows,{now,coverageChecks:metadata.coverageChecks||{},excludeSymbols:selected.map(r=>r.symbol)});if(!next.length)break;selected.push(...next);}
+ return selected;
 }
 function unchangedOutside(before,after,symbols){
  const others=rows=>rows.filter(r=>!symbols.includes(r.symbol)).sort((a,b)=>a.symbol.localeCompare(b.symbol));

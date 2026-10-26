@@ -20,7 +20,7 @@ function authorized(header, token) {
 }
 
 function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now,
-  onVerified = () => {}, retrySleep, canary = false, batchPlan = null, batchIndex = 0, initialDatabaseReads = 0 } = {}) {
+  onVerified = () => {}, onJobStarted = () => {}, retrySleep, canary = false, batchPlan = null, batchIndex = 0, initialDatabaseReads = 0 } = {}) {
   if(!Number.isSafeInteger(initialDatabaseReads)||initialDatabaseReads<0||initialDatabaseReads>200)throw stopped('DATABASE_BUDGET');
   let active = false;
   const recent = [];
@@ -119,6 +119,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
         beginRun: async args => {
           const result = await store.beginRun(args);
           jobStarted = !result.alreadyRunning && !result.alreadyCompleted;
+          if (jobStarted) onJobStarted();
           if (jobStarted) await store.updateMetadata({ mode, session: window.session });
           return result;
         },
