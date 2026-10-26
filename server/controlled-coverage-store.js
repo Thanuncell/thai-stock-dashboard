@@ -139,7 +139,7 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
   };
   async function metadata() { return structuredClone(validate(await current()).metadata || {}); }
   async function updateMetadata(patch) {
-    const allowed = new Set(['day','reservations','activeJob','providerFailures','blockedUntil','denied','reason','metrics','mode','session','eodCompleted']);
+    const allowed = new Set(['day','reservations','activeJob','providerFailures','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks']);
     if (!patch || Object.keys(patch).some(key => !allowed.has(key))) throw stopped('INVALID_METADATA');
     for (const key of ['reservations','providerFailures']) if (patch[key] !== undefined && (!Number.isSafeInteger(patch[key]) || patch[key] < 0 || patch[key] > 100000)) throw stopped('INVALID_METADATA');
     if (patch.activeJob != null && !KEY.test(patch.activeJob)) throw stopped('INVALID_METADATA');
@@ -148,9 +148,17 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
     if (patch.reason != null && !/^[A-Z_]{1,60}$/.test(patch.reason)) throw stopped('INVALID_METADATA');
     if (patch.blockedUntil != null && !Number.isFinite(Date.parse(patch.blockedUntil))) throw stopped('INVALID_METADATA');
     if (patch.denied !== undefined && typeof patch.denied !== 'boolean') throw stopped('INVALID_METADATA');
-    if (patch.eodCompleted !== undefined && (!Array.isArray(patch.eodCompleted) || patch.eodCompleted.length > 10
+    if (patch.eodCompleted !== undefined && (!Array.isArray(patch.eodCompleted) || patch.eodCompleted.length > 500
       || patch.eodCompleted.some(symbol=>typeof symbol !== 'string' || !/^[A-Z0-9&.-]{1,20}$/.test(symbol))
       || new Set(patch.eodCompleted).size !== patch.eodCompleted.length)) throw stopped('INVALID_METADATA');
+    if(patch.coverageChecks!==undefined){
+      if(!patch.coverageChecks || typeof patch.coverageChecks!=='object' || Array.isArray(patch.coverageChecks)
+        || Object.keys(patch.coverageChecks).length>1000) throw stopped('INVALID_METADATA');
+      for(const [symbol,checked] of Object.entries(patch.coverageChecks)){
+        if(!/^[A-Z0-9&.-]{1,20}$/.test(symbol) || checked!==null && (typeof checked!=='string'
+          || !/^\d{4}-\d\d-\d\dT/.test(checked) || !Number.isFinite(Date.parse(checked)) || Date.parse(checked)>Number(now()))) throw stopped('INVALID_METADATA');
+      }
+    }
     if (patch.metrics) for (const [key,value] of Object.entries(patch.metrics)) {
       if (!['providerCalls','databaseReads','databaseWrites','elapsedMs'].includes(key) || !Number.isSafeInteger(value) || value < 0) throw stopped('INVALID_METADATA');
     }

@@ -13,7 +13,7 @@ test('Bangkok market calendar skips weekends, ordinary/special holidays, early E
   assert.equal(tradingDay('2026-10-26'), true); assert.equal(tradingDay('2026-02-30'), null);
   for (const [date,mode,reason] of [['2026-10-25T11:00:00Z','coverage','NON_TRADING_DAY'],
     ['2026-10-16T11:00:00Z','eod','NON_TRADING_DAY'], ['2026-10-26T09:00:00Z','eod','PROVIDER_NOT_READY'],
-    ['2027-01-04T11:00:00Z','coverage','CALENDAR_UNAVAILABLE']]) {
+    ['2028-01-04T11:00:00Z','coverage','CALENDAR_UNAVAILABLE']]) {
     let calls = 0;
     const controller = createControlledCoverage({ env:env(), now:()=>Date.parse(date), fetchImpl:()=>{calls++;throw Error('unexpected traffic');} });
     const result = await controller.execute({ mode });
@@ -28,11 +28,11 @@ test('bounded selection prioritizes pending/unverified/stale and preserves fresh
   const row = (symbol,fields={}) => ({symbol,provider_symbol:symbol+'.BK',provider:'Yahoo Finance',active:true,status:'verified',
     symbol_verified:true,chart_ready:true,last_checked_at:new Date(NOW).toISOString(),...fields});
   const input=[row('FRESH'),row('PENDING',{status:'pending',symbol_verified:false,last_checked_at:null}),
-    row('UNVERIFIED',{symbol_verified:false,last_checked_at:null}),row('STALE',{last_checked_at:'2026-10-20T10:00:00Z'}),
+    row('UNVERIFIED',{symbol_verified:false,last_checked_at:null}),row('STALE',{last_checked_at:'2026-10-19T10:00:00Z'}),
     row('PARTIAL',{status:'partial',last_checked_at:'2026-10-26T00:00:00Z'}),row('RETRY',{status:'temporary_failed'}),
     row('LEGACY',{active:false,provider_symbol:'legacy-alias'})];
   const before=structuredClone(input), selected=selectCoverage(input,{now:NOW});
-  assert.deepEqual(selected.map(row=>row.symbol),['PENDING','UNVERIFIED','STALE','PARTIAL']);assert.deepEqual(input,before);
+  assert.deepEqual(selected.map(row=>row.symbol),['PENDING','UNVERIFIED','STALE']);assert.deepEqual(input,before);
   assert.throws(()=>selectCoverage([row('ONE',{provider_symbol:'../bad'})],{now:NOW}),/IDENTITY/);
 });
 

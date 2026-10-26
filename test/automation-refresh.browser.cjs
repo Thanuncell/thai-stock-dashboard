@@ -26,6 +26,9 @@ const { manualSignature } = require('../server/controlled-coverage');
   try{
     browser=await chromium.launch({headless:true,executablePath:process.env.SETSCOPE_BROWSER_EXECUTABLE||undefined});
     for(const [label,viewport,oldPrice,newPrice] of [['desktop',{width:1366,height:900},35,36],['mobile',{width:390,height:844},36,37]]){
+      // Separate viewport fixtures must not inherit the prior scenario's
+      // seven-day coverage reservation. No real database is involved here.
+      db.runs.clear();
       db.advance(Date.now()-60000,oldPrice);
       const row=db.registry.get('PTT');row.status='pending';row.last_checked_at=null;
       const context=await browser.newContext({viewport});

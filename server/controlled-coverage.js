@@ -5,7 +5,8 @@ const { createCoverageRepository, createCoverageRunner } = require('./coverage-s
 const { createMarketService } = require('./market-service');
 const { createControlledCoverageStore, stopped, KEY, CONTROL_KEY } = require('./controlled-coverage-store');
 const { manualRunKey } = require('./v156-manual-claim');
-const { bangkokDay, executionWindow, selectCoverage, sessionReady } = require('./automation-policy');
+const { bangkokDay, executionWindow, selectCoverage, sessionReady, calendarReadiness } = require('./automation-policy');
+const { JOB_BUDGET,readScalePolicy,planBatchScale } = require('./automation-scaling');
 
 function authorized(header, token) {
   if (typeof token !== 'string' || token.length < 32 || typeof header !== 'string' || header.length > 512) return false;
@@ -20,9 +21,12 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
   function enabled() {
     if (env.SETSCOPE_V156_MANUAL_VERIFY !== '1' || env.SETSCOPE_V156_KILL === '1') throw stopped('AUTOMATION_DISABLED');
   }
-  async function execute({ tag = 'manual-1', resume = false, operation = 'run', runKey, mode = 'coverage', reviewed = false } = {}) {
+  async function execute({ tag = 'manual-1', resume = false, operation = 'run', runKey, mode = 'coverage', reviewed = false, targetSize = 5 } = {}) {
     enabled();
-    if (!['run', 'status', 'pause', 'stop','reconcile'].includes(operation) || typeof resume !== 'boolean' || typeof reviewed !== 'boolean') throw stopped('INVALID_OPERATION');
+    if (!['run', 'status', 'pause', 'stop','reconcile','plan'].includes(operation) || typeof resume !== 'boolean' || typeof reviewed !== 'boolean') throw stopped('INVALID_OPERATION');
+    const scalePolicy=['run','plan'].includes(operation)?readScalePolicy(env):null;
+    if (operation==='plan') return {...planBatchScale(targetSize,scalePolicy),calendar:calendarReadiness(Number(now()))};
+    if (targetSize!==5) throw stopped('SCALE_APPROVAL_REQUIRED');
     if (!['coverage','eod'].includes(mode) || operation === 'run' && runKey && !resume) throw stopped('INVALID_OPERATION');
     const key = operation === 'run' ? resume && runKey || manualRunKey({ date: new Date(Number(now())), tag, type: mode }) : runKey;
     if (!KEY.test(key || '')) throw stopped('INVALID_JOB_KEY');
@@ -34,15 +38,15 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
     const metrics = { providerCalls: 0, databaseReads: 0, databaseWrites: 0 };
     const observedFetch = async (input, init = {}) => {
       enabled();
-      if (Number(now()) - start >= 120000) throw stopped('JOB_TIME_BUDGET');
+      if (Number(now()) - start >= JOB_BUDGET.durationMs) throw stopped('JOB_TIME_BUDGET');
       const host = new URL(String(input)).hostname;
       const database = host === new URL(env.SUPABASE_URL).hostname;
       if (database) {
-        if (metrics.databaseReads + metrics.databaseWrites >= 200) throw stopped('DATABASE_BUDGET');
+        if (metrics.databaseReads + metrics.databaseWrites >= JOB_BUDGET.databaseRequests) throw stopped('DATABASE_BUDGET');
         metrics[!init.method || ['GET','HEAD'].includes(init.method) ? 'databaseReads' : 'databaseWrites']++;
       } else {
         if (host !== 'query1.finance.yahoo.com') throw stopped('UNEXPECTED_PROVIDER');
-        if (metrics.providerCalls >= 10) throw stopped('PROVIDER_BUDGET');
+        if (metrics.providerCalls >= JOB_BUDGET.providerRequests) throw stopped('PROVIDER_BUDGET');
         metrics.providerCalls++;
       }
       return fetchImpl(input, init);
@@ -59,6 +63,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
     recent.push(current);
     active = true;
     let ownsCoordinator = false, jobStarted = false, metadata;
+    const coverageReserved=new Set();
     try {
       // A duplicate completed job must not consume another daily reservation.
       try {
@@ -78,7 +83,9 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
       const day = bangkokDay(Number(now()));
       const reservations = metadata.day === day ? metadata.reservations || 0 : 0;
       // Reserve worst-case capacity before starting. Crashes never refund it.
-      if (reservations >= 2) throw stopped('DAILY_JOB_BUDGET');
+      if (reservations >= scalePolicy.maxJobsPerDay
+        || (reservations+1)*JOB_BUDGET.providerRequests>scalePolicy.providerDailyLimit
+        || (reservations+1)*JOB_BUDGET.databaseRequests>scalePolicy.databaseDailyLimit) throw stopped('DAILY_JOB_BUDGET');
       const eodCompleted = metadata.day === day ? metadata.eodCompleted || [] : [];
       await coordinator.updateMetadata({ day, reservations: reservations + 1, activeJob: key, eodCompleted });
       metadata = { ...metadata, day, reservations: reservations + 1, activeJob: key, eodCompleted };
@@ -91,8 +98,16 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
           if (jobStarted) await store.updateMetadata({ mode, session: window.session });
           return result;
         },
-        listBatch: async () => selectCoverage(await repository.listCandidates(), { now: Number(now()), mode, session: window.session,
-          excludeSymbols: mode === 'eod' ? metadata.eodCompleted : [] }),
+        listBatch: async () => {
+          const candidates=await repository.listCandidates();
+          const coverageChecks={...metadata.coverageChecks};
+          for(const row of candidates) if(row?.active===true && !Object.hasOwn(coverageChecks,row.symbol)) coverageChecks[row.symbol]=row.last_checked_at || null;
+          if(JSON.stringify(coverageChecks)!==JSON.stringify(metadata.coverageChecks || {})){
+            await coordinator.updateMetadata({coverageChecks});metadata.coverageChecks=coverageChecks;
+          }
+          return selectCoverage(candidates, { now: Number(now()), mode, session: window.session,coverageChecks,
+            excludeSymbols: mode === 'eod' ? metadata.eodCompleted : [] });
+        },
         finishRun: async payload => { await store.updateMetadata({ metrics: { ...metrics, elapsedMs: Math.max(0, Number(now()) - start) } }); await store.finishRun(payload); jobStarted = false; },
         saveResults: async (...args) => { await store.assertActive(); return repository.saveResults(...args); } },
         verifySymbol: async (...args) => {
@@ -100,8 +115,14 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
             await store.assertActive();
             await coordinator.assertActive();
             if (metadata.denied || Date.parse(metadata.blockedUntil || '') > Number(now())) throw stopped('PROVIDER_CIRCUIT_OPEN');
-            if (metrics.providerCalls >= 10) throw stopped('PROVIDER_BUDGET');
+            if (metrics.providerCalls >= JOB_BUDGET.providerRequests) throw stopped('PROVIDER_BUDGET');
           } catch (error) { error.notStarted = true; throw error; }
+          // Reserve this stock's coverage clock before acquisition. Retry attempts
+          // inside the same invocation do not create a new seven-day reservation.
+          if(mode==='coverage' && !coverageReserved.has(args[0])){
+            const coverageChecks={...metadata.coverageChecks,[args[0]]:new Date(Number(now())).toISOString()};
+            await coordinator.updateMetadata({coverageChecks});metadata.coverageChecks=coverageChecks;coverageReserved.add(args[0]);
+          }
           let verification;
           try {
             verification = await market.verifySymbol(...args);
@@ -158,7 +179,7 @@ function createManualCoverageHandler({ controller, env = process.env, readJson, 
       controller.enabled();
       const body = await readJson(req);
       if (!body || Array.isArray(body) || typeof body !== 'object'
-        || Object.keys(body).some(key => !['tag','resume','operation','runKey','mode','reviewed'].includes(key))) return send(res, 400, { error: 'Invalid request' });
+        || Object.keys(body).some(key => !['tag','resume','operation','runKey','mode','reviewed','targetSize'].includes(key))) return send(res, 400, { error: 'Invalid request' });
       const timestamp = req.headers['x-setscope-sent-at'], signature = req.headers['x-setscope-signature'];
       if (typeof timestamp !== 'string' || !/^\d{13}$/.test(timestamp) || Number(now()) - Number(timestamp) > 60000
         || Number(timestamp) - Number(now()) > 5000 || typeof signature !== 'string' || !/^[a-f0-9]{64}$/.test(signature)

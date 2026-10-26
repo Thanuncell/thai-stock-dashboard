@@ -1,13 +1,19 @@
 'use strict';
 
 const { normalizeSymbol } = require('../lib/validation');
+const COVERAGE_INTERVAL_MS = 7 * 86400000;
 // Published SET-group calendar, including the announced special closure.
 // No runtime calendar fetch or inference for an unreviewed year.
 const CALENDAR = Object.freeze({ year: 2026, reviewed: '2026-10-26',
   source: 'https://www.tfex.co.th/en/about/holiday',
   amendment: 'https://www.sec.or.th/EN/Pages/News_Detail.aspx?SECID=12943',
-  holidays: ['01-01','01-02','03-03','04-06','04-13','04-14','04-15','05-01','05-04','06-01','06-03',
-    '07-28','07-29','08-12','10-13','10-16','10-23','12-07','12-10','12-31'] });
+  holidays: Object.freeze(['01-01','01-02','03-03','04-06','04-13','04-14','04-15','05-01','05-04','06-01','06-03',
+    '07-28','07-29','08-12','10-13','10-16','10-23','12-07','12-10','12-31']) });
+const CALENDARS = Object.freeze({2026: CALENDAR, 2027: Object.freeze({year:2027,reviewed:'2026-10-26',
+  source:'https://www.set.or.th/en/about/event-calendar/holiday?year=2027',
+  amendment:'https://www.sec.or.th/EN/Pages/News_Detail.aspx?SECID=13329',
+  holidays:Object.freeze(['01-01','02-22','04-06','04-13','04-14','04-15','05-03','05-04','05-20','06-03',
+    '07-19','07-28','08-12','10-13','10-25','12-06','12-10','12-31'])})});
 
 function bangkokDay(value) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(value));
@@ -18,12 +24,16 @@ function validDay(day) {
   return typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day)
     && Number.isFinite(Date.parse(day + 'T00:00:00Z')) && new Date(day + 'T00:00:00Z').toISOString().slice(0,10) === day;
 }
-function tradingDay(day, calendar = CALENDAR) {
-  if (!validDay(day) || Number(day.slice(0,4)) !== calendar.year) return null;
+function tradingDay(day, calendars = CALENDARS) {
+  if (!validDay(day) || !calendars || typeof calendars!=='object') return null;
+  const year=Number(day.slice(0,4)),calendar=calendars.year===year?calendars:calendars[year];
+  if (!calendar || calendar.year!==year || !validDay(calendar.reviewed) || !/^https:\/\//.test(calendar.source || '')
+    || !Array.isArray(calendar.holidays) || new Set(calendar.holidays).size!==calendar.holidays.length
+    || calendar.holidays.some(value=>typeof value!=='string' || !validDay(year+'-'+value))) return null;
   const weekday = new Date(day + 'T00:00:00Z').getUTCDay();
   return weekday !== 0 && weekday !== 6 && !calendar.holidays.includes(day.slice(5));
 }
-function latestSession(now, calendar = CALENDAR) {
+function latestSession(now, calendar = CALENDARS) {
   const today = bangkokDay(now), minutes = new Date(Number(now) + 7 * 3600000).getUTCHours() * 60 + new Date(Number(now) + 7 * 3600000).getUTCMinutes();
   let day = today;
   if (minutes < 17 * 60 + 15) day = new Date(Date.parse(day + 'T00:00:00Z') - 86400000).toISOString().slice(0,10);
@@ -35,7 +45,7 @@ function latestSession(now, calendar = CALENDAR) {
   }
   return null;
 }
-function executionWindow({ now, mode = 'coverage', session, recover = false, calendar = CALENDAR }) {
+function executionWindow({ now, mode = 'coverage', session, recover = false, calendar = CALENDARS }) {
   const today = bangkokDay(now);
   if (!['coverage','eod'].includes(mode)) throw Error('INVALID_MODE');
   if (tradingDay(today, calendar) === null) return { eligible: false, reason: 'CALENDAR_UNAVAILABLE' };
@@ -48,7 +58,14 @@ function executionWindow({ now, mode = 'coverage', session, recover = false, cal
   } else if (latest !== today) return { eligible: false, reason: 'PROVIDER_NOT_READY' };
   return { eligible: true, session: latest };
 }
-function selectCoverage(rows, { limit = 5, now = Date.now(), mode = 'coverage', session = bangkokDay(now), excludeSymbols = [] } = {}) {
+function calendarReadiness(now, calendars = CALENDARS) {
+  const year=Number(bangkokDay(now).slice(0,4));
+  const currentYearCovered=tradingDay(year+'-01-01',calendars)!==null;
+  const nextYearCovered=tradingDay((year+1)+'-01-01',calendars)!==null;
+  return {currentYearCovered,nextYearCovered,calendarReadyForActivation:currentYearCovered&&nextYearCovered,
+    requiresPreActivationReview:true};
+}
+function selectCoverage(rows, { limit = 5, now = Date.now(), mode = 'coverage', session = bangkokDay(now), excludeSymbols = [], coverageChecks = {} } = {}) {
   if (!Array.isArray(rows) || rows.length > 1000 || limit !== 5
     || new Set(rows.map(row => row.symbol)).size !== rows.length) throw Error('INVALID_SELECTION');
   const ranked = [];
@@ -59,11 +76,16 @@ function selectCoverage(rows, { limit = 5, now = Date.now(), mode = 'coverage', 
       || row.provider !== 'Yahoo Finance') throw Error('AMBIGUOUS_SELECTION_IDENTITY');
     const checked = Date.parse(row.last_checked_at || '');
     if (Number.isFinite(checked) && checked > Number(now)) throw Error('FUTURE_COVERAGE_CHECK');
+    // EOD writes the registry check time too. The durable coverage-only clock
+    // takes precedence, including an explicit null for never-checked stocks.
+    const previous=Object.hasOwn(coverageChecks,row.symbol)?coverageChecks[row.symbol]:row.last_checked_at;
+    const coverageChecked=Date.parse(previous || '');
+    if (previous != null && !Number.isFinite(coverageChecked) || coverageChecked > Number(now)) throw Error('INVALID_COVERAGE_CHECK');
+    if (mode==='coverage' && Number.isFinite(coverageChecked) && Number(now)-coverageChecked<COVERAGE_INTERVAL_MS) continue;
     const stale = !Number.isFinite(checked) || Number(now) - checked > 36 * 3600000 || row.guard_status === 'stale';
     // EOD must recheck a prior-session quote even when its 36-hour registry TTL is healthy.
     const sessionDue = mode === 'eod';
-    if (!stale && !sessionDue && row.status === 'verified' && row.symbol_verified && row.chart_ready) continue;
-    if (Number.isFinite(checked) && ['partial','temporary_failed'].includes(row.status)
+    if (mode==='eod' && Number.isFinite(checked) && ['partial','temporary_failed'].includes(row.status)
       && Number(now) - checked < (row.guard_reason === 'EOD_SESSION_NOT_READY' ? 15 * 60000 : 6 * 3600000)) continue;
     const priority = row.status === 'pending' ? 0 : !row.symbol_verified ? 1 : stale || sessionDue ? 2 : row.status === 'partial' ? 3 : 4;
     ranked.push({ row, priority, checked: Number.isFinite(checked) ? checked : 0 });
@@ -77,4 +99,4 @@ function sessionReady(verification, session) {
     && Number.isFinite(Date.parse(verification.asOf || '')) && bangkokDay(Date.parse(verification.asOf)) === session
     && Number.isFinite(Date.parse(verification.historyAsOf || '')) && bangkokDay(Date.parse(verification.historyAsOf)) === session;
 }
-module.exports = { CALENDAR, bangkokDay, validDay, tradingDay, latestSession, executionWindow, selectCoverage, sessionReady };
+module.exports = { CALENDAR, CALENDARS, COVERAGE_INTERVAL_MS, calendarReadiness, bangkokDay, validDay, tradingDay, latestSession, executionWindow, selectCoverage, sessionReady };

@@ -162,6 +162,23 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       assert.ok(states.every(row=>!JSON.stringify(row.automation_state).includes(env.SUPABASE_SECRET_KEY)));
       t.diagnostic(JSON.stringify({nativeJobProviderCalls:calls,peakCheckpointBytes:Math.max(...states.map(row=>Buffer.byteLength(JSON.stringify(row.automation_state))))}));
     });
+    await t.test('coverage-only seven-day timestamps survive restart and daily EOD registry writes',async()=>{
+      const provider=backend();let calls=0;
+      const transport=(input,init)=>{
+        if(new URL(String(input)).hostname==='query1.finance.yahoo.com'){calls++;return provider.fetchImpl(input,init);}
+        return fetchImpl(input,init);
+      };
+      const run=args=>createControlledCoverage({env,fetchImpl:transport,now:()=>time}).execute(args);
+      const before=(await pool.query("select automation_state->'metadata'->'coverageChecks' value from public.coverage_runs where run_key='v156:control'")).rows[0].value;
+      assert.equal(Object.keys(before).length,6);
+      time=Date.parse('2026-10-27T11:00:00Z');provider.advance(time,35);
+      assert.equal((await run({mode:'eod',tag:'native-eod'})).verified,5);
+      assert.equal((await run({tag:'not-due'})).attempted,0);assert.equal(calls,5);
+      const after=(await pool.query("select automation_state->'metadata'->'coverageChecks' value from public.coverage_runs where run_key='v156:control'")).rows[0].value;
+      assert.deepEqual(after,before);
+      time=Date.parse('2026-11-02T11:00:00Z');provider.advance(time,36);
+      assert.equal((await run({tag:'week-later'})).verified,5);assert.equal(calls,10);
+    });
     await t.test('rollback refuses to destroy checkpoints, then supports an empty-column rollback and reapply', async () => {
       const archived=(await pool.query('select run_key,automation_state from public.coverage_runs where automation_state is not null')).rows;
       const client=await pool.connect();

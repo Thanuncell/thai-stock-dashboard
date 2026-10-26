@@ -8,7 +8,8 @@ async function main({ env = process.env, controller } = {}) {
   const control = controller || createControlledCoverage({ env });
   return control.execute({ tag: env.SETSCOPE_V156_RUN_TAG || 'manual-1',
     resume: env.SETSCOPE_V156_RESUME === '1', operation: env.SETSCOPE_V156_OPERATION || 'run', runKey: env.SETSCOPE_V156_RUN_KEY,
-    mode: env.SETSCOPE_V156_MODE || 'coverage', reviewed: env.SETSCOPE_V156_RECONCILIATION_REVIEWED === '1' });
+    mode: env.SETSCOPE_V156_MODE || 'coverage', reviewed: env.SETSCOPE_V156_RECONCILIATION_REVIEWED === '1',
+    targetSize: Number(env.SETSCOPE_V156_TARGET_SIZE || 5) });
 }
 
 if (require.main === module) main().then(result => process.stdout.write(JSON.stringify(result) + '\n')).catch(() => {
