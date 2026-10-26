@@ -36,7 +36,7 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
     try {
       response = await fetchImpl(`${origin}/rest/v1/coverage_runs?${params}`, {
         ...init, signal: AbortSignal.timeout(12000),
-        headers: { apikey: secret, Authorization: `Bearer ${secret}`, 'content-type': 'application/json',
+        headers: { apikey: secret, ...(secret.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${secret}` }), 'content-type': 'application/json',
           Prefer: 'return=representation', ...init.headers }
       });
     } catch { throw stopped('PERSISTENCE_UNCERTAIN'); }

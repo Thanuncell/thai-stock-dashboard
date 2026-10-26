@@ -9,6 +9,40 @@ const {
   createCoverageRunner
 } = require('../server/coverage-service');
 
+test('coverage persistence supports opaque secret keys and legacy service-role JWTs on reads and writes', async () => {
+  const { backend } = require('./fixtures/controlled-backend.cjs');
+  const jwt = [Buffer.from('{"alg":"HS256"}').toString('base64url'),
+    Buffer.from('{"role":"service_role"}').toString('base64url'),'fixture-signature'].join('.');
+  for (const key of ['sb_secret_fixture-only', jwt]) for (const name of ['SUPABASE_SECRET_KEY','SUPABASE_SERVICE_ROLE_KEY']) {
+    const db=backend(); let reads=0,writes=0;
+    const fetchImpl=(input,init={})=>{
+      const headers=new Headers(init.headers);
+      assert.equal(headers.get('apikey'),key);
+      assert.equal(headers.get('authorization'),key.startsWith('sb_secret_')?null:'Bearer '+key);
+      assert.ok(headers.get('prefer'));
+      if(init.method==='PATCH')writes++;else reads++;
+      return db.fetchImpl(input,init);
+    };
+    const repo=createCoverageRepository({env:{SUPABASE_URL:'https://fixture.supabase.co',[name]:key},fetchImpl});
+    const rows=await repo.listCandidates();
+    await repo.saveResults([{...rows[0],status:'verified',symbol_verified:true,chart_ready:true}],{expectedRows:rows});
+    assert.equal(reads,1);assert.equal(writes,1);assert.equal(db.registry.get('PTT').symbol_verified,true);
+  }
+});
+
+test('invalid persistence credentials and HTTP 401/403 stop without retry or key disclosure', async () => {
+  for (const key of ['sb_secret_invalid-fixture','invalid-legacy-fixture']) for (const status of [401,403]) {
+    let calls=0;
+    const repo=createCoverageRepository({env:{SUPABASE_URL:'https://fixture.supabase.co',SUPABASE_SECRET_KEY:key},
+      fetchImpl:async()=>{calls++;return Response.json({message:'Rejected '+key},{status});}});
+    await assert.rejects(repo.listCandidates(),error=>error.status===status&&error.retryable===false&&!error.message.includes(key));
+    assert.equal(calls,1);
+  }
+  let calls=0;
+  const missing=createCoverageRepository({env:{SUPABASE_URL:'https://fixture.supabase.co',SUPABASE_SECRET_KEY:''},fetchImpl:async()=>{calls++;}});
+  await assert.rejects(missing.listCandidates(),/not configured/);assert.equal(calls,0);
+});
+
 test('provider-wide stop and exhausted budget stop the manual batch without failing untouched securities', async () => {
   for (const control of [{ status: 403, stopBatch: true }, { status: 429, stopBatch: true }, { status: 503, stopBatch: true }, { skipAttempt: true }]) {
     let attempts = 0, writes = 0, finished = 0;
