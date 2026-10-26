@@ -1,0 +1,35 @@
+name: SETscope Canary Verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Owner approval required: type CANARY-5 to run once'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: setscope-canary-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner && inputs.confirmation == 'CANARY-5'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run the approved one-time sample
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SETSCOPE_CANARY_APPROVED: '1'
+        run: node scripts/run-v156-canary.js
