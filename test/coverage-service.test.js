@@ -9,6 +9,94 @@ const {
   createCoverageRunner
 } = require('../server/coverage-service');
 
+test('provider-wide stop and exhausted budget stop the manual batch without failing untouched securities', async () => {
+  for (const control of [{ status: 403, stopBatch: true }, { status: 429, stopBatch: true }, { status: 503, stopBatch: true }, { skipAttempt: true }]) {
+    let attempts = 0, writes = 0, finished = 0;
+    const runner = createCoverageRunner({ concurrency: 1, retrySleep: async () => {},
+      repository: {
+        async beginRun() { return {}; },
+        async listBatch() { return [{ symbol: 'FIRST', provider_symbol: 'FIRST.BK' }, { symbol: 'UNTOUCHED', provider_symbol: 'UNTOUCHED.BK' }]; },
+        async saveResults() { writes++; }, async finishRun() { finished++; }
+      },
+      verifySymbol: async () => { attempts++; throw Object.assign(Error('Provider stopped'), control); }
+    });
+    await assert.rejects(runner.run({ runKey: 'fixture-stop' }), /Provider stopped/);
+    assert.equal(attempts, 1); assert.equal(writes, 0); assert.equal(finished, 0);
+  }
+});
+
+test('denial preserves already applied checkpoint evidence and resume never repeats successful provider work', async () => {
+  const values = new Map(), saved = [], calls = [];
+  const store = { withLease: async (_key, fn) => fn(),
+    load: async key => structuredClone(values.get(key) || null),
+    save: async (key, value) => values.set(key, structuredClone(value)) };
+  const rows = ['GOOD', 'DENIED', 'UNTOUCHED'].map(symbol => ({ symbol, provider_symbol: symbol + '.BK', active: true }));
+  const runner = createCoverageRunner({ checkpointStore: store, concurrency: 1, repository: {
+    async beginRun() { return {}; }, async listBatch() { return rows; },
+    async saveResults(results) { saved.push(...results); }
+  }, verifySymbol: async symbol => {
+    calls.push(symbol);
+    if (symbol === 'DENIED') throw Object.assign(Error('Provider denied'), { status: 403, stopBatch: true });
+    return { symbolVerified: true, chartReady: true, technicalReady: true, guardStatus: 'accepted' };
+  } });
+  await assert.rejects(runner.run({ runKey: 'preserve-progress' }), /Provider denied/);
+  assert.deepEqual(calls, ['GOOD', 'DENIED']); assert.equal(saved.length, 1); assert.equal(saved[0].symbol, 'GOOD');
+  const checkpoint = values.get('coverage-items:preserve-progress');
+  assert.equal(checkpoint.entries.GOOD.status, 'applied'); assert.equal(checkpoint.entries.DENIED.status, 'inflight');
+  assert.equal(checkpoint.entries.UNTOUCHED, undefined);
+  await assert.rejects(runner.run({ runKey: 'preserve-progress', resume: true }), /manual reconciliation/);
+  assert.deepEqual(calls, ['GOOD', 'DENIED']); assert.equal(saved.length, 1);
+});
+
+test('concurrent workers stop taking new symbols after denial and drain existing requests before returning', async () => {
+  const calls = [];
+  let drained = false;
+  await assert.rejects(require('../server/coverage-service').mapWithConcurrency(['DENIED','INFLIGHT','UNTOUCHED'], 2, async symbol => {
+    calls.push(symbol);
+    if (symbol === 'DENIED') throw Object.assign(Error('denied'), { stopBatch: true });
+    await new Promise(resolve => setImmediate(resolve)); drained = true; return symbol;
+  }), /denied/);
+  assert.deepEqual(calls, ['DENIED','INFLIGHT']); assert.equal(drained, true);
+});
+
+test('a warning-only usable chart is PARTIAL with readiness retained, never a false price verification', async () => {
+  let saved;
+  const runner = createCoverageRunner({ concurrency: 1, repository: {
+    async beginRun() { return {}; }, async listBatch() { return [{ symbol: 'NEW', provider_symbol: 'NEW.BK', failure_count: 0 }]; },
+    async saveResults(rows) { saved = rows[0]; }, async counts() { return {}; }, async finishRun() {}
+  }, verifySymbol: async () => ({ symbolVerified: true, chartReady: true, technicalReady: true, guardStatus: 'suspect', guardReason: 'HISTORICAL_ANOMALY' }) });
+  await runner.run({ runKey: 'fixture-warning' });
+  assert.equal(saved.status, 'partial'); assert.equal(saved.chart_ready, true); assert.equal(saved.technical_ready, true);
+  assert.equal(saved.last_verified_at, null); assert.equal(saved.failure_count, 0); assert.equal(saved.guard_status, 'suspect');
+  const truth = require('../server/coverage-truth').coverageTruth([saved]);
+  assert.equal(truth.historicalVerified, 0); assert.equal(truth.currentUsable, 0); assert.equal(truth.suspect, 1);
+  const quoteOnly = require('../server/coverage-truth').coverageTruth([{ ...saved, chart_ready: false, guard_status: 'accepted' }]);
+  assert.equal(quoteOnly.partial, 1); assert.equal(quoteOnly.pending, 0); assert.equal(quoteOnly.currentUsable, 0);
+});
+
+test('coverage persistence only patches an existing unchanged mapping; it cannot resurrect or reactivate a legacy row', async () => {
+  const requests = [];
+  const repo = createCoverageRepository({ env: { SUPABASE_URL: 'https://fixture.invalid', SUPABASE_SECRET_KEY: 'fixture-not-a-secret' },
+    fetchImpl: async (url, init) => { requests.push({ url: new URL(url), init }); return Response.json([{ symbol: 'NEW' }]); } });
+  await repo.saveResults([{ symbol: 'NEW', provider_symbol: 'NEW.BK', provider: 'Yahoo Finance', active: true,
+    status: 'verified', chart_ready: true }], { expectedRows: [{ symbol: 'NEW', last_checked_at: null }] });
+  assert.equal(requests.length, 1); assert.equal(requests[0].init.method, 'PATCH');
+  assert.equal(requests[0].url.searchParams.get('active'), 'eq.true');
+  assert.equal(requests[0].url.searchParams.get('provider_symbol'), 'eq.NEW.BK');
+  assert.equal(requests[0].url.searchParams.get('last_checked_at'), 'is.null');
+  assert.deepEqual(JSON.parse(requests[0].init.body), { status: 'verified', chart_ready: true });
+  const changed = createCoverageRepository({ env: { SUPABASE_URL: 'https://fixture.invalid', SUPABASE_SECRET_KEY: 'fixture-not-a-secret' },
+    fetchImpl: async () => Response.json([]) });
+  await assert.rejects(changed.saveResults([{ symbol: 'NEW', provider_symbol: 'NEW.BK', active: true, status: 'verified' }]), /row changed/);
+  const replayRequests = [];
+  const replay = createCoverageRepository({ env: { SUPABASE_URL: 'https://fixture.invalid', SUPABASE_SECRET_KEY: 'fixture-not-a-secret' },
+    fetchImpl: async (_url, init = {}) => { replayRequests.push(init.method || 'GET'); return Response.json(init.method === 'PATCH' ? []
+      : [{ symbol: 'NEW', provider_symbol: 'NEW.BK', active: true, status: 'verified', last_checked_at: '2026-10-26T02:00:00+00:00' }]); } });
+  await replay.saveResults([{ symbol: 'NEW', provider_symbol: 'NEW.BK', status: 'verified', last_checked_at: '2026-10-26T02:00:00.000Z' }],
+    { expectedRows: [{ symbol: 'NEW', last_checked_at: null }] });
+  assert.deepEqual(replayRequests, ['PATCH', 'GET']);
+});
+
 test('Current Verified Coverage counts symbol_verified plus chart_ready and keeps technical readiness separate', () => {
   const counts = coverageCounts([
     { active: true, symbol_verified: true, chart_ready: true, technical_ready: true },
@@ -228,81 +316,42 @@ test('running coverage lease prevents duplicate work and only stale runs may res
   assert.equal(calls.filter(call => call.method === 'POST').length, 1);
 });
 
-test('persisted coverage summary becomes stale by age instead of fabricating freshness', async () => {
-  const repository = createCoverageRepository({
-    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
-    now: () => Date.parse('2026-10-20T12:00:00.000Z'),
-    fetchImpl: async () => new Response(JSON.stringify([{
-      universe: 400,
-      current_verified: 321,
-      technical_ready: 280,
-      finished_at: '2026-10-18T12:00:00.000Z',
-      provider: 'Yahoo Finance',
-      status: 'completed'
-    }]), { status: 200 })
-  });
-  const summary = await repository.summary();
-  assert.equal(summary.universe, 400);
-  assert.equal(summary.currentVerified, 321);
-  assert.equal(summary.technicalReady, 280);
-  assert.equal(summary.dataState, 'stale');
-  assert.equal(summary.lastChecked, '2026-10-18T12:00:00.000Z');
-});
 
-test('persisted coverage summary exposes validated fresh universe and verified counts', async () => {
-  const repository = createCoverageRepository({
-    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
-    now: () => Date.parse('2026-10-20T12:00:00.000Z'),
-    fetchImpl: async () => new Response(JSON.stringify([{
-      universe: 400,
-      current_verified: 321,
-      technical_ready: 280,
-      finished_at: '2026-10-20T11:00:00.000Z',
-      provider: 'Yahoo Finance',
-      status: 'completed'
-    }]), { status: 200 })
-  });
-  assert.deepEqual(await repository.summary(), {
-    configured: true,
-    universe: 400,
-    currentVerified: 321,
-    technicalReady: 280,
-    lastChecked: '2026-10-20T11:00:00.000Z',
-    provider: 'Yahoo Finance',
-    dataState: 'fresh'
-  });
-});
+function summaryFixture(rows, headers = {}, onRequest = () => {}) {
+  return createCoverageRepository({ env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'synthetic-key' },
+    now: () => Date.parse('2026-10-20T12:00:00Z'), fetchImpl: async (url, init) => {
+      onRequest(url, init);return new Response(JSON.stringify(rows), { headers });
+    } });
+}
+const verifiedFixture = (symbol, extra = {}) => ({symbol, active:true, status:'verified',symbol_verified:true,chart_ready:true,technical_ready:true,
+  last_verified_at:'2026-10-18T12:00:00Z',last_checked_at:'2026-10-20T11:00:00Z',guard_status:'accepted',...extra});
 
-test('missing completed coverage run never presents current table counts as fresh', async () => {
-  const repository = createCoverageRepository({
-    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
-    fetchImpl: async (_url, init = {}) => (init.method === 'HEAD'
-      ? new Response('', { status: 200, headers: { 'content-range': '0-0/12' } })
-      : new Response('[]', { status: 200 }))
-  });
-  const summary = await repository.summary();
-  assert.equal(summary.universe, 12);
-  assert.equal(summary.currentVerified, 12);
-  assert.equal(summary.lastChecked, null);
-  assert.equal(summary.dataState, 'unavailable');
+test('registry snapshot separates registered PENDING, historical and current usable in one request', async () => {
+  let requests=0;
+  const rows=[verifiedFixture('GOOD'),verifiedFixture('FAILED',{status:'temporary_failed'}),verifiedFixture('OLD',{last_checked_at:'2026-10-18T12:00:00Z'}),
+    verifiedFixture('NEW',{status:'pending',symbol_verified:false,chart_ready:false,technical_ready:false,last_verified_at:null,last_checked_at:null,guard_status:null})];
+  const summary=await summaryFixture(rows,{},url=>{requests++;assert.match(String(url),/security_coverage/);}).summary();
+  assert.equal(requests,1);assert.equal(summary.universe,4);assert.equal(summary.currentVerified,3);
+  assert.equal(summary.historicalVerified,3);assert.equal(summary.currentUsable,1);assert.equal(summary.pending,1);
+  assert.equal(summary.temporaryFailed,1);assert.equal(summary.stale,1);assert.equal(summary.dataState,'fresh');
 });
-
-test('invalid persisted coverage counts fail closed instead of becoming zero', async () => {
-  const repository = createCoverageRepository({
-    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'server-only-test-key' },
-    now: () => Date.parse('2026-10-20T12:00:00.000Z'),
-    fetchImpl: async () => new Response(JSON.stringify([{
-      universe: 100,
-      current_verified: 101,
-      technical_ready: 80,
-      finished_at: '2026-10-20T11:00:00.000Z',
-      provider: 'Yahoo Finance',
-      status: 'completed'
-    }]), { status: 200 })
-  });
-  const summary = await repository.summary();
-  assert.equal(summary.universe, null);
-  assert.equal(summary.currentVerified, null);
-  assert.equal(summary.technicalReady, null);
-  assert.equal(summary.dataState, 'unavailable');
+test('old checked rows stay stale; registration alone cannot claim fresh quote coverage', async () => {
+  const r=await summaryFixture([verifiedFixture('OLD',{last_checked_at:'2026-10-18T12:00:00Z'})]).summary();
+  assert.equal(r.dataState,'stale');assert.equal(r.currentUsable,0);assert.equal(r.historicalVerified,1);
+  const p=await summaryFixture([verifiedFixture('NEW',{status:'pending',symbol_verified:false,chart_ready:false,last_verified_at:null,last_checked_at:null})]).summary();
+  assert.equal(p.universe,1);assert.equal(p.currentUsable,0);assert.equal(p.dataState,'unavailable');
+});
+test('empty registry has truthful zero counts without fabricating check time', async () => {
+  const s=await summaryFixture([]).summary();assert.equal(s.universe,0);assert.equal(s.lastChecked,null);assert.equal(s.dataState,'unavailable');
+});
+test('invalid and incomplete database responses fail closed', async () => {
+  await assert.rejects(summaryFixture([{universe:100,current_verified:101}]).summary(),/Invalid coverage/);
+  await assert.rejects(summaryFixture([verifiedFixture('ONE')],{'content-range':'0-0/2'}).summary(),/Invalid coverage/);
+});
+test('more than one page is read completely with a finite query bound', async () => {
+  let calls=0;const rows=Array.from({length:1001},(_,i)=>verifiedFixture('S'+i));
+  const repo=createCoverageRepository({env:{SUPABASE_URL:'https://project.supabase.co',SUPABASE_SECRET_KEY:'synthetic-key'},now:()=>Date.parse('2026-10-20T12:00:00Z'),
+    fetchImpl:async url=>{calls++;const offset=Number(new URL(url).searchParams.get('offset'));const page=rows.slice(offset,offset+1000);
+      return new Response(JSON.stringify(page),{headers:{'content-range':offset+'-'+(offset+page.length-1)+'/1001'}});}});
+  assert.equal((await repo.summary()).universe,1001);assert.equal(calls,2);
 });

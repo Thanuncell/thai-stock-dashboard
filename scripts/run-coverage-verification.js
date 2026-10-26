@@ -7,13 +7,10 @@ async function main() {
   const repository = createCoverageRepository();
   if (!repository.configured) throw Error('Coverage requires server-side SUPABASE_URL and SUPABASE_SECRET_KEY');
 
-  const configuredSymbols = String(process.env.COVERAGE_SYMBOLS || '').split(',').map(value => value.trim()).filter(Boolean);
-  if (configuredSymbols.length) await repository.seedSymbols(configuredSymbols);
-
   const marketService = createMarketService();
   const runner = createCoverageRunner({
     repository,
-    verifySymbol: symbol => marketService.verifySymbol(symbol),
+    verifySymbol: (symbol, providerSymbol) => marketService.verifySymbol(symbol, providerSymbol),
     batchSize: process.env.COVERAGE_BATCH_SIZE,
     concurrency: process.env.COVERAGE_CONCURRENCY
   });

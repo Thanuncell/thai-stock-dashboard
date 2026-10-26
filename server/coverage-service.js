@@ -1,6 +1,8 @@
 'use strict';
 
 const { normalizeSymbol } = require('../lib/validation');
+const { coverageTruth } = require('./coverage-truth');
+const { createCheckpointBatch } = require('./coverage-checkpoint');
 const { isTransientProviderError, retryWithBackoff } = require('./reliability');
 
 const DEFAULT_BATCH_SIZE = 125;
@@ -103,27 +105,28 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
       provider: PROVIDER,
       dataState: 'unavailable'
     };
-    const response = await request('coverage_runs?select=universe,current_verified,technical_ready,finished_at,provider,status&status=eq.completed&order=finished_at.desc&limit=1');
-    const [row] = await response.json();
-    if (!row) {
-      const current = await counts();
-      return { configured: true, ...current, lastChecked: null, provider: PROVIDER, dataState: 'unavailable' };
-    }
-    const finishedAt = row.finished_at || null;
-    const age = finishedAt ? Number(now()) - Date.parse(finishedAt) : Number.POSITIVE_INFINITY;
-    const universe = persistedCount(row.universe);
-    const currentVerified = persistedCount(row.current_verified);
-    const technicalReady = persistedCount(row.technical_ready);
-    const countsValid = universe !== null && currentVerified !== null && technicalReady !== null
-      && currentVerified <= universe && technicalReady <= currentVerified;
+    const rows = [];
+    let offset = 0, total;
+    do {
+      const response = await request('security_coverage?select=symbol,active,status,symbol_verified,chart_ready,technical_ready,last_verified_at,last_success_at,last_checked_at,guard_status&order=symbol&limit=1000&offset=' + offset,
+        { headers: { Prefer: 'count=exact' } });
+      const page = await response.json();
+      if (!Array.isArray(page)) throw Error('Invalid coverage snapshot');
+      const rawTotal = String(response.headers.get('content-range') || '').match(/\/(\d+)$/);
+      total = rawTotal ? Number(rawTotal[1]) : page.length < 1000 ? offset + page.length : null;
+      if (total === null || total > 10000 || !page.length && offset < total) throw Error('Incomplete coverage snapshot');
+      rows.push(...page); offset += page.length;
+    } while (offset < total);
+    if (rows.length !== total || new Set(rows.map(r => r.symbol)).size !== rows.length
+      || rows.some(r => !normalizeSymbol(r.symbol) || typeof r.active !== 'boolean'
+        || !['pending','verified','partial','temporary_failed','inactive','unsupported'].includes(r.status))) throw Error('Invalid coverage snapshot');
+    const current = coverageCounts(rows), truth = coverageTruth(rows, { now: Number(now()) });
+    const checked = rows.map(r => Date.parse(r.last_checked_at || '')).filter(t => Number.isFinite(t) && t <= Number(now()));
+    const latest = checked.length ? Math.max(...checked) : null;
     return {
-      configured: true,
-      universe: countsValid ? universe : null,
-      currentVerified: countsValid ? currentVerified : null,
-      technicalReady: countsValid ? technicalReady : null,
-      lastChecked: finishedAt,
-      provider: row.provider || PROVIDER,
-      dataState: !countsValid ? 'unavailable' : Number.isFinite(age) && age >= 0 && age <= SUMMARY_STALE_MS ? 'fresh' : 'stale'
+      configured: true, configuredSymbols: rows.length, universe: rows.filter(r => r.active).length,
+      ...current, ...truth, lastChecked: latest === null ? null : new Date(latest).toISOString(),
+      provider: PROVIDER, dataState: latest === null ? 'unavailable' : Number(now()) - latest <= SUMMARY_STALE_MS ? 'fresh' : 'stale'
     };
   }
 
@@ -138,7 +141,7 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     if (!rows.length) return 0;
     await request('security_coverage?on_conflict=symbol', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+      headers: { 'content-type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' },
       body: JSON.stringify(rows)
     });
     return rows.length;
@@ -162,12 +165,13 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     return (await response.json())[0] || null;
   }
 
-  async function beginRun({ runKey, startedAt, batchSize, concurrency }) {
+  async function beginRun({ runKey, startedAt, batchSize, concurrency, resume = false }) {
     const existing = await findRun(runKey);
     if (existing?.status === 'completed') return {
       alreadyCompleted: true,
       summary: { currentVerified: existing.current_verified, technicalReady: existing.technical_ready }
     };
+    if (existing?.status === 'running' && resume) return { alreadyCompleted: false, alreadyRunning: false };
     if (existing?.status === 'running') {
       const leaseAge = Date.parse(startedAt) - Date.parse(existing.started_at);
       if (!Number.isFinite(leaseAge) || leaseAge < RUN_LEASE_MS) return { alreadyRunning: true };
@@ -201,13 +205,34 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     return { alreadyCompleted: false, alreadyRunning: false };
   }
 
-  async function saveResults(rows) {
+  async function saveResults(rows, { expectedRows = [] } = {}) {
     if (!rows.length) return;
-    await request('security_coverage?on_conflict=symbol', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify(rows)
-    });
+    if (rows.length > MAX_BATCH_SIZE) throw Error('Coverage write batch exceeds limit');
+    const expected = new Map(expectedRows.map(row => [row.symbol, row]));
+    const mutable = ['status','symbol_verified','chart_ready','technical_ready','last_checked_at','last_verified_at',
+      'last_success_at','failure_count','failure_reason','guard_status','guard_reason','updated_at'];
+    for (const row of rows) {
+      if (normalizeSymbol(row.symbol) !== row.symbol || !/^[A-Z0-9&.-]{1,32}\.BK$/.test(row.provider_symbol)) throw Error('Invalid coverage write identity');
+      const params = new URLSearchParams({ symbol: `eq.${row.symbol}`, provider_symbol: `eq.${row.provider_symbol}`, active: 'eq.true' });
+      if (expected.has(row.symbol)) {
+        const checked = expected.get(row.symbol).last_checked_at;
+        params.set('last_checked_at', checked ? `eq.${checked}` : 'is.null');
+      }
+      const body = Object.fromEntries(mutable.filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]]));
+      if (row.active === false && ['inactive','unsupported'].includes(row.status)) body.active = false;
+      const response = await request(`security_coverage?${params}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json', Prefer: 'return=representation' }, body: JSON.stringify(body)
+      });
+      const saved = await response.json();
+      if (Array.isArray(saved) && saved.length === 1 && saved[0].symbol === row.symbol) continue;
+      // Crash after PATCH but before checkpoint completion: confirm exact applied state, never overwrite it.
+      const lookup = new URLSearchParams({ symbol: `eq.${row.symbol}`, provider_symbol: `eq.${row.provider_symbol}`, select: '*', limit: '1' });
+      const current = await (await request(`security_coverage?${lookup}`)).json();
+      const same = (key, value, actual) => key.endsWith('_at') && value != null && actual != null
+        ? Date.parse(value) === Date.parse(actual) : value === actual;
+      if (!Array.isArray(current) || current.length !== 1 || current[0].active !== (body.active ?? true)
+        || !Object.entries(body).every(([key, value]) => same(key, value, current[0][key]))) throw Error('Coverage row changed; reconcile before replay');
+    }
   }
 
   async function finishRun(payload) {
@@ -242,14 +267,17 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
 async function mapWithConcurrency(items, limit, mapper) {
   const results = Array(items.length);
   let cursor = 0;
+  let failure;
   const worker = async () => {
-    while (cursor < items.length) {
+    while (!failure && cursor < items.length) {
       const index = cursor;
       cursor += 1;
-      results[index] = await mapper(items[index], index);
+      try { results[index] = await mapper(items[index], index); }
+      catch (error) { failure = failure || error; }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, Math.max(1, items.length)) }, worker));
+  if (failure) throw failure;
   return results;
 }
 
@@ -260,19 +288,27 @@ function createCoverageRunner({
   batchSize = DEFAULT_BATCH_SIZE,
   concurrency = DEFAULT_CONCURRENCY,
   provider = PROVIDER,
-  retrySleep
+  retrySleep,
+  checkpointStore
 } = {}) {
   const safeBatchSize = clampInteger(batchSize, DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE);
   const safeConcurrency = clampInteger(concurrency, DEFAULT_CONCURRENCY, 1, MAX_CONCURRENCY);
 
-  async function run({ runKey = coverageRunKey(new Date(Number(now())), provider) } = {}) {
+  async function run({ runKey = coverageRunKey(new Date(Number(now())), provider), resume = false } = {}) {
     const startedAt = new Date(Number(now())).toISOString();
-    const gate = await repository.beginRun({ runKey, startedAt, batchSize: safeBatchSize, concurrency: safeConcurrency });
+    const gate = await repository.beginRun({ runKey, startedAt, batchSize: safeBatchSize, concurrency: safeConcurrency, resume: Boolean(checkpointStore && resume) });
     if (gate.alreadyCompleted) return { alreadyCompleted: true, ...gate.summary, attempted: 0, temporaryFailed: 0 };
     if (gate.alreadyRunning) return { alreadyRunning: true, attempted: 0, temporaryFailed: 0 };
 
-    const rows = await repository.listBatch(safeBatchSize);
-    const results = await mapWithConcurrency(rows, safeConcurrency, async row => {
+    const manifestKey = 'coverage-manifest:' + runKey;
+    let manifest = checkpointStore ? await checkpointStore.load(manifestKey) : null;
+    if (!manifest) {
+      manifest = { rows: await repository.listBatch(safeBatchSize), batchSize: safeBatchSize, provider };
+      if (checkpointStore) await checkpointStore.save(manifestKey, manifest);
+    }
+    if (!Array.isArray(manifest.rows) || manifest.batchSize !== safeBatchSize || manifest.provider !== provider) throw Error('Coverage manifest conflict');
+    const rows = manifest.rows;
+    const verifyRow = async row => {
       const checkedAt = new Date(Number(now())).toISOString();
       const base = {
         symbol: row.symbol,
@@ -288,7 +324,7 @@ function createCoverageRunner({
           {
             maxAttempts: 2,
             baseDelayMs: 250,
-            shouldRetry: isTransientProviderError,
+            shouldRetry: error => !error.stopBatch && !error.skipAttempt && ![401,403,429].includes(error.status) && !error.accessDenied && isTransientProviderError(error),
             ...(retrySleep ? { sleep: retrySleep } : {})
           }
         );
@@ -312,8 +348,20 @@ function createCoverageRunner({
             guard_reason: boundedReason(verification.guardReason || verification.lifecycleReason, lifecycleStatus.toUpperCase())
           };
         }
-        const accepted = verification.guardStatus === 'accepted';
+        const accepted = ['accepted', 'delayed'].includes(verification.guardStatus);
         const verified = accepted && verification.symbolVerified && verification.chartReady;
+        // Warning-only chart evidence is PARTIAL, not a provider failure or price verification.
+        if (!accepted && verification.symbolVerified && verification.chartReady) {
+          return {
+            ...base, symbol_verified: true, chart_ready: true,
+            technical_ready: Boolean(verification.technicalReady), status: 'partial',
+            last_verified_at: row.last_verified_at || null,
+            last_success_at: row.last_success_at || null,
+            failure_count: Number(row.failure_count || 0), failure_reason: null,
+            guard_status: verification.guardStatus || 'suspect',
+            guard_reason: boundedReason(verification.guardReason)
+          };
+        }
         if (!verified && (row.symbol_verified && row.chart_ready || !accepted)) {
           return {
             ...base,
@@ -343,6 +391,8 @@ function createCoverageRunner({
           guard_reason: boundedReason(verification.guardReason)
         };
       } catch (error) {
+        // A stopped provider path or exhausted shared budget is not a failed security.
+        if (error.stopBatch || error.skipAttempt) throw error;
         return {
           ...base,
           symbol_verified: Boolean(row.symbol_verified),
@@ -357,9 +407,18 @@ function createCoverageRunner({
           guard_reason: boundedReason(error.guardReasons?.[0] || error.guardReason || row.guard_reason)
         };
       }
-    });
-
-    await repository.saveResults(results);
+    };
+    let results;
+    if (checkpointStore && rows.length) {
+      const batch = createCheckpointBatch({ store: checkpointStore,
+        verify: (symbol, providerSymbol) => verifyRow(rows.find(row => row.symbol === symbol && row.provider_symbol === providerSymbol)),
+        apply: (row, result) => repository.saveResults([result], { expectedRows: [row] }) });
+      const completed = await batch.run({ runKey: 'coverage-items:' + runKey, rows });
+      results = rows.map(row => completed.entries[row.symbol].result);
+    } else {
+      results = await mapWithConcurrency(rows, safeConcurrency, verifyRow);
+      await repository.saveResults(results, { expectedRows: rows });
+    }
     const current = await repository.counts();
     const verified = results.filter(row => row.status === 'verified').length;
     const temporaryFailed = results.filter(row => row.status === 'temporary_failed').length;

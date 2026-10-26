@@ -27,6 +27,30 @@ function yahooResult(overrides = {}) {
   };
 }
 
+test('missing multi-day candles do not turn a range-start reference into a contradictory daily quote', () => {
+  const guard = createMarketDataGuard({ now: () => NOW });
+  const raw = yahooResult({ meta: { regularMarketPrice: 14.5, regularMarketChangePercent: 0.694,
+    chartPreviousClose: 12, range: '3mo' }, timestamp: [Math.floor(NOW / 1000) - 86400],
+    indicators: { quote: [{ open: [null], high: [null], low: [null], close: [null], volume: [null] }] } });
+  const result = guard.assess(raw, 'PTT');
+  assert.equal(result.value.last, 14.5);
+  assert.equal(result.value.prior, null);
+  assert.equal(result.value.quoteStatus, 'accepted');
+  assert.equal(result.value.historyStatus, 'insufficient');
+  assert.equal(result.value.history.length, 0);
+  assert.ok(!result.guardReasons.includes('PRICE_CHANGE_MISMATCH'));
+  const contradictory = guard.assess({ ...raw, meta: { ...raw.meta, previousClose: 12 } }, 'PTT');
+  assert.ok(contradictory.guardReasons.includes('PRICE_CHANGE_MISMATCH'));
+  const oldHistory = yahooResult({ meta: { regularMarketPrice: 14.5, regularMarketChangePercent: 0.694,
+    chartPreviousClose: 12, range: '3mo' },
+    timestamp: [Math.floor(NOW / 1000) - 70 * 86400, Math.floor(NOW / 1000) - 69 * 86400],
+    indicators: { quote: [{ open: [14.7, 14.6], high: [15, 15], low: [14, 14], close: [14.7, 14.6], volume: [100, 100] }] } });
+  const old = guard.assess(oldHistory, 'PTT');
+  assert.equal(old.value.prior, null);
+  assert.equal(old.value.quoteStatus, 'accepted');
+  assert.ok(!old.guardReasons.includes('PRICE_CHANGE_MISMATCH'));
+});
+
 test('wrong-symbol and wrong-market payloads are quarantined before trust', () => {
   const guard = createMarketDataGuard({ now: () => NOW });
   const wrongSymbol = guard.assess(yahooResult({ meta: { symbol: 'AOT.BK' } }), 'PTT');
@@ -80,7 +104,7 @@ test('majority-valid history remains usable with warnings and retains rejected-b
   assert.deepEqual(result.value.historyReasons, ['INVALID_NUMERIC']);
 });
 
-test('an isolated historical price spike is quarantined before chart and Technical Analysis use', () => {
+test('an unconfirmed historical price spike remains usable with warnings', () => {
   const guard = createMarketDataGuard({ now: () => NOW, maxPriceMoveRatio: 0.35 });
   const result = guard.assess(yahooResult({
     timestamp: [1_760_000_000, 1_760_086_400, 1_760_172_800],
@@ -88,20 +112,20 @@ test('an isolated historical price spike is quarantined before chart and Technic
       open: [35, 99, 35.1], high: [35.5, 101, 35.6], low: [34.75, 98, 34.9], close: [35.25, 100, 35.4], volume: [1000, 1000, 1200]
     }] }
   }), 'PTT');
-  assert.equal(result.guardStatus, 'accepted');
+  assert.equal(result.guardStatus, 'suspect');
   assert.equal(result.value.historyStatus, 'usable_with_warnings');
-  assert.equal(result.value.rejectedBars, 1);
-  assert.deepEqual(result.value.history.map(bar => bar.close), [35.25, 35.4]);
+  assert.equal(result.value.rejectedBars, 0);
+  assert.deepEqual(result.value.history.map(bar => bar.close), [35.25, 100, 35.4]);
   assert.ok(result.value.historyReasons.includes('HISTORICAL_ANOMALY'));
 });
 
-test('anomaly quarantine preserves last-known-good as explicitly stale', () => {
+test('identity quarantine preserves last-known-good as explicitly stale', () => {
   const guard = createMarketDataGuard({ now: () => NOW, maxPriceMoveRatio: 0.35 });
   const accepted = guard.assess(yahooResult(), 'PTT');
   assert.equal(accepted.guardStatus, 'accepted');
   assert.equal(accepted.value.last, 35.25);
 
-  const anomaly = guard.assess(yahooResult({ meta: { regularMarketPrice: 80 } }), 'PTT');
+  const anomaly = guard.assess(yahooResult({ meta: { symbol: 'WRONG.BK', regularMarketPrice: 80 } }), 'PTT');
   assert.equal(anomaly.guardStatus, 'quarantined');
   assert.ok(anomaly.guardReasons.includes('DATA_ANOMALY'));
   assert.equal(anomaly.value.last, 35.25);
@@ -115,7 +139,7 @@ test('anomaly quarantine preserves last-known-good as explicitly stale', () => {
   assert.equal(anomaly.value.anomalyCount, 1);
 });
 
-test('out-of-order bars are normalized and price/change mismatches are quarantined without correction', () => {
+test('out-of-order bars are normalized and price/change disagreements are warnings without correction', () => {
   const guard = createMarketDataGuard({ now: () => NOW });
   const normalized = guard.assess(yahooResult({
     timestamp: [1_760_086_400, 1_760_000_000],
@@ -130,10 +154,10 @@ test('out-of-order bars are normalized and price/change mismatches are quarantin
     regularMarketChange: 3,
     regularMarketChangePercent: 9
   } }), 'PTT');
-  assert.equal(mismatch.guardStatus, 'quarantined');
+  assert.equal(mismatch.guardStatus, 'suspect');
   assert.ok(mismatch.guardReasons.includes('PRICE_CHANGE_MISMATCH'));
   assert.equal(mismatch.value.last, normalized.value.last);
-  assert.equal(mismatch.value.stale, true);
+  assert.equal(mismatch.value.stale, false);
 });
 
 test('range-start chartPreviousClose cannot cause a false price-change quarantine', () => {
@@ -207,12 +231,12 @@ test('last-known-good fallback is bounded by TTL and isolated by chart context',
   const accepted = guard.assess(yahooResult(), 'PTT', { contextKey: 'chart:1d:5m' });
   assert.equal(accepted.guardStatus, 'accepted');
 
-  const wrongRange = guard.assess(yahooResult({ meta: { regularMarketPrice: 80 } }), 'PTT', { contextKey: 'chart:1y:1d' });
+  const wrongRange = guard.assess(yahooResult({ meta: { symbol: 'WRONG.BK', regularMarketPrice: 80 } }), 'PTT', { contextKey: 'chart:1y:1d' });
   assert.equal(wrongRange.value, null);
   assert.equal(wrongRange.fallbackFromLastKnown, false);
 
   now += 2 * 60 * 60 * 1000;
-  const expired = guard.assess(yahooResult({ meta: { regularMarketPrice: 80 } }), 'PTT', { contextKey: 'chart:1d:5m' });
+  const expired = guard.assess(yahooResult({ meta: { symbol: 'WRONG.BK', regularMarketPrice: 80 } }), 'PTT', { contextKey: 'chart:1d:5m' });
   assert.equal(expired.value, null);
   assert.equal(expired.fallbackFromLastKnown, false);
 });

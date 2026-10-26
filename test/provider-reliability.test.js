@@ -12,6 +12,28 @@ const { createSettradeService } = require('../server/settrade-service');
 
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
 
+test('Yahoo errors distinguish no-data, denial and schema mismatch without retrying a stopped path', async () => {
+  for (const [status, code, stopped] of [[404, 'SOURCE_NO_DATA', false], [403, 'SOURCE_DENIED', true], [429, 'SOURCE_RATE_LIMITED', true], [503, 'ACQUISITION_GAP', false]]) {
+    const service = createMarketService({ fetchImpl: async () => new Response('{}', { status }) });
+    await assert.rejects(service.yahooChart('PTT.BK', '3mo', '1d'), e => e.status === status && e.code === code && e.stopBatch === stopped);
+  }
+  const malformed = createMarketService({ fetchImpl: async () => Response.json({ chart: { result: null, error: null } }) });
+  await assert.rejects(malformed.yahooChart('PTT.BK', '3mo', '1d'), e => e.code === 'PARSER_MISMATCH' && e.stopBatch === true);
+});
+
+test('ambiguous ticker search tries the Thai mapping once; source denial never triggers a second query', async () => {
+  const queries = [];
+  const service = createMarketService({ fetchImpl: async url => {
+    const q = new URL(String(url)).searchParams.get('q'); queries.push(q);
+    return Response.json({ quotes: q === 'AE.BK' ? [{ symbol: 'AE.BK', quoteType: 'EQUITY', shortname: 'fixture' }] : [{ symbol: 'AE', quoteType: 'EQUITY' }] });
+  } });
+  assert.equal((await service.search('AE'))[0].symbol, 'AE'); assert.deepEqual(queries, ['AE', 'AE.BK']);
+  let deniedCalls = 0;
+  const denied = createMarketService({ fetchImpl: async () => { deniedCalls++; return new Response('{}', { status: 429 }); } });
+  await assert.rejects(denied.search('AE'), e => e.stopBatch && !require('../server/reliability').isTransientProviderError(e));
+  assert.equal(deniedCalls, 1);
+});
+
 test('every Yahoo chart request has a bounded abort signal', async () => {
   let requestInit;
   const service = createMarketService({
@@ -79,7 +101,7 @@ test('Yahoo chart shaping rejects incomplete candles and preserves missing volum
   assert.equal(shaped.history[0].volume, null);
 });
 
-test('quarantined anomaly cannot overwrite last-known-good or feed Technical Analysis', async () => {
+test('quarantined identity cannot overwrite last-known-good or feed Technical Analysis', async () => {
   let anomalyMode = false;
   const now = Date.UTC(2026, 9, 18, 9);
   const service = createMarketService({
@@ -88,7 +110,7 @@ test('quarantined anomaly cannot overwrite last-known-good or feed Technical Ana
       const url = String(input);
       const isIndex = /%5ESET\.BK|\^SET\.BK/.test(url);
       const last = !isIndex && anomalyMode ? 80 : 35.25;
-      const symbol = isIndex ? '^SET.BK' : 'PTT.BK';
+      const symbol = isIndex ? '^SET.BK' : anomalyMode ? 'WRONG.BK' : 'PTT.BK';
       return new Response(JSON.stringify({ chart: { result: [{
         meta: {
           symbol,
