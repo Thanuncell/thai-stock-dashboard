@@ -16,6 +16,8 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,mod
  // Only this short-lived Actions process gets these settings. Render is never contacted.
  const settings={...env,SETSCOPE_V156_MANUAL_VERIFY:'1',SETSCOPE_V156_KILL:'0',SETSCOPE_V156_SCALE_APPROVAL:JSON.stringify(policy.APPROVAL)};
  let deadline=deadlineFactory(),preflightReads=0,report={status:'STOPPED',countsScope:'completed-jobs-only',attempted:0,verified:0,partial:0,temporaryFailed:0,jobs:[],before:null,after:null,afterStatus:'NOT_RUN'};
+ let jobStarted=false;
+ report.jobsStarted=0;
  const cancel=()=>deadline.abort();process.once('SIGINT',cancel);process.once('SIGTERM',cancel);
  try{
   const readOnly=deadline.wrap((input,init={})=>{
@@ -26,13 +28,14 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,mod
   const store=createControlledCoverageStore({env:settings,fetchImpl:readOnly,now});
   const prepared=await deadline.run(()=>policy.preflight({repository,store,now:Number(now()),id:env.GITHUB_RUN_ID}));
   const plan=prepared.plan;
-  report={...report,plan,before:policy.counts(prepared.rows,Number(now())),preflightReads};
+  report={...report,plan,preflight:prepared.preflight,before:policy.counts(prepared.rows,Number(now())),preflightReads};
   if(mode==='preflight'){report.status='READY';return report;}
   for(let index=0;index<4;index++){
+   jobStarted=false;
    if(index){deadline.close();deadline=deadlineFactory();}
    const started=Number(now());
    const controller=createControlledCoverage({env:settings,fetchImpl:deadline.wrap(fetchImpl),now,batchPlan:plan,batchIndex:index,
-    initialDatabaseReads:index===0?preflightReads:0,retrySleep:deadline.sleep});
+    initialDatabaseReads:index===0?preflightReads:0,retrySleep:deadline.sleep,onJobStarted:()=>{jobStarted=true;report.jobsStarted++;}});
    const result=await deadline.run(()=>controller.execute({tag:plan.runKeys[index].split(':')[3]}));
    if(result.alreadyCompleted||result.alreadyRunning||result.skipped||result.attempted!==5||result.temporaryFailed)throw stopped('BATCH_JOB_NOT_SUCCESSFUL');
    const job={runKey:result.runKey,attempted:result.attempted,verified:result.verified,partial:result.partial,temporaryFailed:result.temporaryFailed,
@@ -43,7 +46,12 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,mod
   report.status='PASS';report.countsScope='all-four-jobs';report.afterStatus='PASS';return report;
  }catch(error){
   // Completed jobs are known; an interrupted job must never be reported as zero attempts.
-  report.failedJob=report.jobs.length+1;report.incompleteJobCounts='UNKNOWN';report.after=null;
+  report.status=jobStarted?'STOPPED':'BLOCKED';
+  report.reasonCode=error.preflight?.reasonCode||(/^[A-Z_]{1,80}$/.test(error.code||'')?error.code:'BATCH_PREFLIGHT_UNAVAILABLE');
+  if(error.preflight)report.preflight=error.preflight;
+  if(jobStarted){report.failedJob=report.jobs.length+1;report.incompleteJobCounts='UNKNOWN';}
+  else if(!report.jobsStarted)report.countsScope='no-jobs-started';
+  report.after=null;
   const failure=stopped('BATCH_STOPPED_REVIEW_DURABLE_STATE');failure.report=report;throw failure;
  }finally{deadline.close();process.removeListener('SIGINT',cancel);process.removeListener('SIGTERM',cancel);onReport(report);}
 }
