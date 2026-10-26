@@ -15,6 +15,37 @@ const args = { runKey: 'v156:coverage:2026-10-26:manual-1', startedAt: new Date(
 
 const { backend } = require('./fixtures/controlled-backend.cjs');
 
+test('checkpoint persistence accepts secret API keys without Bearer and preserves legacy JWT transport', async () => {
+  const jwt=[Buffer.from('{"alg":"HS256"}').toString('base64url'),
+    Buffer.from('{"role":"service_role"}').toString('base64url'),'fixture-signature'].join('.');
+  for(const key of ['sb_secret_checkpoint-fixture',jwt]) for(const name of ['SUPABASE_SECRET_KEY','SUPABASE_SERVICE_ROLE_KEY']) {
+    const db=backend();let reads=0,writes=0;
+    const fetchImpl=(input,init={})=>{
+      const headers=new Headers(init.headers);
+      assert.equal(headers.get('apikey'),key);
+      assert.equal(headers.get('authorization'),key.startsWith('sb_secret_')?null:'Bearer '+key);
+      assert.equal(headers.get('content-type'),'application/json');assert.ok(headers.get('prefer'));
+      if(init.method)writes++;else reads++;
+      return db.fetchImpl(input,init);
+    };
+    const settings={SUPABASE_URL:'https://fixture.supabase.co',SETSCOPE_V156_MANUAL_VERIFY:'1',[name]:key};
+    const store=createControlledCoverageStore({env:settings,fetchImpl,now:()=>NOW});
+    await store.beginRun(args);await store.status(args.runKey);await store.finishRun({runKey:args.runKey,finishedAt:new Date(NOW).toISOString()});
+    assert.ok(reads>0&&writes>0);assert.equal(db.runs.get(args.runKey).status,'completed');
+    assert.equal(JSON.stringify(db.runs.get(args.runKey)).includes(key),false);
+  }
+});
+
+test('checkpoint invalid keys and HTTP 401/403 fail closed without writes, retries or disclosure', async () => {
+  for(const key of ['sb_secret_invalid-fixture','invalid-legacy-fixture']) for(const status of [401,403]) {
+    const db=backend();let calls=0;
+    const store=createControlledCoverageStore({env:{...env(),SUPABASE_SECRET_KEY:key},now:()=>NOW,
+      fetchImpl:async()=>{calls++;return Response.json({message:'Rejected '+key},{status});}});
+    await assert.rejects(store.beginRun(args),error=>error.stopBatch===true&&error.code==='PERSISTENCE_UNAVAILABLE'&&!error.message.includes(key));
+    assert.equal(calls,1);assert.equal(db.runs.size,0);
+  }
+});
+
 test('manual keys use Bangkok dates and reject malformed tags', () => {
   assert.equal(manualRunKey({ date: new Date('2026-10-25T18:00:00Z') }), args.runKey);
   assert.throws(() => manualRunKey({ tag: '../oops' }));

@@ -51,7 +51,7 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
   const configured = Boolean(/^https:\/\//.test(baseUrl) && secretKey);
 
   function headers(extra = {}) {
-    return { apikey: secretKey, Authorization: `Bearer ${secretKey}`, ...extra };
+    return { apikey: secretKey, ...(secretKey.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${secretKey}` }), ...extra };
   }
 
   async function request(path, init = {}) {
