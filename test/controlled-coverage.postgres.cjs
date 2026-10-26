@@ -179,6 +179,30 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       time=Date.parse('2026-11-02T11:00:00Z');provider.advance(time,36);
       assert.equal((await run({tag:'week-later'})).verified,5);assert.equal(calls,10);
     });
+    await t.test('one-time canary persists exact selection, unchanged outside rows and replay prevention', async () => {
+      const {main}=require('../scripts/run-v156-canary');
+      const {SYMBOLS}=require('../server/canary-policy');
+      // Disposable loopback database only, isolated above from production.
+      await pool.query("delete from public.coverage_runs where run_key like 'v156:%'; delete from public.security_coverage");
+      time=Date.parse('2026-10-26T10:00:00Z');
+      for(const symbol of [...SYMBOLS,'OUTSIDE'])await pool.query(`insert into public.security_coverage
+        (symbol,provider_symbol,provider,active,status,symbol_verified,chart_ready,technical_ready,last_checked_at,guard_status)
+        values($1,$2,'Yahoo Finance',true,'verified',true,true,true,$3,'accepted')`,[symbol,symbol+'.BK',new Date(time-1000).toISOString()]);
+      const before=(await pool.query("select row_to_json(r) value from public.security_coverage r where symbol='OUTSIDE'")).rows[0].value;
+      const provider=backend({symbols:SYMBOLS});provider.advance(time,35);
+      let calls=0;
+      const transport=(input,init)=>{
+        if(new URL(String(input)).hostname==='query1.finance.yahoo.com'){calls++;return provider.fetchImpl(input,init);}
+        return fetchImpl(input,init);
+      };
+      const settings={...env,GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',SETSCOPE_CANARY_APPROVED:'1',SETSCOPE_V156_KILL:'1'};
+      const result=await main({env:settings,fetchImpl:transport,now:()=>time});
+      assert.equal(result.verified,5);assert.equal(result.canaryCounts.before.verified,6);assert.equal(result.canaryCounts.after.verified,6);
+      assert.deepEqual((await pool.query("select row_to_json(r) value from public.security_coverage r where symbol='OUTSIDE'")).rows[0].value,before);
+      time+=86400000;
+      await assert.rejects(main({env:settings,fetchImpl:transport,now:()=>time}));assert.equal(calls,5);
+      assert.equal(settings.SETSCOPE_V156_KILL,'1');
+    });
     await t.test('rollback refuses to destroy checkpoints, then supports an empty-column rollback and reapply', async () => {
       const archived=(await pool.query('select run_key,automation_state from public.coverage_runs where automation_state is not null')).rows;
       const client=await pool.connect();

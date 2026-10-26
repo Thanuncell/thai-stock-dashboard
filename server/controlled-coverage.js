@@ -7,6 +7,7 @@ const { createControlledCoverageStore, stopped, KEY, CONTROL_KEY } = require('./
 const { manualRunKey } = require('./v156-manual-claim');
 const { bangkokDay, executionWindow, selectCoverage, sessionReady, calendarReadiness } = require('./automation-policy');
 const { JOB_BUDGET,readScalePolicy,planBatchScale } = require('./automation-scaling');
+const canaryPolicy = require('./canary-policy');
 
 function authorized(header, token) {
   if (typeof token !== 'string' || token.length < 32 || typeof header !== 'string' || header.length > 512) return false;
@@ -15,7 +16,7 @@ function authorized(header, token) {
 }
 
 function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now,
-  onVerified = () => {}, retrySleep } = {}) {
+  onVerified = () => {}, retrySleep, canary = false } = {}) {
   let active = false;
   const recent = [];
   function enabled() {
@@ -23,12 +24,13 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
   }
   async function execute({ tag = 'manual-1', resume = false, operation = 'run', runKey, mode = 'coverage', reviewed = false, targetSize = 5 } = {}) {
     enabled();
+    if (canary && (operation!=='run' || resume || mode!=='coverage' || runKey)) throw stopped('CANARY_INPUT_INVALID');
     if (!['run', 'status', 'pause', 'stop','reconcile','plan'].includes(operation) || typeof resume !== 'boolean' || typeof reviewed !== 'boolean') throw stopped('INVALID_OPERATION');
     const scalePolicy=['run','plan'].includes(operation)?readScalePolicy(env):null;
     if (operation==='plan') return {...planBatchScale(targetSize,scalePolicy),calendar:calendarReadiness(Number(now()))};
     if (targetSize!==5) throw stopped('SCALE_APPROVAL_REQUIRED');
     if (!['coverage','eod'].includes(mode) || operation === 'run' && runKey && !resume) throw stopped('INVALID_OPERATION');
-    const key = operation === 'run' ? resume && runKey || manualRunKey({ date: new Date(Number(now())), tag, type: mode }) : runKey;
+    const key = canary ? canaryPolicy.RUN_KEY : operation === 'run' ? resume && runKey || manualRunKey({ date: new Date(Number(now())), tag, type: mode }) : runKey;
     if (!KEY.test(key || '')) throw stopped('INVALID_JOB_KEY');
     if (operation === 'run' && key.split(':')[1] !== mode) throw stopped('JOB_INPUT_CONFLICT');
     const window = operation === 'run' ? executionWindow({ now: Number(now()), mode,
@@ -53,6 +55,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
     };
     const store = createControlledCoverageStore({ env, fetchImpl: observedFetch, now });
     const coordinator = createControlledCoverageStore({ env, fetchImpl: observedFetch, now });
+    const repository = createCoverageRepository({ env, fetchImpl: observedFetch, now });
     if (!store.configured) throw stopped('PERSISTENCE_UNCONFIGURED');
     if (operation !== 'run') return operation === 'status' ? store.status(key) : operation === 'reconcile' ? store.reconcile(key, reviewed)
       : store.control(key, operation === 'pause' ? 'paused' : 'stopped');
@@ -62,15 +65,17 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
     if (recent.length >= 3) throw stopped('TRIGGER_RATE_LIMIT');
     recent.push(current);
     active = true;
-    let ownsCoordinator = false, jobStarted = false, metadata;
+    let ownsCoordinator = false, jobStarted = false, metadata, canaryBefore;
     const coverageReserved=new Set();
     try {
       // A duplicate completed job must not consume another daily reservation.
       try {
         const previous = await store.status(key);
         if (previous.phase === 'completed') return { runKey: key, alreadyCompleted: true, attempted: 0, metrics, schedulerEnabled: false };
+        if (canary) throw stopped('CANARY_ALREADY_ATTEMPTED');
         if (previous.mode !== mode) throw stopped('JOB_INPUT_CONFLICT');
       } catch (error) { if (error.code !== 'JOB_NOT_FOUND') throw error; }
+      if (canary) { canaryBefore=await repository.listCandidates(); canaryPolicy.selectCanary(canaryBefore); }
       const gate = await coordinator.beginRun({ runKey: CONTROL_KEY, startedAt: new Date(Number(now())).toISOString(), batchSize: 5, concurrency: 1, resume: true });
       if (gate.alreadyRunning) return { runKey: key, alreadyRunning: true, attempted: 0, metrics, schedulerEnabled: false };
       ownsCoordinator = true;
@@ -89,7 +94,6 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
       const eodCompleted = metadata.day === day ? metadata.eodCompleted || [] : [];
       await coordinator.updateMetadata({ day, reservations: reservations + 1, activeJob: key, eodCompleted });
       metadata = { ...metadata, day, reservations: reservations + 1, activeJob: key, eodCompleted };
-      const repository = createCoverageRepository({ env, fetchImpl: observedFetch, now });
       const market = createMarketService({ env, fetchImpl: observedFetch, now });
       const runner = createCoverageRunner({ repository: { ...repository,
         beginRun: async args => {
@@ -105,6 +109,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
           if(JSON.stringify(coverageChecks)!==JSON.stringify(metadata.coverageChecks || {})){
             await coordinator.updateMetadata({coverageChecks});metadata.coverageChecks=coverageChecks;
           }
+          if (canary) return canaryPolicy.selectCanary(candidates);
           return selectCoverage(candidates, { now: Number(now()), mode, session: window.session,coverageChecks,
             excludeSymbols: mode === 'eod' ? metadata.eodCompleted : [] });
         },
@@ -119,7 +124,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
           } catch (error) { error.notStarted = true; throw error; }
           // Reserve this stock's coverage clock before acquisition. Retry attempts
           // inside the same invocation do not create a new seven-day reservation.
-          if(mode==='coverage' && !coverageReserved.has(args[0])){
+          if(!canary && mode==='coverage' && !coverageReserved.has(args[0])){
             const coverageChecks={...metadata.coverageChecks,[args[0]]:new Date(Number(now())).toISOString()};
             await coordinator.updateMetadata({coverageChecks});metadata.coverageChecks=coverageChecks;coverageReserved.add(args[0]);
           }
@@ -151,9 +156,15 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
         },
         checkpointStore: store.checkpointStore, batchSize: 5, concurrency: 1, now, ...(retrySleep ? { retrySleep } : {}) });
       const result = await runner.run({ runKey: key, resume });
+      let canaryCounts;
+      if (canary) {
+        const after=await repository.listCandidates();
+        if (!canaryPolicy.unchangedOutside(canaryBefore,after)) throw stopped('CANARY_OUTSIDE_CHANGED');
+        canaryCounts={before:canaryPolicy.counts(canaryBefore),after:canaryPolicy.counts(after),outsideUnchanged:true};
+      }
       return { runKey: key, alreadyCompleted: Boolean(result.alreadyCompleted), alreadyRunning: Boolean(result.alreadyRunning),
         attempted: result.attempted || 0, verified: result.verified || 0, partial: result.partial || 0,
-        temporaryFailed: result.temporaryFailed || 0, metrics,
+        temporaryFailed: result.temporaryFailed || 0, metrics, ...(canaryCounts?{canaryCounts}:{}),
         schedulerEnabled: false };
     } catch (error) {
       // Preserve uncertain entries; never turn a failed response into a replay.
