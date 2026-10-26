@@ -158,8 +158,11 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
           onVerified(args[0], verification);
           return verification;
         },
-        onResult: async (_row,result) => {
-          const failed=result.status==='temporary_failed' && result.failure_reason!=='SOURCE_NO_DATA' && result.guard_reason!=='SOURCE_NO_DATA';
+        onResult: async (row,result) => {
+          const noData=result.failure_reason==='SOURCE_NO_DATA' || result.guard_reason==='SOURCE_NO_DATA';
+          const previouslyVerified=Boolean(row.last_verified_at || row.symbol_verified && row.chart_ready);
+          // Repeated loss of established coverage is suspicious; one missing symbol is not proof of an outage or delisting.
+          const failed=result.status==='temporary_failed' && (!noData || previouslyVerified);
           const streak=failed?(metadata.failedSecurities||0)+1:result.status==='verified'?0:metadata.failedSecurities||0;
           if(streak!==(metadata.failedSecurities||0)) {
             const patch={failedSecurities:streak,...(streak>=FAILED_SECURITIES_LIMIT?{

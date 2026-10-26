@@ -55,21 +55,31 @@ test('normal coordinator release is successful, reacquirable and still fences ex
  await replacement.releaseCoordinator('failed');assert.equal((await replacement.status(CONTROL_KEY)).lastOutcome,'failed');
 });
 
-test('temporary failures accumulate across independent jobs before the third unsafe write',async()=>{
+for(const kind of ['temporary','404','410','chart-error'])
+test(`${kind} failures accumulate across independent jobs before the third unsafe write`,async()=>{
  const db=backend({symbols:['A']});db.registry.set('A',row('A'));db.advance(NOW-86400000,35);
- const make=()=>createControlledCoverage({env:env(20),fetchImpl:db.fetchImpl,now:()=>NOW});
+ let calls=0;
+ const transport=(input,init)=>{
+  if(kind!=='temporary'&&new URL(String(input)).hostname==='query1.finance.yahoo.com'){
+   calls++;return Promise.resolve(kind==='chart-error'?Response.json({chart:{result:null,error:{code:'Not Found',description:'No data'}}}):Response.json({},{status:Number(kind)}));
+  }
+  return db.fetchImpl(input,init);
+ };
+ const make=()=>createControlledCoverage({env:env(20),fetchImpl:transport,now:()=>NOW});
  for(const [index,symbol]of ['A','B','C'].entries()){
-  if(index)db.registry.set(symbol,row(symbol));
+  if(index)db.registry.set(symbol,{...row(symbol),...(index===1?{last_verified_at:null,last_success_at:null}:{symbol_verified:false,chart_ready:false,technical_ready:false})});
   if(index<2)assert.equal((await make().execute({mode:'eod',tag:'cross-'+index})).temporaryFailed,1);
   else await assert.rejects(make().execute({mode:'eod',tag:'cross-'+index}),/MASS_FAILURES/);
+  if(index===0){assert.equal(db.registry.get('A').active,true);assert.equal(db.registry.get('A').symbol_verified,true);assert.equal(db.runs.get(CONTROL_KEY).automation_state.metadata.blockedUntil,undefined);}
  }
  assert.equal(db.runs.get(CONTROL_KEY).automation_state.metadata.failedSecurities,3);
  assert.equal(db.registry.get('C').status,'verified');assert.equal(db.registry.get('C').last_checked_at,row('C').last_checked_at);
  const before=db.calls.length;await assert.rejects(make().execute({mode:'eod',tag:'blocked'}),/CIRCUIT_OPEN/);
  assert.equal(db.calls.slice(before).filter(c=>c.url.hostname==='query1.finance.yahoo.com').length,0);
+ if(kind!=='temporary')assert.equal(calls,3);
 });
 
-for(const stage of [5,20,100,500])for(const kind of ['timeout','outage','rate-limit','denial','malformed','temporary'])
+for(const stage of [5,20,100,500])for(const kind of ['timeout','outage','rate-limit','denial','malformed','temporary','404','410','chart-error'])
 test(`synthetic ${stage}-stock exposure: ${kind} stops bounded work and preserves recovery`,async()=>{
  const symbols=Array.from({length:stage},(_,i)=>'S'+String(i).padStart(4,'0'));
  const db=backend({symbols});for(const s of symbols)db.registry.set(s,row(s));
@@ -80,6 +90,8 @@ test(`synthetic ${stage}-stock exposure: ${kind} stops bounded work and preserve
    if(broken){
     if(kind==='timeout')throw Object.assign(Error('fetch failed: timeout'),{retryable:true});
     if(kind==='malformed')return Promise.resolve(Response.json({}));
+    if(kind==='chart-error')return Promise.resolve(Response.json({chart:{result:null,error:{code:'Not Found',description:'No data'}}}));
+    if(['404','410'].includes(kind))return Promise.resolve(Response.json({},{status:Number(kind)}));
     if(kind!=='temporary')return Promise.resolve(Response.json({},{status:{outage:503,'rate-limit':429,denial:403}[kind]}));
    }
   }
@@ -93,6 +105,10 @@ test(`synthetic ${stage}-stock exposure: ${kind} stops bounded work and preserve
  assert.ok(symbols.slice(5).every((s,i)=>JSON.stringify(db.registry.get(s))===JSON.stringify(before[i+5])));
  assert.ok([...db.registry.values()].filter(r=>r.status==='temporary_failed').length<=2);
  assert.ok([...db.registry.values()].every(r=>r.symbol_verified&&r.chart_ready&&r.technical_ready));
+ for(const actual of db.registry.values()){
+  const previous=before.find(r=>r.symbol===actual.symbol);
+  assert.equal(actual.last_verified_at,previous.last_verified_at);assert.equal(actual.last_success_at,previous.last_success_at);
+ }
  const stoppedCalls=calls;await assert.rejects(make().execute({mode,tag:'next-job'}),/CIRCUIT_OPEN/);assert.equal(calls,stoppedCalls);
  time+=300001;broken=false;db.advance(time,35);
  if(['rate-limit','denial'].includes(kind)){
@@ -113,5 +129,25 @@ test(`synthetic ${stage}-stock exposure: ${kind} stops bounded work and preserve
  assert.ok(allowed.size>0 && allowed.size<=5);
  const outside=symbols.filter(s=>!allowed.has(s));
  assert.ok(outside.every(s=>JSON.stringify(db.registry.get(s))===JSON.stringify(beforeRecovery.get(s))));
+ assert.ok(result.metrics.providerCalls<=10);assert.ok(result.metrics.databaseReads+result.metrics.databaseWrites<=200);
+});
+
+for(const kind of ['404','410','chart-error'])
+test(`${kind} for never-verified stocks remains no-data without a mass-failure signal`,async()=>{
+ const symbols=['NEW1','NEW2','NEW3','NEW4','NEW5'];
+ const db=backend({symbols});db.registry.set('OUTSIDE',{...row('OUTSIDE'),last_checked_at:iso(NOW)});
+ const outside=structuredClone(db.registry.get('OUTSIDE'));let calls=0;
+ const transport=(input,init)=>{
+  if(new URL(String(input)).hostname==='query1.finance.yahoo.com'){
+   calls++;return Promise.resolve(kind==='chart-error'?Response.json({chart:{result:null,error:{code:'Not Found',description:'No data'}}}):Response.json({},{status:Number(kind)}));
+  }
+  return db.fetchImpl(input,init);
+ };
+ const result=await createControlledCoverage({env:env(5),fetchImpl:transport,now:()=>NOW}).execute({tag:'genuine-no-data'});
+ assert.equal(result.attempted,5);assert.equal(result.temporaryFailed,5);assert.equal(result.verified,0);assert.equal(calls,5);
+ const meta=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ assert.equal(meta.failedSecurities||0,0);assert.equal(meta.blockedUntil,undefined);
+ for(const s of symbols){const r=db.registry.get(s);assert.equal(r.failure_reason,'SOURCE_NO_DATA');assert.equal(r.active,true);assert.equal(r.symbol_verified,false);assert.equal(r.chart_ready,false);assert.equal(r.last_verified_at,null);assert.equal(r.last_success_at,null);}
+ assert.deepEqual(db.registry.get('OUTSIDE'),outside);
  assert.ok(result.metrics.providerCalls<=10);assert.ok(result.metrics.databaseReads+result.metrics.databaseWrites<=200);
 });
