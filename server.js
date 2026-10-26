@@ -126,6 +126,14 @@ const providerFetch = observability.observedFetch(globalThis.fetch);
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
+const stockSearchService = require('./server/search-service').createStockSearchService({
+  providerSearch: (query, options) => marketService.search(query, options),
+  registrySearch: async () => {
+    if (!coverageRepository.configured) return [];
+    const result = await responseCache.get('search-registry', {ttlMs:300000,staleIfErrorMs:0,errorBackoffMs:5000}, () => coverageRepository.listCandidates());
+    return result.value;
+  }
+});
 const manualCoverageHandler = createManualCoverageHandler({
   controller: createControlledCoverage({ fetchImpl: providerFetch,
     onVerified: (symbol, verification) => invalidateVerifiedMarket(responseCache, symbol, verification) }), readJson, send
@@ -284,7 +292,7 @@ async function handle(req, res) {
     if (query.length < 1) return send(res, 200, { items: [] });
     try {
       const items = await loadCached(res, `search:${query.toLocaleLowerCase('th')}`, PROVIDER_POLICIES.search, () => retryWithBackoff(
-        () => marketService.search(query),
+        () => stockSearchService.search(query),
         { maxAttempts: 2, baseDelayMs: 100, shouldRetry: isTransientProviderError }
       ));
       return send(res, 200, { items, provider: 'Yahoo Finance' });
@@ -347,8 +355,9 @@ async function handle(req, res) {
     try {
       const raw = url.searchParams.get('stocks') || url.searchParams.get('symbols') || '';
       const stocks = normalizeWatchlistNewsStocks(raw);
-      const cacheKey = createWatchlistNewsCacheKey(stocks);
-      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks));
+      const cacheKey = createWatchlistNewsCacheKey(stocks, user.id);
+      const force = url.searchParams.get('refresh') === '1' && !limited(`watch-news-refresh:${user.id}`, 3);
+      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks, {ownerId:user.id}), {force});
       return send(res, 200, data);
     } catch (error) {
       return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ', detail: error.message });

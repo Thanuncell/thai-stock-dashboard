@@ -63,11 +63,11 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     return result;
   }
 
-  async function search(query) {
+  async function search(query, { allowSuffixFallback = true } = {}) {
     const items = await searchOnce(query);
     const canonical = String(query || '').trim().toUpperCase();
     // Ambiguous short tickers can be crowded out by foreign equities in Yahoo's first page.
-    if (!items.length && /^[A-Z0-9&.-]{1,20}$/.test(canonical) && !canonical.endsWith('.BK')) {
+    if (allowSuffixFallback && !items.length && /^[A-Z0-9&.-]{1,20}$/.test(canonical) && !canonical.endsWith('.BK')) {
       return searchOnce(`${canonical}.BK`);
     }
     return items;

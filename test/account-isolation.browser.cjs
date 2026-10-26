@@ -129,7 +129,7 @@ async function seedPage(page, token) {
   }, token);
 }
 
-(async () => {
+if(require.main===module)(async () => {
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const server = spawn(process.execPath, ['server.js'], {
@@ -266,3 +266,4 @@ async function seedPage(page, token) {
     server.kill();
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
+module.exports={mockRequest,seedPage,freePort,waitForServer};

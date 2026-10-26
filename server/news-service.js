@@ -5,6 +5,7 @@ const { BROKER_FIRMS, decorateBrokerAttribution, dedupeNewsItems, matchBrokerFir
 const { decodeXml, marketHtmlText, xmlTag } = require('../lib/settrade-parser');
 const { normalizeWatchlistNewsStocks } = require('../lib/validation');
 const { classifyNewsItem } = require('../lib/news-quality');
+const { createWatchlistNewsCacheKey } = require('./reliability');
 
 const FEEDS = Object.freeze([
   ['thunhoon', 'ทันหุ้น', 'site:thunhoon.com'],
@@ -434,26 +435,28 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     };
   }
 
-  async function getWatchlistNews(rawStocks = '') {
+  async function getWatchlistNews(rawStocks = '', { ownerId = '' } = {}) {
     const requested = normalizeWatchlistNewsStocks(rawStocks);
     if (!requested.length) {
       const fetchedAt = new Date(Number(now())).toISOString();
       return { items: [], fetchedAt, asOf: null, source: 'Google News', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30 };
     }
-    const snapshotKey = `watchlist:${JSON.stringify(requested.map(item => [item.symbol, item.name]))}`;
+    const snapshotKey = createWatchlistNewsCacheKey(requested, ownerId);
     const terms = requested.flatMap(item => [`"${item.symbol}"`, ...(item.name.length > 3 ? [`"${item.name}"`] : [])]).join(' OR ');
     const url = GOOGLE_RSS_PREFIX + encodeURIComponent(`(${terms}) when:30d`) + '&hl=th&gl=TH&ceid=TH:th';
     let xml;
     try {
       xml = await fetchGoogleRss(url);
+      if(!/<rss(?:\s|>)/i.test(xml)||!/<\/rss\s*>/i.test(xml)||!/<channel(?:\s|>)/i.test(xml)||!/<\/channel\s*>/i.test(xml)
+        ||(xml.match(/<item(?:\s|>)/gi)||[]).length!==(xml.match(/<\/item\s*>/gi)||[]).length)throw Error('Invalid Watchlist RSS response');
     } catch (error) {
       const fallback = staleFallback(snapshotKey, error);
       if (fallback) return fallback;
       throw error;
     }
-    const channel = xml.match(/<channel(?:\s[^>]*)?>([\s\S]*?)<\/channel>/i)?.[1] || xml;
+    const channel = xml.match(/<channel(?:\s[^>]*)?>([\s\S]*?)<\/channel\s*>/i)?.[1] || xml;
     const cutoff = Number(now()) - 30 * 24 * 60 * 60 * 1000;
-    const parsedItems = [...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].map(match => {
+    const parsedItems = [...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi)].map(match => {
       const block = match[1];
       const title = decodeXml(xmlTag(block, 'title'));
       const url = decodeXml(xmlTag(block, 'link'));

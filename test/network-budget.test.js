@@ -36,7 +36,7 @@ test('realtime readiness adds no polling, sockets, timers or browser listeners',
 
 test('cache keys include every public input and never cache watchlist responses globally', () => {
   assert.match(serverSource, /`market:\$\{symbols\.join\(','\)\}\|\$\{active\}\|\$\{range\}`/);
-  assert.match(serverSource, /createWatchlistNewsCacheKey\(stocks\)/);
+  assert.match(serverSource, /createWatchlistNewsCacheKey\(stocks, user\.id\)/);
   assert.match(serverSource, /loadCached\(res,\s*cacheKey,\s*PROVIDER_POLICIES\.watchlistNews/);
   const watchlistHandler = serverSource.match(/async function handleWatchlists[\s\S]*?\n}\r?\n\r?\nasync function handleNewsAnalysis/)?.[0] || '';
   assert.doesNotMatch(watchlistHandler, /loadCached|responseCache/);
