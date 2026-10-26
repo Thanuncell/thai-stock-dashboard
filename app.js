@@ -1190,7 +1190,7 @@ async function getCoverageSummary() {
   const showUnavailable = reason => {
     if (counts) counts.hidden = true;
     if (status) {
-      status.textContent = reason === 'stale' ? 'สถานะ Coverage ยังไม่พร้อม · ข้อมูลล่าสุดหมดอายุ' : 'สถานะ Coverage ยังไม่พร้อม';
+      status.textContent = reason === 'stale' ? 'ผลตรวจล่าสุดเก่า · รอตรวจใหม่ ไม่ใช่การยืนยันว่าหุ้นใช้งานไม่ได้' : 'ยังไม่มีผล Coverage ล่าสุด · ไม่ใช่การยืนยันว่าหุ้นใช้งานไม่ได้';
       status.hidden = false;
     }
     root.dataset.state = 'unavailable';
@@ -1201,10 +1201,14 @@ async function getCoverageSummary() {
     const display = coverageDisplayState(data);
     if (!response.ok || !display.ready) return showUnavailable(display.reason);
     setText('#coverage-universe', String(display.universe));
-    setText('#coverage-count', String(display.currentVerified));
+    setText('#coverage-count', String(display.historicalVerified ?? display.currentVerified));
     if (counts) counts.hidden = false;
-    if (status) status.hidden = true;
-    root.dataset.state = 'ready';
+    if (status) {
+      const details=display.historicalVerified!==undefined;
+      status.hidden = !details && !display.reason;
+      status.textContent = details ? `เคยผ่าน ${display.historicalVerified} · พร้อมใช้จากผลตรวจล่าสุด ${display.currentVerified} · ผลเก่า ${display.stale ?? 0} · Provider ขัดข้องชั่วคราว ${display.temporaryFailed ?? 0} · ยืนยันไม่พร้อมใช้ ${display.confirmedUnavailable ?? 0}` : 'ผลตรวจล่าสุดเก่า · รอตรวจใหม่';
+    }
+    root.dataset.state = display.reason==='stale'?'stale':'ready';
   } catch (_) {
     showUnavailable('unavailable');
   }

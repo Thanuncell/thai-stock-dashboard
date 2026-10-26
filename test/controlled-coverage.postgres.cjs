@@ -188,6 +188,7 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       for(const symbol of [...SYMBOLS,'OUTSIDE'])await pool.query(`insert into public.security_coverage
         (symbol,provider_symbol,provider,active,status,symbol_verified,chart_ready,technical_ready,last_checked_at,guard_status)
         values($1,$2,'Yahoo Finance',true,'verified',true,true,true,$3,'accepted')`,[symbol,symbol+'.BK',new Date(time-1000).toISOString()]);
+      await pool.query("update public.security_coverage set status='partial' where symbol='OUTSIDE'");
       const before=(await pool.query("select row_to_json(r) value from public.security_coverage r where symbol='OUTSIDE'")).rows[0].value;
       const provider=backend({symbols:SYMBOLS});provider.advance(time,35);
       let calls=0;
@@ -197,7 +198,13 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       };
       const settings={...env,GITHUB_ACTIONS:'true',GITHUB_REF:'refs/heads/main',SETSCOPE_CANARY_APPROVED:'1',SETSCOPE_V156_KILL:'1'};
       const result=await main({env:settings,fetchImpl:transport,now:()=>time});
-      assert.equal(result.verified,5);assert.equal(result.canaryCounts.before.verified,6);assert.equal(result.canaryCounts.after.verified,6);
+      assert.equal(result.verified,5);assert.equal(result.partial,0);
+      assert.equal(result.canaryCounts.before.verified,5);assert.equal(result.canaryCounts.after.verified,5);
+      const persisted=(await pool.query("select partial from public.coverage_runs where run_key=$1",[result.runKey])).rows[0];
+      assert.equal(persisted.partial,0);
+      const control=(await pool.query("select status,failure_reason,automation_state from public.coverage_runs where run_key='v156:control'")).rows[0];
+      assert.equal(control.status,'completed');assert.equal(control.failure_reason,null);
+      assert.equal(control.automation_state.metadata.lastOutcome,'completed');
       assert.deepEqual((await pool.query("select row_to_json(r) value from public.security_coverage r where symbol='OUTSIDE'")).rows[0].value,before);
       time+=86400000;
       await assert.rejects(main({env:settings,fetchImpl:transport,now:()=>time}));assert.equal(calls,5);

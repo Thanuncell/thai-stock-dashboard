@@ -6,8 +6,11 @@ const { createMarketService } = require('./market-service');
 const { createControlledCoverageStore, stopped, KEY, CONTROL_KEY } = require('./controlled-coverage-store');
 const { manualRunKey } = require('./v156-manual-claim');
 const { bangkokDay, executionWindow, selectCoverage, sessionReady, calendarReadiness } = require('./automation-policy');
-const { JOB_BUDGET,readScalePolicy,planBatchScale } = require('./automation-scaling');
+const { JOB_SIZE,JOB_BUDGET,readScalePolicy,planBatchScale } = require('./automation-scaling');
 const canaryPolicy = require('./canary-policy');
+// Keep a strict majority of the initial five-stock batch unwritten on repeated
+// temporary failures: stop before persisting the third. The streak spans jobs.
+const FAILED_SECURITIES_LIMIT = Math.ceil(JOB_SIZE / 2);
 
 function authorized(header, token) {
   if (typeof token !== 'string' || token.length < 32 || typeof header !== 'string' || header.length > 512) return false;
@@ -65,7 +68,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
     if (recent.length >= 3) throw stopped('TRIGGER_RATE_LIMIT');
     recent.push(current);
     active = true;
-    let ownsCoordinator = false, jobStarted = false, metadata, canaryBefore;
+    let ownsCoordinator = false, jobStarted = false, metadata, canaryBefore, outcome='failed';
     const coverageReserved=new Set();
     try {
       // A duplicate completed job must not consume another daily reservation.
@@ -134,10 +137,11 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
           } catch (error) {
             const denied = [401,403,429].includes(error.status) || error.accessDenied;
             const transient = require('./reliability').isTransientProviderError(error);
-            const failures = transient ? (metadata.providerFailures || 0) + 1 : 0;
+            const malformed = error.code === 'PARSER_MISMATCH';
+            const failures = denied || malformed || transient ? (metadata.providerFailures || 0) + 1 : metadata.providerFailures || 0;
             metadata = { ...metadata, providerFailures: failures,
-              ...(denied || transient && failures >= 3 ? { blockedUntil: new Date(Number(now()) + 300000).toISOString(), denied: Boolean(denied),
-                reason: denied ? 'SOURCE_DENIED' : 'TRANSIENT_FAILURES' } : {}) };
+              ...(denied || malformed || transient && failures >= 3 ? { blockedUntil: new Date(Number(now()) + 300000).toISOString(), denied: Boolean(denied),
+                reason: denied ? 'SOURCE_DENIED' : malformed ? 'SOURCE_MALFORMED' : 'TRANSIENT_FAILURES' } : {}) };
             await coordinator.updateMetadata({ providerFailures: failures, ...(metadata.blockedUntil ? {
               blockedUntil: metadata.blockedUntil, denied: Boolean(metadata.denied), reason: metadata.reason } : {}) });
             throw error;
@@ -154,6 +158,16 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
           onVerified(args[0], verification);
           return verification;
         },
+        onResult: async (_row,result) => {
+          const failed=result.status==='temporary_failed' && result.failure_reason!=='SOURCE_NO_DATA' && result.guard_reason!=='SOURCE_NO_DATA';
+          const streak=failed?(metadata.failedSecurities||0)+1:result.status==='verified'?0:metadata.failedSecurities||0;
+          if(streak!==(metadata.failedSecurities||0)) {
+            const patch={failedSecurities:streak,...(streak>=FAILED_SECURITIES_LIMIT?{
+              blockedUntil:new Date(Number(now())+300000).toISOString(),reason:'MASS_TEMPORARY_FAILURES'}:{})};
+            await coordinator.updateMetadata(patch);metadata={...metadata,...patch};
+          }
+          if(failed && streak>=FAILED_SECURITIES_LIMIT) throw stopped('PROVIDER_MASS_FAILURES');
+        },
         checkpointStore: store.checkpointStore, batchSize: 5, concurrency: 1, now, ...(retrySleep ? { retrySleep } : {}) });
       const result = await runner.run({ runKey: key, resume });
       let canaryCounts;
@@ -162,6 +176,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
         if (!canaryPolicy.unchangedOutside(canaryBefore,after)) throw stopped('CANARY_OUTSIDE_CHANGED');
         canaryCounts={before:canaryPolicy.counts(canaryBefore),after:canaryPolicy.counts(after),outsideUnchanged:true};
       }
+      outcome='completed';
       return { runKey: key, alreadyCompleted: Boolean(result.alreadyCompleted), alreadyRunning: Boolean(result.alreadyRunning),
         attempted: result.attempted || 0, verified: result.verified || 0, partial: result.partial || 0,
         temporaryFailed: result.temporaryFailed || 0, metrics, ...(canaryCounts?{canaryCounts}:{}),
@@ -171,7 +186,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
       if (jobStarted) try { await store.updateMetadata({ metrics: { ...metrics, elapsedMs: Math.max(0, Number(now()) - start) } }); await store.failRun(); } catch { /* Keep uncertain state. */ }
       throw error;
     } finally {
-      if (ownsCoordinator) try { await coordinator.failRun(); } catch { /* Expiry and CAS fence a lost coordinator. */ }
+      if (ownsCoordinator) try { await coordinator.releaseCoordinator(outcome); } catch { /* Expiry and CAS fence a lost coordinator. */ }
       metrics.elapsedMs = Math.max(0, Number(now()) - start);
       active = false;
     }

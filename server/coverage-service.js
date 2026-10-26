@@ -299,7 +299,8 @@ function createCoverageRunner({
   concurrency = DEFAULT_CONCURRENCY,
   provider = PROVIDER,
   retrySleep,
-  checkpointStore
+  checkpointStore,
+  onResult = async () => {}
 } = {}) {
   const safeBatchSize = clampInteger(batchSize, DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE);
   const safeConcurrency = clampInteger(concurrency, DEFAULT_CONCURRENCY, 1, MAX_CONCURRENCY);
@@ -421,12 +422,15 @@ function createCoverageRunner({
     let results;
     if (checkpointStore && rows.length) {
       const batch = createCheckpointBatch({ store: checkpointStore,
-        verify: (symbol, providerSymbol) => verifyRow(rows.find(row => row.symbol === symbol && row.provider_symbol === providerSymbol)),
+        verify: async (symbol, providerSymbol) => {
+          const row=rows.find(row => row.symbol === symbol && row.provider_symbol === providerSymbol);
+          const result=await verifyRow(row);await onResult(row,result);return result;
+        },
         apply: (row, result) => repository.saveResults([result], { expectedRows: [row] }) });
       const completed = await batch.run({ runKey: 'coverage-items:' + runKey, rows });
       results = rows.map(row => completed.entries[row.symbol].result);
     } else {
-      results = await mapWithConcurrency(rows, safeConcurrency, verifyRow);
+      results = await mapWithConcurrency(rows, safeConcurrency, async row=>{const result=await verifyRow(row);await onResult(row,result);return result;});
       await repository.saveResults(results, { expectedRows: rows });
     }
     const current = await repository.counts();
@@ -435,23 +439,24 @@ function createCoverageRunner({
     const partial = results.filter(row => row.status === 'partial').length;
     const finishedAt = new Date(Number(now())).toISOString();
     await repository.finishRun({
+      ...current,
       runKey,
       status: 'completed',
       finishedAt,
       attempted: results.length,
       verified,
       temporaryFailed,
-      partial,
-      ...current
+      partial
     });
     return {
+      ...current,
       alreadyCompleted: false,
       runKey,
       attempted: results.length,
       verified,
       temporaryFailed,
       partial,
-      ...current,
+      coverageCounts: current,
       finishedAt
     };
   }

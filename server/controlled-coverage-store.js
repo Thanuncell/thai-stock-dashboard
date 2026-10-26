@@ -107,7 +107,7 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
       if (row.run_key !== runKey || row.status !== 'running' || validate(row).owner !== owner) throw stopped('CLAIM_UNCERTAIN');
     } else {
       row = await read(runKey);
-      if (row.status === 'completed') return { alreadyCompleted: true, summary: {
+      if (row.status === 'completed' && runKey !== CONTROL_KEY) return { alreadyCompleted: true, summary: {
         currentVerified: row.current_verified, technicalReady: row.technical_ready } };
       const old = validate(row);
       if (row.batch_size !== batchSize || row.concurrency !== concurrency) throw stopped('JOB_INPUT_CONFLICT');
@@ -139,9 +139,9 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
   };
   async function metadata() { return structuredClone(validate(await current()).metadata || {}); }
   async function updateMetadata(patch) {
-    const allowed = new Set(['day','reservations','activeJob','providerFailures','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks']);
+    const allowed = new Set(['day','reservations','activeJob','providerFailures','failedSecurities','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks']);
     if (!patch || Object.keys(patch).some(key => !allowed.has(key))) throw stopped('INVALID_METADATA');
-    for (const key of ['reservations','providerFailures']) if (patch[key] !== undefined && (!Number.isSafeInteger(patch[key]) || patch[key] < 0 || patch[key] > 100000)) throw stopped('INVALID_METADATA');
+    for (const key of ['reservations','providerFailures','failedSecurities']) if (patch[key] !== undefined && (!Number.isSafeInteger(patch[key]) || patch[key] < 0 || patch[key] > 100000)) throw stopped('INVALID_METADATA');
     if (patch.activeJob != null && !KEY.test(patch.activeJob)) throw stopped('INVALID_METADATA');
     for (const key of ['day','session']) if (patch[key] !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(patch[key])) throw stopped('INVALID_METADATA');
     if (patch.mode !== undefined && !['coverage','eod'].includes(patch.mode)) throw stopped('INVALID_METADATA');
@@ -184,6 +184,13 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
     });
     held = null;
   }
+  async function releaseCoordinator(outcome) {
+    if (!held || held.key!==CONTROL_KEY || !['completed','failed'].includes(outcome)) throw stopped('INVALID_CONTROL');
+    const row=await current(),state=validate(row),finishedAt=new Date(Number(now())).toISOString();
+    await cas(row,{...state,phase:'completed',leaseUntil:finishedAt,metadata:{...state.metadata,lastOutcome:outcome}},
+      {status:'completed',finished_at:finishedAt,failure_reason:null});
+    held=null;
+  }
   async function control(runKey, phase) {
     if (!['paused', 'stopped'].includes(phase)) throw stopped('INVALID_CONTROL');
     const row = await read(runKey), state = validate(row);
@@ -210,13 +217,13 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
   async function status(runKey) {
     const row = await read(runKey), state = validate(row);
     const entries = Object.values(state.documents['coverage-items:' + runKey]?.entries || {});
-    return { runKey, phase: state.phase, attempted: entries.length, mode: state.metadata?.mode || 'coverage', session: state.metadata?.session || runKey.split(':')[2],
+    return { runKey, phase: state.phase, ...(runKey===CONTROL_KEY?{role:'coordinator',lockReleased:state.phase==='completed',lastOutcome:state.metadata?.lastOutcome||null}:{}), attempted: entries.length, mode: state.metadata?.mode || 'coverage', session: state.metadata?.session || runKey.split(':')[2],
       applied: entries.filter(entry => entry.status === 'applied').length,
       metrics: state.metadata?.metrics || null,
       metricsScope: 'before-finalization',
       requiresReconciliation: entries.some(entry => entry.status === 'inflight'), schedulerEnabled: false };
   }
-  return { configured, beginRun, checkpointStore, finishRun, failRun, control, reconcile, status, enabled,
+  return { configured, beginRun, checkpointStore, finishRun, failRun, releaseCoordinator, control, reconcile, status, enabled,
     assertActive: current, metadata, updateMetadata, metrics, runType: RUN_TYPE };
 }
 
