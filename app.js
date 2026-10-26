@@ -80,10 +80,18 @@ let watchNewsPage = initialNavigation.route === 'watchlist' ? initialNavigation.
 const newsAnalyses = new Map();
 let newsAnalysisPending = false;
 let watchlistNewsRequestId = 0;
+let watchlistNewsScope = '';
+let watchlistNewsState = 'idle';
+let watchlistNewsFetchedAt = 0;
+let watchlistNewsController = null;
+let watchlistNewsPendingScope = '';
 let archiveNewsRequestId = 0;
 let searchTimer;
 let newsSearchTimer;
 let searchSequence = 0;
+let searchQuery = '';
+let searchItems = [];
+let searchPending = false;
 let currentRange = initialNavigation.route === 'chart' ? initialNavigation.range : '1D';
 const chartIndicators = new Set(['sma20', 'ema20', 'ema50', 'macd']);
 let chartLoadState = 'loading';
@@ -163,6 +171,13 @@ function clearPrivateState() {
   unreadAlerts = 0;
   latestWatchlistNews = [];
   watchlistNewsRequestId += 1;
+  watchlistNewsController?.abort();
+  watchlistNewsController = null;
+  watchlistNewsPendingScope = '';
+  watchlistNewsScope = '';
+  watchlistNewsState = 'idle';
+  watchlistNewsFetchedAt = 0;
+  hideSuggestions();
   watchlistQuery = '';
   watchNewsPage = 1;
   marketRequestSequence.begin();
@@ -909,7 +924,7 @@ function showSuggestions(items, message = '') {
   if (message) {
     box.innerHTML = `<div class="suggestion-message">${escapeHtml(message)}</div>`;
   } else if (!items.length) {
-    box.innerHTML = '<div class="suggestion-message">ไม่พบหุ้นที่ตรงกันในข้อมูล Yahoo Finance</div>';
+    box.innerHTML = '<div class="suggestion-message">ไม่พบหุ้นที่ตรงกับคำค้น</div>';
   } else {
     box.innerHTML = items.map(item => `<button class="suggestion-item" type="button" role="option" data-symbol="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name)}">
       <span class="suggestion-ticker">${escapeHtml(item.symbol)}</span><span class="suggestion-name">${escapeHtml(item.name)}</span><small>${escapeHtml(item.exchange)} · เลือกเพื่อดูกราฟ</small>
@@ -917,20 +932,36 @@ function showSuggestions(items, message = '') {
   }
   box.classList.add('visible');
 }
-function hideSuggestions() { $('#symbol-suggestions').classList.remove('visible'); }
+function hideSuggestions() {
+  clearTimeout(searchTimer);searchSequence++;searchQuery='';searchItems=[];searchPending=false;
+  const box=$('#symbol-suggestions');if(box){box.classList.remove('visible');box.innerHTML='';}
+}
 async function searchStocks(query) {
   const sequence = ++searchSequence;
+  const identity=capturePrivateIdentity();
+  searchQuery=query.trim().toUpperCase();searchItems=[];searchPending=true;
   if (!query.trim()) { hideSuggestions(); return; }
   showSuggestions([], 'กำลังค้นหาหุ้น…');
   try {
     const response = await apiFetch(`/api/search?q=${encodeURIComponent(query.trim())}`);
     const data = await response.json();
-    if (sequence !== searchSequence) return;
+    if (sequence !== searchSequence || !isCurrentPrivateIdentity(identity) || $('#stock-search').value.trim().toUpperCase()!==searchQuery) return;
     if (!response.ok) throw new Error(data.error || 'ค้นหาหุ้นไม่สำเร็จ');
-    showSuggestions(data.items || []);
+    searchItems=Array.isArray(data.items)?data.items:[];
+    showSuggestions(searchItems);
   } catch (error) {
-    if (sequence === searchSequence) showSuggestions([], error.message || 'ค้นหาหุ้นไม่สำเร็จ');
+    if (sequence === searchSequence && isCurrentPrivateIdentity(identity)) showSuggestions([], error.message || 'ค้นหาหุ้นไม่สำเร็จ');
+  } finally {
+    if(sequence===searchSequence)searchPending=false;
   }
+}
+async function selectExactSearch() {
+  const query=$('#stock-search').value.trim().toUpperCase();
+  if(!query)return;
+  if(searchPending || searchQuery!==query){hideSuggestions();await searchStocks(query);}
+  if(searchPending || searchQuery!==query || $('#stock-search').value.trim().toUpperCase()!==query)return;
+  const exact=searchItems.find(item=>item.symbol.toUpperCase()===query.replace(/\.BK$/,''));
+  if(exact)selectStock(exact.symbol,exact.name);
 }
 async function selectStock(symbol, name = symbol) {
   symbol = String(symbol || '').trim().toUpperCase().replace(/\.BK$/, '');
@@ -1316,34 +1347,49 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
     watchNewsPage = 1;
     if (document.body.dataset.workspacePage === 'watchlist') writeNavigation('push', 'watchlist');
   }
+  const scope=currentWatchlistNewsScope();
+  if(watchlistNewsPendingScope===scope&&reason!=='manual')return;
   const requestId = ++watchlistNewsRequestId;
-  const root = $('#watchlist-news-list');
+  watchlistNewsController?.abort();
+  watchlistNewsController=null;
+  if(watchlistNewsScope!==scope){latestWatchlistNews=[];watchlistNewsFetchedAt=0;}
+  watchlistNewsScope=scope;
   const symbols = watchlist.map(item => item.symbol).filter(Boolean);
   if (!symbols.length) {
     latestWatchlistNews = [];
+    watchlistNewsState='empty';watchlistNewsPendingScope='';
     const refresh = $('#refresh-watchlist-news');
     if (refresh) { refresh.disabled = false; refresh.classList.remove('is-loading'); }
     renderWatchlistNews();
     return;
   }
   const button = $('#refresh-watchlist-news');
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  watchlistNewsController=controller;watchlistNewsPendingScope=scope;watchlistNewsState='loading';
+  renderWatchlistNews();
   if (button) { button.disabled = true; button.classList.add('is-loading'); }
   try {
     const stockQuery = encodeURIComponent(JSON.stringify(watchlist.map(item => ({ symbol: item.symbol, name: item.name || item.symbol }))));
-    const response = await apiFetch(`/api/watchlist-news?stocks=${stockQuery}`);
+    const response = await apiFetch(`/api/watchlist-news?stocks=${stockQuery}${reason==='manual'?'&refresh=1':''}`,controller?{signal:controller.signal}:undefined);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
-    if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId) return;
-    latestWatchlistNews = data.items || [];
+    if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId || scope!==currentWatchlistNewsScope()) return;
+    if(!Array.isArray(data.items)||data.dataState==='unavailable')throw Error('Invalid Watchlist News response');
+    latestWatchlistNews = data.items;
+    watchlistNewsFetchedAt=Number.isFinite(Date.parse(data.fetchedAt))?Math.min(Date.now(),Date.parse(data.fetchedAt)):Date.now();
+    watchlistNewsState=data.stale||data.dataState==='stale'?'stale':data.items.length?'fresh':'empty';
     renderWatchlistNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
   } catch (_) {
-    if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId) return;
-    if (root) root.innerHTML = '<div class="news-item"><div class="news-title">โหลดข่าวไม่สำเร็จ ระบบจะลองใหม่อัตโนมัติ หรือกดปุ่มด้านบนเพื่อลองอีกครั้ง</div></div>';
-    const pager = $('#watchlist-news-pager');
-    if (pager) pager.hidden = true;
+    if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId || scope!==currentWatchlistNewsScope()) return;
+    if(Date.now()-watchlistNewsFetchedAt>30*60000)latestWatchlistNews=[];
+    watchlistNewsState=latestWatchlistNews.length?'stale':'error';
+    renderWatchlistNews();
   } finally {
-    if (isCurrentPrivateIdentity(identity) && requestId === watchlistNewsRequestId && button) { button.disabled = false; button.classList.remove('is-loading'); }
+    if (isCurrentPrivateIdentity(identity) && requestId === watchlistNewsRequestId) {
+      watchlistNewsController=null;watchlistNewsPendingScope='';
+      if(button){button.disabled = false; button.classList.remove('is-loading');}
+    }
   }
 }
 async function analyzeNewsBriefs(items) {
@@ -1447,6 +1493,9 @@ function renderNewsItemsInto(root, items, emptyText) {
 function watchlistEmptyText() {
   return watchlist.length ? 'ยังไม่มีข่าวของหุ้นในรายการติดตาม' : 'ยังไม่มีหุ้นในรายการติดตาม';
 }
+function currentWatchlistNewsScope(){
+  return JSON.stringify([userStorageScope,activeWatchlistId,watchlist.map(item=>[item.symbol,item.name||item.symbol]).sort((a,b)=>a[0].localeCompare(b[0]))]);
+}
 function scrollToSection(selector) {
   const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const target = $(selector);
@@ -1459,10 +1508,21 @@ function renderWatchlistNews() {
   if (!isCurrentPrivateIdentity()) return;
   const root = $('#watchlist-news-list');
   if (!root) return;
+  const sameScope=watchlistNewsScope===currentWatchlistNewsScope();
+  const state=sameScope?watchlistNewsState:watchlist.length?'loading':'empty';
+  root.dataset.state=state;
+  if(!sameScope||!latestWatchlistNews.length){
+    const message=state==='loading'?'กำลังโหลดข่าวของหุ้นในรายการติดตาม…':state==='error'?'โหลดข่าวไม่สำเร็จ กรุณาลองอัปเดตอีกครั้ง':watchlistEmptyText();
+    renderNewsItemsInto(root,[],message);const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
+  }
   const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
   watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
+  if(state==='loading'||state==='stale'){
+    const notice=document.createElement('div');notice.className='news-title';notice.setAttribute('role','status');
+    notice.textContent=state==='loading'?'กำลังอัปเดตข่าว…':'แสดงข่าวล่าสุดที่โหลดไว้ · ข้อมูลอาจยังไม่เป็นปัจจุบัน';root.prepend(notice);
+  }
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
     watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToPageTop();
   });
@@ -1636,28 +1696,24 @@ function setupUiEventWiring() {
     document.querySelectorAll('.movers-tabs button').forEach(item => item.classList.remove('selected'));
     button.classList.add('selected'); moverMode = ['up', 'down', 'volume'][index]; renderMovers(latestMarket?.stocks || []);
   }));
-  $('#view-stock').addEventListener('click', () => {
-    const first = $('.suggestion-item');
-    if (first) selectStock(first.dataset.symbol, first.dataset.name);
-    else if ($('#stock-search').value.trim()) selectStock($('#stock-search').value.trim());
-  });
+  $('#view-stock').addEventListener('click', selectExactSearch);
   $('#stock-search').addEventListener('input', event => {
-    clearTimeout(searchTimer);
+    hideSuggestions();
     const query = event.target.value.trim();
     if (!query) { hideSuggestions(); return; }
-    searchTimer = setTimeout(() => searchStocks(query), 280);
+    showSuggestions([], 'กำลังค้นหาหุ้น…');searchTimer = setTimeout(() => searchStocks(query), 280);
   });
   $('#stock-search').addEventListener('keydown', event => {
     if (event.key === 'Escape') hideSuggestions();
     if (event.key === 'Enter') {
-      const first = $('.suggestion-item');
-      if (first) { event.preventDefault(); selectStock(first.dataset.symbol, first.dataset.name); }
-      else if (/^[A-Z0-9&.-]{1,20}$/i.test(event.target.value.trim())) { event.preventDefault(); selectStock(event.target.value.trim()); }
+      event.preventDefault();selectExactSearch();
     }
   });
   $('#symbol-suggestions').addEventListener('click', event => {
     const result = event.target.closest('.suggestion-item');
-    if (result) selectStock(result.dataset.symbol, result.dataset.name);
+    if (result && searchQuery===$('#stock-search').value.trim().toUpperCase()) {
+      const selected=searchItems.find(item=>item.symbol===result.dataset.symbol);if(selected)selectStock(selected.symbol,selected.name);
+    }
   });
   document.addEventListener('click', event => {
     if (!event.target.closest('.stock-search-wrap')) hideSuggestions();

@@ -63,25 +63,29 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     return result;
   }
 
-  async function search(query) {
-    const items = await searchOnce(query);
+  async function search(query, { allowSuffixFallback = true, signal } = {}) {
+    signal?.throwIfAborted();
+    const items = await searchOnce(query, signal);
+    signal?.throwIfAborted();
     const canonical = String(query || '').trim().toUpperCase();
     // Ambiguous short tickers can be crowded out by foreign equities in Yahoo's first page.
-    if (!items.length && /^[A-Z0-9&.-]{1,20}$/.test(canonical) && !canonical.endsWith('.BK')) {
-      return searchOnce(`${canonical}.BK`);
+    if (allowSuffixFallback && !items.length && /^[A-Z0-9&.-]{1,20}$/.test(canonical) && !canonical.endsWith('.BK')) {
+      return searchOnce(`${canonical}.BK`, signal);
     }
     return items;
   }
 
-  async function searchOnce(query) {
+  async function searchOnce(query, signal) {
+    signal?.throwIfAborted();
     const endpoint = new URL('https://query1.finance.yahoo.com/v1/finance/search');
     endpoint.searchParams.set('q', query);
     endpoint.searchParams.set('quotesCount', '20');
     endpoint.searchParams.set('newsCount', '0');
     const response = await fetchImpl(endpoint, {
       headers: { 'user-agent': 'Mozilla/5.0 SETscope stock search', accept: 'application/json' },
-      signal: AbortSignal.timeout(9000)
+      signal: signal ? AbortSignal.any([signal,AbortSignal.timeout(9000)]) : AbortSignal.timeout(9000)
     });
+    signal?.throwIfAborted();
     if (!response.ok) {
       const stopped = [401,403,429].includes(response.status);
       throw Object.assign(Error(`Yahoo Finance search HTTP ${response.status}`), {
@@ -89,6 +93,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       });
     }
     const body = await response.json();
+    signal?.throwIfAborted();
     return (body.quotes || [])
       .filter(quote => /\.BK$/i.test(quote.symbol || '') && quote.quoteType === 'EQUITY')
       .slice(0, 12)

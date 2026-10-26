@@ -33,8 +33,9 @@ const PROVIDER_POLICIES = Object.freeze({
   })
 });
 
-function createWatchlistNewsCacheKey(stocks = []) {
-  return `wn:${JSON.stringify(stocks.map(item => [String(item.symbol || ''), String(item.name || '')]))}`;
+function createWatchlistNewsCacheKey(stocks = [], ownerId = '') {
+  const owner=ownerId?require('node:crypto').createHash('sha256').update(String(ownerId)).digest('hex')+':':'';
+  return `wn:${owner}${JSON.stringify(stocks.map(item => [String(item.symbol || ''), String(item.name || '')]))}`;
 }
 
 function createMemoryCache({ maxEntries = 200, now = Date.now } = {}) {
