@@ -91,7 +91,16 @@ function createCheckpointBatch({ store, verify, apply }) {
           checkpoint.entries[row.symbol] = { status: 'inflight' };
           await store.save(runKey, checkpoint);
           // No automatic replay after an interrupted or denied provider operation.
-          const result = await verify(row.symbol, row.provider_symbol);
+          let result;
+          try { result = await verify(row.symbol, row.provider_symbol); }
+          catch (error) {
+            // Only the caller can prove a provider operation did not start.
+            if (error.notStarted === true) {
+              delete checkpoint.entries[row.symbol];
+              await store.save(runKey, checkpoint);
+            }
+            throw error;
+          }
           if (!result || typeof result !== 'object') throw Error('Missing verification evidence');
           entry = { status: 'checked', result };
           checkpoint.entries[row.symbol] = entry;

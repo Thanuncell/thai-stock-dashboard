@@ -95,6 +95,14 @@ test.after(async () => {
   await new Promise(resolve => server.close(resolve));
 });
 
+test('manual automation is separately authorized and does not start from health or a user session', async () => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const before = upstreamCalls.length;
+  assert.equal((await request(base, '/healthz')).status, 200);
+  assert.equal((await request(base, '/api/automation/manual', { method: 'POST', headers: { authorization: 'Bearer ordinary-user-token' } })).status, 401);
+  assert.equal(upstreamCalls.length, before);
+});
+
 test('health and static responses have strict security headers without invalid CORS', async () => {
   const base = `http://127.0.0.1:${server.address().port}`;
   const health = await request(base, '/healthz');

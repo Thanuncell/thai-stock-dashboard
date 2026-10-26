@@ -82,10 +82,14 @@ function createMemoryCache({ maxEntries = 200, now = Date.now } = {}) {
     const startedAt = now();
     const task = Promise.resolve().then(load).then(value => {
       const createdAt = now();
-      failures.delete(key);
-      remember(key, { value, createdAt, expiresAt: createdAt + policy.ttlMs });
+      // A manual refresh can detach an old load while its response is in flight.
+      if (pending.get(key) === task) {
+        failures.delete(key);
+        remember(key, { value, createdAt, expiresAt: createdAt + policy.ttlMs });
+      }
       return { value, meta: { status: 'miss', staleAgeMs: 0, loadDurationMs: Math.max(0, createdAt - startedAt) } };
     }).catch(error => {
+      if (pending.get(key) !== task) throw error;
       const fallback = entries.get(key);
       const staleDeadline = fallback ? fallback.expiresAt + policy.staleIfErrorMs : 0;
       if (fallback && policy.staleIfErrorMs > 0 && now() <= staleDeadline) {
@@ -99,13 +103,18 @@ function createMemoryCache({ maxEntries = 200, now = Date.now } = {}) {
       }
       if (policy.errorBackoffMs > 0) failures.set(key, { error, retryAt: now() + policy.errorBackoffMs });
       throw error;
-    }).finally(() => pending.delete(key));
+    }).finally(() => { if (pending.get(key) === task) pending.delete(key); });
     pending.set(key, task);
     return task;
   }
 
   return {
     get,
+    invalidate(predicate) {
+      for (const key of new Set([...entries.keys(), ...pending.keys(), ...failures.keys()])) {
+        if (predicate(key)) { entries.delete(key); pending.delete(key); failures.delete(key); }
+      }
+    },
     delete(key) { entries.delete(key); },
     clear() { entries.clear(); pending.clear(); failures.clear(); },
     size() { return entries.size; },
