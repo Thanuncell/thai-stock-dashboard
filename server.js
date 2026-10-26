@@ -8,6 +8,8 @@ const { URL } = require('node:url');
 const { normalizeMarketSymbols, normalizeSymbol, normalizeWatchlistNewsStocks, normalizeWatchlistsPayload } = require('./lib/validation');
 const { createAuthService } = require('./server/auth-service');
 const { createCoverageRepository } = require('./server/coverage-service');
+const { createControlledCoverage, createManualCoverageHandler } = require('./server/controlled-coverage');
+const { invalidateVerifiedMarket } = require('./server/market-refresh');
 const { createMarketOverviewService } = require('./server/market-overview-service');
 const { createSettradeProvider } = require('./server/market-overview-providers/settrade');
 const { createMarketService } = require('./server/market-service');
@@ -124,6 +126,10 @@ const providerFetch = observability.observedFetch(globalThis.fetch);
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
+const manualCoverageHandler = createManualCoverageHandler({
+  controller: createControlledCoverage({ fetchImpl: providerFetch,
+    onVerified: (symbol, verification) => invalidateVerifiedMarket(responseCache, symbol, verification) }), readJson, send
+});
 const newsService = createNewsService({ fetchImpl: providerFetch });
 const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch });
 const settradeProvider = createSettradeProvider({ fetchImpl: providerFetch });
@@ -246,6 +252,7 @@ async function handle(req, res) {
     return send(res, 429, { error: 'คำขอถี่เกินไป กรุณารอสักครู่' });
   }
   if (url.pathname === '/api/auth-config') return send(res, 200, authService.configPayload());
+  if (url.pathname === '/api/automation/manual') return manualCoverageHandler(req, res);
 
   const user = url.pathname.startsWith('/api/') ? await authService.requireUser(req, res) : null;
   if (url.pathname.startsWith('/api/') && !user) return;

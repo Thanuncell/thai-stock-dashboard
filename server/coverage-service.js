@@ -159,6 +159,16 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     return response.json();
   }
 
+  async function listCandidates() {
+    const response = await request('security_coverage?select=symbol,provider_symbol,provider,symbol_verified,chart_ready,technical_ready,status,last_verified_at,last_success_at,last_checked_at,failure_count,active,guard_status,guard_reason&order=symbol&limit=1000',
+      { headers: { Prefer: 'count=exact' } });
+    const rows = await response.json();
+    const total = String(response.headers.get('content-range') || '').match(/\/(\d+)$/);
+    if (!Array.isArray(rows) || rows.length > 1000 || rows.length === 1000 && !total
+      || total && Number(total[1]) !== rows.length) throw Error('Incomplete bounded registry snapshot');
+    return rows;
+  }
+
   async function findRun(runKey) {
     const params = new URLSearchParams({ select: '*', run_key: `eq.${runKey}`, limit: '1' });
     const response = await request(`coverage_runs?${params}`);
@@ -261,7 +271,7 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
     });
   }
 
-  return { beginRun, configured, counts, finishRun, listBatch, saveResults, seedSymbols, summary };
+  return { beginRun, configured, counts, finishRun, listBatch, listCandidates, saveResults, seedSymbols, summary };
 }
 
 async function mapWithConcurrency(items, limit, mapper) {

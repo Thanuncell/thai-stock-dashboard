@@ -124,7 +124,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       technicalReady: chartReady && value.history.length >= 30,
       guardStatus: value.guardStatus,
       guardReason: value.guardReasons[0] || null,
-      asOf: value.time ? new Date(value.time).toISOString() : null
+      asOf: value.time ? new Date(value.time).toISOString() : null,
+      historyAsOf: value.history.at(-1)?.time ? new Date(value.history.at(-1).time).toISOString() : null
     };
   }
 
