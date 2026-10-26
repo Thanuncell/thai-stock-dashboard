@@ -139,10 +139,22 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
   };
   async function metadata() { return structuredClone(validate(await current()).metadata || {}); }
   async function updateMetadata(patch) {
-    const allowed = new Set(['day','reservations','activeJob','providerFailures','failedSecurities','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks']);
+    const allowed = new Set(['day','reservations','activeJob','providerFailures','failedSecurities','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks','manualBatch']);
     if (!patch || Object.keys(patch).some(key => !allowed.has(key))) throw stopped('INVALID_METADATA');
     for (const key of ['reservations','providerFailures','failedSecurities']) if (patch[key] !== undefined && (!Number.isSafeInteger(patch[key]) || patch[key] < 0 || patch[key] > 100000)) throw stopped('INVALID_METADATA');
     if (patch.activeJob != null && !KEY.test(patch.activeJob)) throw stopped('INVALID_METADATA');
+    if(patch.manualBatch!==undefined){
+      if(!patch.manualBatch||!['running','completed','stopped'].includes(patch.manualBatch.phase)
+        ||!Number.isInteger(patch.manualBatch.next)||patch.manualBatch.next<0||patch.manualBatch.next>4
+        ||Buffer.byteLength(JSON.stringify(patch.manualBatch))>16384)throw stopped('INVALID_METADATA');
+      const b=patch.manualBatch;
+      if(Object.keys(b).some(k=>!['version','id','day','targets','runKeys','initialReservations','fingerprint','next','phase'].includes(k))
+        ||!Array.isArray(b.targets)||b.targets.length!==20||b.targets.some(r=>!r||Object.keys(r).some(k=>!['symbol','provider_symbol','provider','active'].includes(k))
+          ||!/^[A-Z0-9&.-]{1,20}$/.test(r.symbol)||r.provider_symbol!==r.symbol+'.BK'||r.provider!=='Yahoo Finance'||r.active!==true)
+        ||!Array.isArray(b.runKeys)||b.runKeys.length!==4||b.runKeys.some(k=>!KEY.test(k))
+        ||!/^\d{1,15}$/.test(b.id||'')||!/^\d{4}-\d\d-\d\d$/.test(b.day||'')||!Number.isSafeInteger(b.initialReservations)
+        ||b.version!==1||!/^[a-f0-9]{64}$/.test(b.fingerprint||''))throw stopped('INVALID_METADATA');
+    }
     for (const key of ['day','session']) if (patch[key] !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(patch[key])) throw stopped('INVALID_METADATA');
     if (patch.mode !== undefined && !['coverage','eod'].includes(patch.mode)) throw stopped('INVALID_METADATA');
     if (patch.reason != null && !/^[A-Z_]{1,60}$/.test(patch.reason)) throw stopped('INVALID_METADATA');
@@ -224,7 +236,7 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
       requiresReconciliation: entries.some(entry => entry.status === 'inflight'), schedulerEnabled: false };
   }
   return { configured, beginRun, checkpointStore, finishRun, failRun, releaseCoordinator, control, reconcile, status, enabled,
-    assertActive: current, metadata, updateMetadata, metrics, runType: RUN_TYPE };
+    assertActive: current, inspect: async key=>structuredClone(await read(key)), metadata, updateMetadata, metrics, runType: RUN_TYPE };
 }
 
 module.exports = { createControlledCoverageStore, KEY, CONTROL_KEY, LEASE_MS, stopped };
