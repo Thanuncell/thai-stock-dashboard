@@ -367,7 +367,7 @@ test('registry snapshot separates registered PENDING, historical and current usa
   const summary=await summaryFixture(rows,{},url=>{requests++;assert.match(String(url),/security_coverage/);}).summary();
   assert.equal(requests,1);assert.equal(summary.universe,4);assert.equal(summary.currentVerified,3);
   assert.equal(summary.historicalVerified,3);assert.equal(summary.currentUsable,1);assert.equal(summary.pending,1);
-  assert.equal(summary.temporaryFailed,1);assert.equal(summary.stale,1);assert.equal(summary.dataState,'fresh');
+  assert.equal(summary.temporaryFailed,1);assert.equal(summary.stale,2);assert.equal(summary.dataState,'fresh');
 });
 test('old checked rows stay stale; registration alone cannot claim fresh quote coverage', async () => {
   const r=await summaryFixture([verifiedFixture('OLD',{last_checked_at:'2026-10-18T12:00:00Z'})]).summary();

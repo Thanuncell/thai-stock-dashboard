@@ -93,14 +93,21 @@ export function toFiniteNumber(value) {
 export function coverageDisplayState(data = {}) {
   const unavailable = reason => ({ ready: false, reason, universe: null, currentVerified: null });
   if (data?.configured !== true) return unavailable('unavailable');
-  if (data.dataState !== 'fresh') return unavailable(data.dataState === 'stale' ? 'stale' : 'unavailable');
+  if (!['fresh','stale'].includes(data.dataState)) return unavailable('unavailable');
   if (data.provider !== 'Yahoo Finance' || !Number.isFinite(Date.parse(data.lastChecked))) return unavailable('invalid');
   const universe = data.universe;
   const currentVerified = Object.hasOwn(data, 'currentUsable') ? data.currentUsable : data.currentVerified;
   if (!Number.isSafeInteger(universe) || universe < 0
     || !Number.isSafeInteger(currentVerified) || currentVerified < 0
     || currentVerified > universe) return unavailable('invalid');
-  return { ready: true, reason: null, universe, currentVerified };
+  const details={};
+  for(const key of ['historicalVerified','retainedUsable','stale','temporaryFailed','confirmedUnavailable']) {
+    if(Object.hasOwn(data,key)) {
+      if(!Number.isSafeInteger(data[key]) || data[key]<0) return unavailable('invalid');
+      details[key]=data[key];
+    }
+  }
+  return { ready: true, reason: data.dataState==='stale'?'stale':null, universe, currentVerified, ...details };
 }
 
 export function resolveMarketBannerFields(overviewIndex, marketIndex) {
