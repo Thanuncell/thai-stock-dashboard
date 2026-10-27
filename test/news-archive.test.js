@@ -5,6 +5,9 @@ const assert = require('node:assert/strict');
 const navigationPageFixtures = require('./fixtures/news-quality-navigation-pages.json');
 
 const { createNewsArchiveService } = require('../server/news-archive-service');
+const { createNewsService } = require('../server/news-service');
+const { createHash } = require('node:crypto');
+const { newsFingerprint } = require('../lib/broker-news');
 
 function archiveRow(index, overrides = {}) {
   const order = Number.isFinite(Number(index)) ? Number(index) : 999;
@@ -34,6 +37,43 @@ function rangeResponse(rows, init) {
     }
   });
 }
+
+test('re-fetched Feed Rules and missing summaries cannot downgrade persisted AI through archive upsert',async()=>{
+ const timestamp=Date.parse('2026-10-27T12:00:00Z'),url='https://news.google.com/articles/preserved-ai';
+ const fingerprint=createHash('sha256').update(newsFingerprint({url})).digest('hex');
+ const persisted={fingerprint,title:'Old title',url,source:'thunhoon',source_name:'ทันหุ้น',snippet:'Existing source details',published_at:new Date(timestamp).toISOString(),analysis_mode:'ai',analysis_summary:'Persisted verified AI summary'};
+ const calls=[];
+ const archive=createNewsArchiveService({now:()=>timestamp,env:{SUPABASE_URL:'https://fixture.supabase.co',SUPABASE_SECRET_KEY:'sb_secret_synthetic'},fetchImpl:async(value,init={})=>{
+  const endpoint=new URL(value);calls.push({endpoint,init});
+  if(endpoint.pathname.endsWith('/rpc/cleanup_news_archive'))return new Response(null,{status:204});
+  if(init.method==='POST'){
+   assert.equal(endpoint.searchParams.get('on_conflict'),'fingerprint');
+   assert.match(init.headers.Prefer,/resolution=merge-duplicates/);
+   // Model the submitted PostgREST conflict-update columns, including the old unsafe payload.
+   for(const row of JSON.parse(init.body)){
+    assert.equal(row.fingerprint,persisted.fingerprint);
+    const columns=endpoint.searchParams.get('columns')?.split(',')||Object.keys(row);
+    for(const key of columns)persisted[key]=row[key];
+   }
+   return new Response(null,{status:204});
+  }
+  return rangeResponse([persisted],init);
+ }});
+ const feed=createNewsService({now:()=>timestamp,fetchImpl:async()=>new Response(`<rss><channel><item><title>PTT รายงานผลประกอบการล่าสุด</title><link>${url}</link><pubDate>${new Date(timestamp).toUTCString()}</pubDate><description>บริษัทเปิดเผยตัวเลขกำไรและรายละเอียดผลประกอบการล่าสุด</description><source>ทันหุ้น</source></item></channel></rss>`)});
+ const news=await feed.getNews();assert.equal(news.items[0].analysisMode,'rules');
+ for(const item of [news.items[0],{...news.items[0],analysisMode:'',analysisSummary:''},{...news.items[0],analysisMode:'ai',analysisSummary:'Incoming display metadata is not an archive-analysis write'}]){
+  await archive.ingest([item]);assert.equal(persisted.analysis_mode,'ai');assert.equal(persisted.analysis_summary,'Persisted verified AI summary');
+ }
+ assert.equal(persisted.title,news.items[0].title,'metadata still refreshes');
+ const listed=await archive.list();assert.equal(listed.items[0].analysisMode,'ai');assert.equal(listed.items[0].analysisSummary,'Persisted verified AI summary');
+ const writes=calls.filter(call=>call.init.method==='POST'&&!call.endpoint.pathname.includes('/rpc/'));
+ assert.equal(writes.length,3);
+ for(const call of writes){
+  assert.ok(!Object.hasOwn(JSON.parse(call.init.body)[0],'analysis_mode'));
+  assert.ok(!Object.hasOwn(JSON.parse(call.init.body)[0],'analysis_summary'));
+  assert.ok(!call.endpoint.searchParams.get('columns').includes('analysis_'));
+ }
+});
 
 test('archive ingestion is idempotent, bounded and followed by bounded retention cleanup', async () => {
   const calls = [];
@@ -187,7 +227,7 @@ test('archive returns a quality-gated seven-day Featured fallback before paginat
   assert.ok([...first.items, ...second.items].every(item => !featuredKeys.has(item.fingerprint)));
   assert.equal(first.total, rows.length - 2 - first.featured.length, 'invalid date, non-news row and Featured rows are excluded from the Latest total');
   assert.equal(calls, 1, 'Featured and paginated Latest reuse one bounded archive snapshot');
-  assert.equal(first.featured.find(item => item.fingerprint === 'row-1').analysisSummary, 'สรุปที่บันทึกและตรวจสอบแล้ว');
+  assert.equal(first.featured.find(item => item.fingerprint === 'row-1').analysisSummary, 'ข้อความข่าวมีคำสำคัญเกี่ยวกับผลประกอบการ ควรตรวจสอบตัวเลขและรายละเอียดจากข่าวต้นฉบับ');
 });
 
 test('archive Featured fallback keeps source, search, total and persisted-summary validation', async () => {
@@ -211,9 +251,10 @@ test('archive Featured fallback keeps source, search, total and persisted-summar
   assert.equal(result.featured.length, 5);
   assert.equal(result.total, 4);
   assert.ok([...result.featured, ...result.items].every(item => item.source === 'infoquest' && item.title.includes('กำไร')));
-  const unverified = [...result.featured, ...result.items].find(item => item.fingerprint === 'row-22');
-  assert.equal(unverified.analysisSummary, '');
-  assert.equal(unverified.analysisMode, '');
+  const invalidStored = [...result.featured, ...result.items].find(item => item.fingerprint === 'row-22');
+  assert.notEqual(invalidStored.analysisSummary, 'ห้ามนำมาแสดง');
+  assert.equal(invalidStored.analysisSummary, 'ข้อความข่าวมีคำสำคัญเกี่ยวกับผลประกอบการ ควรตรวจสอบตัวเลขและรายละเอียดจากข่าวต้นฉบับ');
+  assert.equal(invalidStored.analysisMode, 'rules');
 });
 
 test('archive fails closed when the persisted dataset exceeds its bounded scan limit', async () => {

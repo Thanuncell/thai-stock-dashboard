@@ -66,12 +66,17 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    await pause(100);assert.equal(state.analysisCalls,calls);
    state.watch='empty';
    state.holdStoredWatch=true;
+   state.holdAnalysis=true;state.releaseAnalysis=null;
    await page.goto(base+'/?symbol=PTT&fixture=stored#news',{waitUntil:'domcontentloaded'});
    await page.waitForFunction(()=>document.querySelector('#news-list')?.textContent.includes('OLD_ARCHIVED_FALLBACK'));
    state.holdStoredWatch=false;state.releaseStoredWatch?.();
    await page.locator('.source-chip[data-source="kaohoon"]').click();
    await page.waitForFunction(()=>document.querySelector('#featured-news')?.textContent.includes('OLD_ARCHIVED_FALLBACK'));
-   assert.match(await page.locator('#featured-news').textContent(),/ไม่ใช่ AI/);
+   assert.match(await page.locator('#featured-news').textContent(),/ประเมินจากคำสำคัญ/);
+   assert.doesNotMatch(await page.locator('#featured-news').textContent(),/ไม่ใช่ AI/);
+   assert.ok(state.releaseAnalysis);state.releaseAnalysis();
+   await page.waitForFunction(()=>document.querySelector('#featured-news')?.textContent.includes('UNIFIED_NEWS_SUMMARY'));
+   assert.match(await page.locator('#featured-news').textContent(),/โดย AI/);
    console.log(JSON.stringify({viewport:label,featuredLatestArchiveIdentity:'PASS',filterReuse:'PASS',analysisPending:'PASS',watchlistStatesAndFallback:'PASS',persistedSummaryReuse:'PASS'}));
    await context.close();
   }

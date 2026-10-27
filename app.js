@@ -33,7 +33,9 @@ import {
   summarizeBreadth,
   toFiniteNumber,
   zoomChartViewport,
-  watchlistNewsViewState
+  watchlistNewsViewState,
+  newsDisplayAnalysis,
+  canRequestNewsAnalysis
 } from './client/domain.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -81,6 +83,9 @@ let newsQuery = initialNavigation.route === 'news' ? initialNavigation.query : '
 let watchNewsPage = initialNavigation.route === 'watchlist' ? initialNavigation.watchPage : 1;
 const newsAnalyses = new Map();
 const pendingNewsAnalysisKeys = new Set();
+const newsAnalysisAttempts = new Map();
+let newsAnalysisCalls = [];
+let newsAnalysisCooldownUntil = 0;
 let newsAnalysisPending = false;
 let newsAnalysisRequestId = 0;
 let watchlistNewsMatchInfo = null;
@@ -177,6 +182,9 @@ function clearPrivateState() {
   latestWatchlistNews = [];
   newsAnalyses.clear();
   pendingNewsAnalysisKeys.clear();
+  newsAnalysisAttempts.clear();
+  newsAnalysisCalls = [];
+  newsAnalysisCooldownUntil = 0;
   newsAnalysisPending = false;
   newsAnalysisRequestId += 1;
   watchlistNewsMatchInfo = null;
@@ -1317,7 +1325,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
     source: activeSource,
     query: newsQuery.trim()
   });
-  const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || '' }));
+  const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))?.summary || '' }));
   const featuredUrls = selectNewsForDisplay(prepared, {
     source: activeSource,
     query: newsQuery.trim(),
@@ -1337,8 +1345,11 @@ async function getArchiveNews({ page = newsPage } = {}) {
     archiveNews = Array.isArray(data.items) ? data.items : [];
     // Use one accepted stored summary across live and archived representations.
     for (const item of [...archiveFeaturedNews, ...archiveNews]) {
-      if (!newsAnalyses.has(newsKey(item)) && !pendingNewsAnalysisKeys.has(newsKey(item))
-        && ['ai', 'rules'].includes(item.analysisMode) && String(item.analysisSummary || '').trim()) {
+      if (['UNVERIFIED', 'REJECTED'].includes(item.verification?.status)) continue;
+      if ((!newsAnalyses.has(newsKey(item)) || (item.analysisMode === 'ai' && newsAnalyses.get(newsKey(item))?.mode !== 'ai'))
+        && (!pendingNewsAnalysisKeys.has(newsKey(item)) || (item.analysisMode === 'ai' && item.verification?.status === 'VERIFIED'))
+        && ['ai', 'rules'].includes(item.analysisMode) && String(item.analysisSummary || '').trim()
+        && (item.analysisMode !== 'ai' || item.verification?.status === 'VERIFIED')) {
         newsAnalyses.set(newsKey(item), {summary:String(item.analysisSummary).trim(),mode:item.analysisMode,basis:'archive'});
       }
     }
@@ -1422,50 +1433,70 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
 }
 async function analyzeNewsBriefs(items) {
   if (!isCurrentPrivateIdentity() || newsAnalysisPending || !items.length) return;
+  const timestamp = Date.now();
+  if (!canRequestNewsAnalysis(timestamp, newsAnalysisCalls, newsAnalysisCooldownUntil)) return;
   const fresh = [...new Map(items.map(item => [newsKey(item), item])).values()]
-    .filter(item => !newsAnalyses.has(newsKey(item))).slice(0, 8);
+    .filter(item => !['UNVERIFIED', 'REJECTED'].includes(item.verification?.status)
+      && newsAnalyses.get(newsKey(item))?.mode !== 'ai'
+      && (newsAnalysisAttempts.get(newsKey(item)) || 0) <= timestamp).slice(0, 8);
   if (!fresh.length) return;
   newsAnalysisPending = true;
   const requestId = ++newsAnalysisRequestId;
   const analysisIdentity = capturePrivateIdentity();
-  fresh.forEach(item => pendingNewsAnalysisKeys.add(newsKey(item)));
+  newsAnalysisCalls = newsAnalysisCalls.filter(time => timestamp - time < 60000);
+  newsAnalysisCalls.push(timestamp);
+  fresh.forEach(item => {pendingNewsAnalysisKeys.add(newsKey(item));newsAnalysisAttempts.set(newsKey(item),timestamp+5*60000);});
+  while (newsAnalysisAttempts.size > 500) newsAnalysisAttempts.delete(newsAnalysisAttempts.keys().next().value);
   renderNews();
   renderWatchlistNews();
   const targets = fresh.map(item => ({ source: item.sourceName || item.source || '', title: String(item.title || '').slice(0, 300), url: item.url, snippet: String(item.snippet || '').slice(0, 1200), verification: item.verification }));
   try {
     const response = await apiFetch('/api/news-analysis', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: targets }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'วิเคราะห์ข่าวไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(analysisIdentity)) return;
+    if (response.status === 429) {
+      const seconds = Number(response.headers.get('retry-after'));
+      newsAnalysisCooldownUntil = Date.now() + (Number.isFinite(seconds) && seconds > 0 ? Math.min(300,Math.max(60,seconds))*1000 : 60000);
+      fresh.forEach(item => newsAnalysisAttempts.set(newsKey(item),newsAnalysisCooldownUntil));
+    }
+    const data = await response.json();
+    if (!isCurrentPrivateIdentity(analysisIdentity)) return;
+    if (!response.ok) throw new Error(data.error || 'วิเคราะห์ข่าวไม่สำเร็จ');
     fresh.forEach((item, index) => {
       const result = data.items?.[index];
       const mode = ['ai', 'rules'].includes(result?.mode) && typeof result.summary === 'string' && result.summary.trim() ? result.mode : 'unavailable';
+      const current = newsAnalyses.get(newsKey(item));
+      const prior = newsDisplayAnalysis(item,current);
+      if (mode !== 'ai' && prior?.mode === 'ai' && (current?.mode === 'ai' || item.verification?.status === 'VERIFIED')) {
+        newsAnalyses.set(newsKey(item),prior);
+        return;
+      }
       newsAnalyses.set(newsKey(item), { summary: mode === 'unavailable' ? '' : result.summary, mode, basis: result?.basis || 'headline' });
     });
   } catch (_) {
-    if (isCurrentPrivateIdentity(analysisIdentity)) fresh.forEach(item => newsAnalyses.set(newsKey(item), { summary: '', mode: 'unavailable', basis: 'headline' }));
+    if (isCurrentPrivateIdentity(analysisIdentity)) fresh.forEach(item => {
+      if (!newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))) newsAnalyses.set(newsKey(item), { summary: '', mode: 'unavailable', basis: 'headline' });
+    });
   } finally {
     if (requestId !== newsAnalysisRequestId) return;
     fresh.forEach(item => pendingNewsAnalysisKeys.delete(newsKey(item)));
     newsAnalysisPending = false;
     renderNews();
     renderWatchlistNews();
-    if (isCurrentPrivateIdentity() && [...latestNews, ...latestWatchlistNews].some(item => !newsAnalyses.has(newsKey(item)))) queueMicrotask(() => analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]));
+    // Another attempt requires a later user/data event; never drain the archive or retry on a timer.
   }
 }
 function renderNewsItem(item, options = {}) {
   const relatedSymbols = item.matchedSymbols || [];
-  const analysis = newsAnalyses.get(newsKey(item));
-  const persistedSummary = ['ai', 'rules'].includes(item.analysisMode) ? String(item.analysisSummary || '').trim() : '';
-  const summary = analysis ? analysis.summary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้' : persistedSummary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้';
-  const analysisMode = analysis ? analysis.summary ? analysis.mode : 'unavailable' : persistedSummary ? item.analysisMode : 'unavailable';
-  const mood = analysisMode === 'unavailable' ? 'ยังไม่ประเมิน' : options.mood || sentimentHeadline(item.title || '');
+  const analysis = newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)));
+  const summary = analysis?.summary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้';
+  const analysisMode = analysis?.mode || 'unavailable';
+  const mood = options.mood || sentimentHeadline(item.title || '');
   const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
   const mode = pendingNewsAnalysisKeys.has(newsKey(item)) && !analysis
     ? 'กำลังตรวจสอบบทสรุป…'
     : analysisMode === 'ai'
       ? `โดย AI · ${analysis?.basis === 'archive' ? 'บทสรุปที่บันทึกไว้' : analysis?.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis?.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
-      : analysisMode === 'rules' ? 'ประเมินจากคำสำคัญ (ไม่ใช่ AI)' : 'สรุปไม่พร้อม';
+      : analysisMode === 'rules' ? 'ประเมินจากคำสำคัญ' : 'สรุปไม่พร้อม';
   const article = document.createElement('article');
   article.className = 'news-item';
   const content = document.createElement('div');
@@ -1596,7 +1627,7 @@ function renderPagerInto(bar, current, total, count, onPick) {
 }
 function renderNews() {
   const query = newsQuery.trim().toLocaleLowerCase('th');
-  const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || '' }));
+  const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))?.summary || '' }));
   const { filtered: all, featured: liveFeatured, latest: liveLatest } = selectNewsForDisplay(prepared, {
     source: activeSource,
     query,
@@ -1605,7 +1636,7 @@ function renderNews() {
   });
   const archiveFeatured = archiveFeaturedNews.map(item => ({
     ...item,
-    analysisSummary: newsAnalyses.get(newsKey(item))?.summary || item.analysisSummary || ''
+    analysisSummary: newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))?.summary || ''
   }));
   const featured = liveFeatured.length ? liveFeatured : selectNewsForDisplay(archiveFeatured, {
     source: activeSource,
@@ -1614,7 +1645,7 @@ function renderNews() {
     sourceTier: SOURCE_TIER
   }).featured;
   const featuredKeys = new Set(featured.map(newsKey));
-  const archived = archiveNews.map(item => ({ ...item, analysisSummary: newsAnalyses.get(newsKey(item))?.summary || item.analysisSummary || '' }))
+  const archived = archiveNews.map(item => ({ ...item, analysisSummary: newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))?.summary || '' }))
     .filter(item => !featuredKeys.has(newsKey(item)));
   const archivedSelection = selectNewsForDisplay(archived, { source: activeSource, query, featuredCount: 0 });
   const rest = archiveLoaded ? archivedSelection.filtered : liveLatest;

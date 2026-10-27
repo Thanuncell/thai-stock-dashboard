@@ -55,6 +55,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    await input.fill('THAI');await input.press('Enter');await page.waitForFunction(()=>new URL(location.href).searchParams.get('symbol')==='THAI');
    await page.locator('.nav-item[data-workspace-route="watchlist"]').click();await page.waitForFunction(()=>document.body.dataset.workspacePage==='watchlist');
    const picker=page.locator(label==='mobile'?'#watchlist-select-mobile':'#watchlist-select');
+   await page.evaluate(()=>{const original=Date.now;Date.now=()=>original()+11000;});
    state.newsHold='THANI';state.analysisHold=true;await picker.selectOption('list-2');
    while(!state.releaseNews)await pause(20);
    assert.equal(await page.locator('#watchlist-news-list').getAttribute('data-state'),'loading');assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/THAI ข่าว/);
