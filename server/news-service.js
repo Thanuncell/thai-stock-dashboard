@@ -11,6 +11,7 @@ const { createWatchlistNewsCacheKey } = require('./reliability');
 const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
 const { createWatchlistNews, abortable } = require('./watchlist-news');
 const { matchesWatchlistStock, watchlistStockQuery } = require('../lib/watchlist-news-identity');
+const { issueEvidence, rememberAssessments, canonicalUrl } = require('../lib/news-evidence');
 
 const FEEDS = Object.freeze([
   ['thunhoon', 'ทันหุ้น', 'site:thunhoon.com'],
@@ -160,7 +161,8 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const cached = lastValidated.get(key);
     if (!cached || Number(now()) - cached.storedAt > NEWS_STALE_FALLBACK_MS) return null;
     const errors = [...new Set([...(Array.isArray(cached.value.errors) ? cached.value.errors : []), error?.status ? `google-rss-${error.status}` : 'google-rss-unavailable'])];
-    return { ...cached.value, errors, stale: true, partial: true, dataState: 'stale' };
+    return { ...cached.value, items: cached.value.items.filter(item => quarantine.get(newsFingerprint(item))?.status !== 'REJECTED'),
+      errors, stale: true, partial: true, dataState: 'stale' };
   }
 
   function cacheRiskyTarget(key, value, ttlMs) {
@@ -171,6 +173,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
   }
 
   async function validateRiskyTarget(item, signal) {
+    const observed = (status, reason) => {
+      const resolvedUrl = status === 'REJECTED' && target ? canonicalUrl(target.href) : null;
+      return { status, reason, ...(resolvedUrl ? { resolvedUrl } : {}), verification: issueEvidence(resolvedUrl ? { ...item, url: resolvedUrl } : item,
+        { status, reason, basis: 'article' }, { checkedAt: Number(now()), originalUrl: item.url, pathway: 'google-rss/article' }) };
+    };
     const key = String(item.url || '');
     const cached = riskyTargetCache.get(key);
     if (cached && Number(now()) < cached.expiresAt) return cached.value;
@@ -180,7 +187,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
       let response;
       for (let redirect = 0; redirect < 4; redirect++) {
         if(signal?.aborted)throw Error('WATCHLIST_DEADLINE');
-        if (blockedArticleOrigins.has(target.origin)) return { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_ACCESS_DENIED' };
+        if (blockedArticleOrigins.has(target.origin)) return observed('UNVERIFIED', 'ARTICLE_ACCESS_DENIED');
         response = await abortable(fetchImpl(target, {
           redirect: 'manual',
           headers: {
@@ -191,25 +198,28 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         }),signal);
         if (![301, 302, 303, 307, 308].includes(response.status)) break;
         const next = resolveAllowedNewsRedirect(target, response.headers.get('location'));
-        if (!next) return cacheRiskyTarget(key, { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_NOT_VERIFIED' }, RISKY_TARGET_UNVERIFIED_CACHE_MS);
+        if (!next) return cacheRiskyTarget(key, observed('UNVERIFIED', 'ARTICLE_NOT_VERIFIED'), RISKY_TARGET_UNVERIFIED_CACHE_MS);
         target = next;
       }
       if (response.status === 404 || response.status === 410) {
-        return cacheRiskyTarget(key, { accepted: false, status: 'REJECTED', reason: 'ARTICLE_NOT_FOUND' }, RISKY_TARGET_CACHE_MS);
+        return cacheRiskyTarget(key, observed('REJECTED', 'ARTICLE_NOT_FOUND'), RISKY_TARGET_CACHE_MS);
       }
       if ([401,403].includes(response.status)) blockedArticleOrigins.add(target.origin);
       if (!response.ok || !/(?:^|\.)thunhoon\.com$/i.test(target.hostname)
         || !/text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type') || '')) {
-        return cacheRiskyTarget(key, { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_NOT_VERIFIED' }, RISKY_TARGET_UNVERIFIED_CACHE_MS);
+        return cacheRiskyTarget(key, observed('UNVERIFIED', 'ARTICLE_NOT_VERIFIED'), RISKY_TARGET_UNVERIFIED_CACHE_MS);
       }
       const html = await abortable(readBoundedText(response),signal);
       if (response.url && articleIdentity(response.url) !== articleIdentity(target.href)) return { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_RESPONSE_URL_MISMATCH' };
       const inspected = inspectNewsArticle(html, { url: target.href, title: item.title });
-      const {text, ...evidence} = inspected;
-      return cacheRiskyTarget(key, { ...evidence, accepted: inspected.status === 'VERIFIED' },
+      const verification = inspected.status === 'VERIFIED'
+        ? issueEvidence({ ...item, url: inspected.resolvedUrl }, { status: 'VERIFIED', reason: inspected.reason, basis: 'article' },
+          { inspection: inspected, originalUrl: item.url, checkedAt: Number(now()), pathway: 'google-rss/article' })
+        : issueEvidence(item, { status: inspected.status, reason: inspected.reason, basis: 'article' }, { checkedAt: Number(now()), pathway: 'google-rss/article' });
+      return cacheRiskyTarget(key, { status: inspected.status, resolvedUrl: inspected.resolvedUrl, verification },
         inspected.status === 'UNVERIFIED' ? RISKY_TARGET_UNVERIFIED_CACHE_MS : RISKY_TARGET_CACHE_MS);
     } catch (_) {
-      return cacheRiskyTarget(key, { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_NOT_VERIFIED' }, RISKY_TARGET_UNVERIFIED_CACHE_MS);
+      return cacheRiskyTarget(key, observed('UNVERIFIED', 'ARTICLE_NOT_VERIFIED'), RISKY_TARGET_UNVERIFIED_CACHE_MS);
     }
   }
 
@@ -223,6 +233,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
   async function keepQualityItems(items, budget = { remaining: MAX_RISKY_TARGET_CHECKS }) {
     const kept = [];
     kept.unverifiedCount = 0;
+    kept.assessments = [];
     for (const original of items) {
       let item = original;
       let evidence = reviewNewsItem(item);
@@ -233,11 +244,13 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
       if (risky && !budget.signal?.aborted && (cachedEvidence || budget.remaining > 0)) {
         if (!cachedEvidence) budget.remaining -= 1;
         const validation = await validateRiskyTarget(item,budget.signal);
-        evidence = reviewNewsItem(item, validation);
-        if (validation.status === 'VERIFIED' && validation.resolvedUrl) item = { ...item, url: validation.resolvedUrl };
+        if (validation.resolvedUrl) item = { ...item, url: validation.resolvedUrl };
+        evidence = reviewNewsItem(item, validation.verification || validation);
       }
+      kept.assessments.push({ item, verification: evidence });
       if (evidence.status !== 'VERIFIED') { if (evidence.status === 'UNVERIFIED') kept.unverifiedCount++; quarantineItem(item, evidence); continue; }
       quarantine.delete(newsFingerprint(original));
+      quarantine.delete(newsFingerprint(item));
       kept.push({ ...item, verification: evidence });
     }
     return kept;
@@ -275,7 +288,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
             && Number.isFinite(published) && published >= cutoff;
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
         const reviewed = await keepQualityItems(parsed, articleBudget);
-        settled.push({ status: 'fulfilled', value: reviewed.slice(0, 8), uncertain: reviewed.unverifiedCount });
+        settled.push({ status: 'fulfilled', value: reviewed.slice(0, 8), uncertain: reviewed.unverifiedCount, assessments: reviewed.assessments });
       } catch (reason) {
         settled.push({ status: 'rejected', reason });
       }
@@ -286,12 +299,12 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const cooldownError = settled.find(result => result.status === 'rejected' && result.reason?.providerCooldown)?.reason;
     if (cooldownError) {
       const fallback = staleFallback('news', cooldownError);
-      if (fallback) return fallback;
+      if (fallback) return rememberAssessments(fallback, settled.flatMap(entry => entry.assessments || []));
     }
     const uncertain = settled.some(result => result.uncertain > 0);
     if (!items.length && uncertain) {
       const fallback = staleFallback('news', Error('ARTICLE_UNVERIFIED'));
-      if (fallback) return fallback;
+      if (fallback) return rememberAssessments(fallback, settled.flatMap(entry => entry.assessments || []));
     }
     const fetchedAt = new Date(Number(now())).toISOString();
     const asOfMs = items.map(item => Date.parse(item.pubDate)).filter(Number.isFinite)
@@ -309,7 +322,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
       maxAgeDays: 30
     };
     if (!unavailable) rememberValidated('news', result);
-    return result;
+    return rememberAssessments(result, settled.flatMap(entry => entry.assessments || []));
   }
 
   async function extractArticle(item) {

@@ -14,6 +14,7 @@ const { createMarketOverviewService } = require('./server/market-overview-servic
 const { createSettradeProvider } = require('./server/market-overview-providers/settrade');
 const { createMarketService } = require('./server/market-service');
 const { createNewsArchiveService } = require('./server/news-archive-service');
+const { getAssessments } = require('./lib/news-evidence');
 const { createNewsService } = require('./server/news-service');
 const { createObservability } = require('./server/observability');
 const {
@@ -154,7 +155,7 @@ async function loadCached(res, key, policy, load, options) {
 
 async function loadNewsAndArchive() {
   const data = await newsService.getNews();
-  try { await newsArchiveService.ingest(data.items); }
+  try { await newsArchiveService.ingest(data.items, { assessments: getAssessments(data) }); }
   catch (error) { console.warn('News archive write unavailable:', error.message); }
   return data;
 }
