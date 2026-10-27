@@ -56,7 +56,7 @@ globalThis.fetch = async (input, init = {}) => {
   if (url.startsWith('https://news.google.com/rss/search')) {
     if (decodeURIComponent(url).includes('site:kaohoon.com')) return new NativeResponse('unavailable', { status: 503 });
     const now = new Date().toUTCString();
-    return new NativeResponse(`<rss><channel><item><title>PTT update</title><link>https://news.google.com/articles/1</link><pubDate>${now}</pubDate><description>Market update</description><source>ทันหุ้น</source></item></channel></rss>`, {
+    return new NativeResponse(`<rss><channel><item><title>PTT update</title><link>https://news.google.com/articles/1</link><pubDate>${now}</pubDate><description>Company disclosed operating results and its investment timetable.</description><source>ทันหุ้น</source></item></channel></rss>`, {
       status: 200,
       headers: { 'content-type': 'application/rss+xml' }
     });

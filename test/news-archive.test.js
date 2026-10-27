@@ -45,7 +45,7 @@ test('archive ingestion is idempotent, bounded and followed by bounded retention
       return new Response(null, { status: 204 });
     }
   });
-  const item = { source: 'infoquest', sourceName: 'InfoQuest', title: 'PTT update', url: 'https://news.google.com/articles/1', pubDate: '2026-10-17T00:00:00.000Z', snippet: 'รายละเอียด' };
+  const item = { source: 'infoquest', sourceName: 'InfoQuest', title: 'PTT update', url: 'https://news.google.com/articles/1', pubDate: '2026-10-17T00:00:00.000Z', snippet: 'บริษัทเปิดเผยรายละเอียดและกรอบเวลาดำเนินงานล่าสุด' };
   const result = await service.ingest([item, { ...item }]);
   assert.equal(result.ingested, 1);
   assert.equal(calls.length, 2);
@@ -185,7 +185,7 @@ test('archive returns a quality-gated seven-day Featured fallback before paginat
   assert.ok(!featuredKeys.has('row-old'));
   assert.ok(!featuredKeys.has('row-invalid-date'));
   assert.ok([...first.items, ...second.items].every(item => !featuredKeys.has(item.fingerprint)));
-  assert.equal(first.total, rows.length - 1 - first.featured.length, 'quality-rejected row and Featured rows are excluded from the Latest total');
+  assert.equal(first.total, rows.length - 2 - first.featured.length, 'invalid date, non-news row and Featured rows are excluded from the Latest total');
   assert.equal(calls, 1, 'Featured and paginated Latest reuse one bounded archive snapshot');
   assert.equal(first.featured.find(item => item.fingerprint === 'row-1').analysisSummary, 'สรุปที่บันทึกและตรวจสอบแล้ว');
 });

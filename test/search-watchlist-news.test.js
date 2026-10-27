@@ -29,7 +29,7 @@ test('search excludes invalid/inactive registry mappings and keeps name search/p
  assert.equal((await fallback.search('กสิกร'))[0].symbol,'KBANK');
 });
 const NOW=Date.parse('2026-10-26T11:00:00Z');
-const rss='<rss><channel><item><title>THAI รายงานผลประกอบการล่าสุด</title><link>https://news.google.com/articles/fixture-thai</link><pubDate>'+new Date(NOW).toUTCString()+'</pubDate><source>ทันหุ้น</source></item></channel></rss>';
+const rss='<rss><channel><item><title>THAI รายงานผลประกอบการล่าสุด</title><link>https://news.google.com/articles/fixture-thai</link><pubDate>'+new Date(NOW).toUTCString()+'</pubDate><description>บริษัทเปิดเผยผลประกอบการและรายละเอียดการดำเนินงานล่าสุด</description><source>ทันหุ้น</source></item></channel></rss>';
 test('valid RSS end-tag whitespace does not turn existing news into an empty result',async()=>{
  const service=createNewsService({now:()=>NOW,fetchImpl:async()=>new Response(rss.replace('</item>','</item >').replace('</channel>','</channel >').replace('</rss>','</rss >'))});
  assert.equal((await service.getWatchlistNews([{symbol:'THAI'}])).items.length,1);
