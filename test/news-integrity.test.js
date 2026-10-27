@@ -142,6 +142,35 @@ test('uncertain article checks preserve verified LKG only for the same Watchlist
  uncertain=false;time+=1000;assert.equal((await service.getNews()).dataState,'fresh');
 });
 
+test('mixed Watchlist verification is partial while cache, owner isolation and bounded LKG remain intact',async()=>{
+ let time=Date.now(),mode='fresh';
+ const good=input({title:'PTT company earnings announcement',url:'https://news.google.com/articles/good'});
+ const unknown=input({title:'PTT company announcement',url:'https://news.google.com/articles/unknown',snippet:'',sourceName:'Thunhoon'});
+ const service=createNewsService({now:()=>time,fetchImpl:async value=>{
+  if(String(value).includes('/rss/search?'))return new Response(rss((mode==='fresh'?[good]:mode==='mixed'?[good,unknown]:[unknown]).map(item=>({...item,pubDate:new Date(time).toISOString()}))));
+  return new Response('',{status:403});
+ }});
+ const stocks=[{symbol:'PTT',name:'PTT company'}];
+ const fresh=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ assert.equal(fresh.dataState,'fresh');assert.equal(fresh.partial,false);assert.equal(fresh.stale,false);
+ mode='mixed';time+=1000;
+ const mixed=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ assert.equal(mixed.dataState,'partial');assert.equal(mixed.partial,true);assert.equal(mixed.stale,false);
+ assert.deepEqual(mixed.items.map(item=>item.url),[good.url]);assert.equal(service.quarantineReport()[0].status,'UNVERIFIED');
+ mode='uncertain';time+=1000;
+ const other=await service.getWatchlistNews(stocks,{ownerId:'B'});
+ assert.equal(other.dataState,'unavailable');assert.equal(other.items.length,0);
+ const retained=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ assert.equal(retained.dataState,'stale');assert.equal(retained.partial,true);assert.equal(retained.stale,true);
+ assert.deepEqual(retained.items,mixed.items);assert.equal(retained.fetchedAt,mixed.fetchedAt);
+ time+=31*60000;
+ const expired=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ assert.equal(expired.dataState,'unavailable');assert.equal(expired.items.length,0);
+ mode='fresh';time+=1000;
+ const recovered=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ assert.equal(recovered.dataState,'fresh');assert.equal(recovered.partial,false);assert.equal(recovered.stale,false);
+});
+
 test('article extraction stops a denied acquisition origin while retaining labelled RSS snippet analysis',async()=>{
  let articleCalls=0;
  const service=createNewsService({env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async(value)=>{

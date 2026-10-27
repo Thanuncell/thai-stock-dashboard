@@ -465,16 +465,17 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const qualityItems = await keepQualityItems(parsedItems);
     const items = dedupeNewsItems(qualityItems)
       .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).slice(0, 30);
-    const uncertain = !items.length && qualityItems.unverifiedCount > 0;
-    if (uncertain) {
+    const uncertain = qualityItems.unverifiedCount > 0;
+    const unavailable = !items.length && uncertain;
+    if (unavailable) {
       const fallback = staleFallback(snapshotKey, Error('ARTICLE_UNVERIFIED'));
       if (fallback) return fallback;
     }
     const fetchedAt = new Date(Number(now())).toISOString();
     const asOfMs = items.map(item => Date.parse(item.pubDate)).filter(Number.isFinite)
       .reduce((latest, value) => Math.max(latest, value), 0);
-    const result = { items, fetchedAt, asOf: asOfMs ? new Date(asOfMs).toISOString() : null, source: 'Google News', stale: false, partial: uncertain, dataState: uncertain ? 'unavailable' : 'fresh', maxAgeDays: 30 };
-    if (!uncertain) rememberValidated(snapshotKey, result);
+    const result = { items, fetchedAt, asOf: asOfMs ? new Date(asOfMs).toISOString() : null, source: 'Google News', stale: false, partial: uncertain, dataState: unavailable ? 'unavailable' : uncertain ? 'partial' : 'fresh', maxAgeDays: 30 };
+    if (!unavailable) rememberValidated(snapshotKey, result);
     return result;
   }
 
