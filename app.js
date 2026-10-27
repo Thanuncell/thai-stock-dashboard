@@ -32,7 +32,8 @@ import {
   stamp,
   summarizeBreadth,
   toFiniteNumber,
-  zoomChartViewport
+  zoomChartViewport,
+  watchlistNewsViewState
 } from './client/domain.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -79,7 +80,10 @@ let newsPage = initialNavigation.route === 'news' ? initialNavigation.newsPage :
 let newsQuery = initialNavigation.route === 'news' ? initialNavigation.query : '';
 let watchNewsPage = initialNavigation.route === 'watchlist' ? initialNavigation.watchPage : 1;
 const newsAnalyses = new Map();
+const pendingNewsAnalysisKeys = new Set();
 let newsAnalysisPending = false;
+let newsAnalysisRequestId = 0;
+let watchlistNewsMatchInfo = null;
 let watchlistNewsRequestId = 0;
 let watchlistNewsScope = '';
 let watchlistNewsState = 'idle';
@@ -172,6 +176,10 @@ function clearPrivateState() {
   unreadAlerts = 0;
   latestWatchlistNews = [];
   newsAnalyses.clear();
+  pendingNewsAnalysisKeys.clear();
+  newsAnalysisPending = false;
+  newsAnalysisRequestId += 1;
+  watchlistNewsMatchInfo = null;
   watchlistNewsRequestId += 1;
   watchlistNewsController?.abort();
   watchlistNewsController = null;
@@ -1301,6 +1309,7 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
   }
 }
 async function getArchiveNews({ page = newsPage } = {}) {
+  const identity = capturePrivateIdentity();
   const requestId = ++archiveNewsRequestId;
   const params = new URLSearchParams({
     page: String(page),
@@ -1321,11 +1330,18 @@ async function getArchiveNews({ page = newsPage } = {}) {
     const response = await apiFetch(`/api/news-archive?${params}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดคลังข่าวไม่สำเร็จ');
-    if (requestId !== archiveNewsRequestId) return;
+    if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
     archiveConfigured = Boolean(data.configured);
     archiveLoaded = archiveConfigured;
     archiveFeaturedNews = data.dataState === 'fresh' && !data.stale && Array.isArray(data.featured) ? data.featured : [];
     archiveNews = Array.isArray(data.items) ? data.items : [];
+    // Use one accepted stored summary across live and archived representations.
+    for (const item of [...archiveFeaturedNews, ...archiveNews]) {
+      if (!newsAnalyses.has(newsKey(item)) && !pendingNewsAnalysisKeys.has(newsKey(item))
+        && ['ai', 'rules'].includes(item.analysisMode) && String(item.analysisSummary || '').trim()) {
+        newsAnalyses.set(newsKey(item), {summary:String(item.analysisSummary).trim(),mode:item.analysisMode,basis:'archive'});
+      }
+    }
     archiveTotal = Number.isFinite(Number(data.total)) ? Number(data.total) : archiveNews.length;
     const totalPages = Math.max(1, Math.ceil(archiveTotal / PAGE_SIZE));
     if (newsPage > totalPages) {
@@ -1335,7 +1351,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
     }
     renderNews();
   } catch (_) {
-    if (requestId !== archiveNewsRequestId) return;
+    if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
     archiveLoaded = false;
     archiveFeaturedNews = [];
     archiveNews = [];
@@ -1354,11 +1370,12 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
   const requestId = ++watchlistNewsRequestId;
   watchlistNewsController?.abort();
   watchlistNewsController=null;
-  if(watchlistNewsScope!==scope){latestWatchlistNews=[];watchlistNewsFetchedAt=0;}
+  if(watchlistNewsScope!==scope){latestWatchlistNews=[];watchlistNewsFetchedAt=0;watchlistNewsMatchInfo=null;}
   watchlistNewsScope=scope;
   const symbols = watchlist.map(item => item.symbol).filter(Boolean);
   if (!symbols.length) {
     latestWatchlistNews = [];
+    watchlistNewsMatchInfo = null;
     watchlistNewsState='empty';watchlistNewsPendingScope='';
     const refresh = $('#refresh-watchlist-news');
     if (refresh) { refresh.disabled = false; refresh.classList.remove('is-loading'); }
@@ -1376,10 +1393,19 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId || scope!==currentWatchlistNewsScope()) return;
-    if(!Array.isArray(data.items)||data.dataState==='unavailable')throw Error('Invalid Watchlist News response');
-    latestWatchlistNews = data.items;
-    watchlistNewsFetchedAt=Number.isFinite(Date.parse(data.fetchedAt))?Math.min(Date.now(),Date.parse(data.fetchedAt)):Date.now();
-    watchlistNewsState=data.stale||data.dataState==='stale'?'stale':data.items.length?'fresh':'empty';
+    if(!Array.isArray(data.items))throw Error('Invalid Watchlist News response');
+    watchlistNewsMatchInfo = {
+      matchedCandidates: Number.isFinite(data.matchedCandidates) ? data.matchedCandidates : null,
+      qualityExcluded: Number.isFinite(data.qualityExcluded) ? data.qualityExcluded : null
+    };
+    if (data.dataState === 'unavailable' && !data.items.length && latestWatchlistNews.length
+      && Date.now() - watchlistNewsFetchedAt <= 30 * 60000) {
+      watchlistNewsState = 'stale';
+    } else {
+      latestWatchlistNews = data.items;
+      watchlistNewsFetchedAt=Number.isFinite(Date.parse(data.fetchedAt))?Math.min(Date.now(),Date.parse(data.fetchedAt)):Date.now();
+      watchlistNewsState=watchlistNewsViewState(data);
+    }
     renderWatchlistNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
   } catch (_) {
@@ -1400,7 +1426,11 @@ async function analyzeNewsBriefs(items) {
     .filter(item => !newsAnalyses.has(newsKey(item))).slice(0, 8);
   if (!fresh.length) return;
   newsAnalysisPending = true;
+  const requestId = ++newsAnalysisRequestId;
   const analysisIdentity = capturePrivateIdentity();
+  fresh.forEach(item => pendingNewsAnalysisKeys.add(newsKey(item)));
+  renderNews();
+  renderWatchlistNews();
   const targets = fresh.map(item => ({ source: item.sourceName || item.source || '', title: String(item.title || '').slice(0, 300), url: item.url, snippet: String(item.snippet || '').slice(0, 1200), verification: item.verification }));
   try {
     const response = await apiFetch('/api/news-analysis', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: targets }) });
@@ -1415,6 +1445,8 @@ async function analyzeNewsBriefs(items) {
   } catch (_) {
     if (isCurrentPrivateIdentity(analysisIdentity)) fresh.forEach(item => newsAnalyses.set(newsKey(item), { summary: '', mode: 'unavailable', basis: 'headline' }));
   } finally {
+    if (requestId !== newsAnalysisRequestId) return;
+    fresh.forEach(item => pendingNewsAnalysisKeys.delete(newsKey(item)));
     newsAnalysisPending = false;
     renderNews();
     renderWatchlistNews();
@@ -1429,9 +1461,11 @@ function renderNewsItem(item, options = {}) {
   const analysisMode = analysis ? analysis.summary ? analysis.mode : 'unavailable' : persistedSummary ? item.analysisMode : 'unavailable';
   const mood = analysisMode === 'unavailable' ? 'ยังไม่ประเมิน' : options.mood || sentimentHeadline(item.title || '');
   const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
-  const mode = analysisMode === 'ai'
-    ? `โดย AI · ${analysis?.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis?.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
-    : analysisMode === 'rules' ? 'สรุปจากคำสำคัญ' : 'สรุปไม่พร้อม';
+  const mode = pendingNewsAnalysisKeys.has(newsKey(item)) && !analysis
+    ? 'กำลังตรวจสอบบทสรุป…'
+    : analysisMode === 'ai'
+      ? `โดย AI · ${analysis?.basis === 'archive' ? 'บทสรุปที่บันทึกไว้' : analysis?.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis?.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
+      : analysisMode === 'rules' ? 'ประเมินจากคำสำคัญ (ไม่ใช่ AI)' : 'สรุปไม่พร้อม';
   const article = document.createElement('article');
   article.className = 'news-item';
   const content = document.createElement('div');
@@ -1517,16 +1551,23 @@ function renderWatchlistNews() {
   const state=sameScope?watchlistNewsState:watchlist.length?'loading':'empty';
   root.dataset.state=state;
   if(!sameScope||!latestWatchlistNews.length){
-    const message=state==='loading'?'กำลังโหลดข่าวของหุ้นในรายการติดตาม…':state==='error'?'โหลดข่าวไม่สำเร็จ กรุณาลองอัปเดตอีกครั้ง':watchlistEmptyText();
+    const message=state==='loading'?'กำลังโหลดข่าวของหุ้นในรายการติดตาม…'
+      :state==='error'?'โหลดข่าวไม่สำเร็จ กรุณาลองอัปเดตอีกครั้ง'
+      :state==='unavailable'?'ยังไม่สามารถตรวจสอบข่าวของหุ้นในรายการติดตามได้'
+      :watchlistNewsMatchInfo?.matchedCandidates===0?'ยังไม่พบข่าวที่ตรงกับหุ้นในรายการติดตาม'
+      :watchlistNewsMatchInfo?.qualityExcluded>0?'พบข่าวที่เกี่ยวข้อง แต่ยังไม่มีข่าวที่ผ่านการตรวจสอบ'
+      :watchlistEmptyText();
     renderNewsItemsInto(root,[],message);const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
   }
   const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
   watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
-  if(state==='loading'||state==='stale'){
+  if(state==='loading'||state==='stale'||state==='partial'){
     const notice=document.createElement('div');notice.className='news-title';notice.setAttribute('role','status');
-    notice.textContent=state==='loading'?'กำลังอัปเดตข่าว…':'แสดงข่าวล่าสุดที่โหลดไว้ · ข้อมูลอาจยังไม่เป็นปัจจุบัน';root.prepend(notice);
+    notice.textContent=state==='loading'?'กำลังอัปเดตข่าว…'
+      :state==='stale'?'แสดงข่าวล่าสุดที่โหลดไว้ · ข้อมูลอาจยังไม่เป็นปัจจุบัน'
+      :'แสดงเฉพาะข่าวที่ตรวจสอบผ่าน · ข่าวบางส่วนยังรอการตรวจสอบ';root.prepend(notice);
   }
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
     watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToPageTop();

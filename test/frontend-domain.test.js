@@ -280,3 +280,27 @@ test('Market Overview freshness label distinguishes current, partial and LKG dat
   const lkg = domain.marketOverviewStatus({ fetchedAt, dataState: 'partial', fieldStatus: { nvdr: { state: 'LKG' } } });
   assert.match(lkg, /ข้อมูลที่บันทึกล่าสุด \(LKG\)$/);
 });
+test('one news URL keeps the same identity across Live Featured and Archive Latest', () => {
+  const date = '2026-10-27T04:00:00.000Z';
+  const article = { source: 'kaohoon', title: 'PTT รายงานผลประกอบการ', url: 'https://www.kaohoon.com/news/abc?utm_source=rss', pubDate: date };
+  const archived = { ...article, url: 'https://www.kaohoon.com/news/abc', fingerprint: 'sha256-archive-fingerprint' };
+  const official = { source: 'official', title: 'BOT ประกาศแนวทางใหม่', url: 'https://www.bot.or.th/news/official', pubDate: date };
+  const options = { now: Date.parse(date) + 1000, featuredCount: 1, sourceTier: { official: 4, kaohoon: 2 } };
+  const category = domain.selectNewsForDisplay([article, official], { ...options, source: 'kaohoon' });
+  const all = domain.selectNewsForDisplay([article, official], { ...options, source: 'all' });
+  assert.equal(category.featured[0].url, article.url);
+  assert.equal(all.featured[0].url, official.url);
+  assert.equal(all.latest[0].url, article.url);
+  assert.equal(domain.newsKey(category.featured[0]), domain.newsKey(archived));
+  assert.equal(domain.newsKey(all.latest[0]), domain.newsKey(archived));
+  assert.notEqual(domain.newsKey(article), domain.newsKey(official));
+});
+
+test('Watchlist News empty, partial and unavailable are not conflated', () => {
+  assert.equal(domain.watchlistNewsViewState({items:[],dataState:'fresh'}), 'empty');
+  assert.equal(domain.watchlistNewsViewState({items:[],dataState:'unavailable'}), 'unavailable');
+  assert.equal(domain.watchlistNewsViewState({items:[{title:'news'}],dataState:'partial'}), 'partial');
+  assert.equal(domain.watchlistNewsViewState({items:[{title:'news'}],dataState:'stale',stale:true}), 'stale');
+  assert.equal(domain.watchlistNewsViewState({items:[{title:'news'}],dataState:'fresh'}), 'fresh');
+  assert.equal(domain.watchlistNewsViewState({error:'broken'}), 'error');
+});

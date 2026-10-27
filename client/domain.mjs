@@ -304,7 +304,29 @@ export function stamp(value) {
 }
 
 export function newsKey(item) {
-  return String(item.fingerprint || item.url || `${item.title || ''}|${item.pubDate || ''}`);
+  // Live feeds and archived SHA-256 rows may refer to the same article.
+  // Prefer a normalized URL; never merge unrelated articles by title alone.
+  const rawUrl = String(item?.url || '');
+  if (rawUrl) {
+    try {
+      const url = new URL(rawUrl);
+      ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content']
+        .forEach(key => url.searchParams.delete(key));
+      url.hash = '';
+      return `url:${url.href}`;
+    } catch (_) {
+      return `url:${rawUrl}`;
+    }
+  }
+  return String(item?.fingerprint || `${item?.title || ''}|${item?.pubDate || ''}`);
+}
+
+export function watchlistNewsViewState(data) {
+  if (!Array.isArray(data?.items)) return 'error';
+  if (data.stale || data.dataState === 'stale') return 'stale';
+  if (data.dataState === 'unavailable') return 'unavailable';
+  if (data.dataState === 'partial') return 'partial';
+  return data.items.length ? 'fresh' : 'empty';
 }
 
 export function sentimentHeadline(headline) {
