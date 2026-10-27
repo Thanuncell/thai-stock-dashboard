@@ -14,6 +14,19 @@ export const NEWS_SOURCES = Object.freeze(['all', 'thunhoon', 'kaohoon', 'settra
 export const CHART_RANGES = Object.freeze(['1D', '1W', '1M', '3M', '1Y']);
 const ROUTES = Object.freeze(['overview', 'chart', 'news', 'watchlist']);
 
+// Search presentation only. Never replace source names, cached results or persisted watchlist data.
+const COMPANY_NAME_INITIALISMS = new Set(('AI AIM ALT AMR AP ARIP ASN BBGI BCPG BEC BG BGT BHO BJC BKI BPS BT BTS BYDH CAZ CH CK CL CP CPL CPR DB DCON DOD FNS GFPT GMM ICT IFS IRPC IT JCK JMT JSP KCE KCG KGI LDC MBK MC MCOT MFEC MK NFC NSL OHTL PCL PM PRG PSG PTG PTT RPCG RS SC SCB SCG SCGJWD SIS SISB SNC SPCG STP SVOA TCM TOA TPI TQM TQR TTCL TWZ UAC VGI VN WHA WP WSOL').split(' '));
+export function formatSearchCompanyName(name, symbol = '') {
+  if (typeof name !== 'string') return '';
+  if (name === symbol || name !== name.toUpperCase() || name === name.toLowerCase()) return name;
+  return name.replace(/\p{L}+(?:[.&]\p{L}+)*/gu, word => {
+    if (word === 'B.GRIMM') return 'B.Grimm';
+    if (COMPANY_NAME_INITIALISMS.has(word) || /^(?:[A-Z]\.)+[A-Z]$/.test(word)
+      || /^[A-Z]{1,3}(?:&[A-Z]{1,3})+$/.test(word)) return word;
+    return word.split('.').map(part => part[0].toUpperCase() + part.slice(1).toLowerCase()).join('.');
+  });
+}
+
 export function chartGeometry({ rowCount = 0, hostWidth = 640 } = {}) {
   const count = Math.max(1, Number.parseInt(rowCount, 10) || 1);
   const width = Math.max(320, Math.floor(Number(hostWidth) || 640));

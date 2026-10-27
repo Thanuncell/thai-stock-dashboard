@@ -6,6 +6,41 @@ const assert = require('node:assert/strict');
 let domain;
 test.before(async () => { domain = await import('../client/domain.mjs'); });
 
+test('Search display formats reviewed SEC names without modifying source records or symbols', () => {
+  const { rows } = require('./fixtures/search-company-display.json');
+  const before = structuredClone(rows);
+  const cached = rows.map(row => Object.freeze({symbol:row.symbol,name:row.company_name_en}));
+  for (const row of cached) Object.freeze(row);
+  for (const [index, row] of rows.entries()) {
+    assert.equal(domain.formatSearchCompanyName(cached[index].name, row.symbol), row.display, row.symbol);
+    assert.equal(domain.formatSearchCompanyName(row.display, row.symbol), row.display, 'stable display: ' + row.symbol);
+    assert.equal(row.company_name_en.replace(/\p{L}/gu, ''), row.display.replace(/\p{L}/gu, ''), 'punctuation: ' + row.symbol);
+  }
+  assert.deepEqual(rows, before);
+  assert.deepEqual(cached, before.map(row => ({symbol:row.symbol,name:row.company_name_en})));
+});
+
+test('Search display preserves initialisms, brand casing and punctuation', () => {
+  for (const [source, expected] of [
+    ['PTT, SCG & CP PUBLIC COMPANY LIMITED', 'PTT, SCG & CP Public Company Limited'],
+    ['B.GRIMM POWER PUBLIC COMPANY LIMITED', 'B.Grimm Power Public Company Limited'],
+    ['S&P SYNDICATE PUBLIC COMPANY LIMITED', 'S&P Syndicate Public Company Limited'],
+    ['P.C.S. MACHINE GROUP HOLDING PUBLIC COMPANY LIMITED', 'P.C.S. Machine Group Holding Public Company Limited'],
+    ["O'REILLY (THAILAND) PUBLIC CO., LTD.", "O'Reilly (Thailand) Public Co., Ltd."],
+    ['  AMATA  CORPORATION — PUBLIC COMPANY LIMITED  ', '  Amata  Corporation — Public Company Limited  ']
+  ]) assert.equal(domain.formatSearchCompanyName(source), expected);
+});
+
+test('Search display keeps existing mixed casing and symbol-only fallbacks unchanged', () => {
+  for (const name of ['B.Grimm Power Public Company Limited', 'i-Tail Corporation Public Company Limited',
+    'BlueVenture Group Public Company Limited', 'S&P Syndicate Public Company Limited', 'all lowercase', 'บริษัททดสอบ']) {
+    assert.equal(domain.formatSearchCompanyName(name), name);
+  }
+  for (const symbol of ['AMATA', 'PTT', 'S&P', 'L&E', 'THCOM']) assert.equal(domain.formatSearchCompanyName(symbol, symbol), symbol);
+  assert.equal(domain.formatSearchCompanyName(''), '');
+  assert.equal(domain.formatSearchCompanyName(null), '');
+});
+
 test('dense intraday chart geometry stays within the viewport and preserves ordering', () => {
   const geometry = domain.chartGeometry({ rowCount: 292, hostWidth: 640, range: '1D' });
   assert.equal(geometry.width, 640);

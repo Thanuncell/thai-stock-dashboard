@@ -1,0 +1,105 @@
+{
+  "source": "Selected factual name examples from reviewed-sec-names.json (SEC directory, 2026-10-26); display expectations are presentation only.",
+  "rows": [
+    {
+      "symbol": "AMATA",
+      "company_name_en": "AMATA CORPORATION PUBLIC COMPANY LIMITED",
+      "display": "Amata Corporation Public Company Limited"
+    },
+    {
+      "symbol": "THAI",
+      "company_name_en": "THAI AIRWAYS INTERNATIONAL PUBLIC COMPANY LIMITED",
+      "display": "Thai Airways International Public Company Limited"
+    },
+    {
+      "symbol": "PTT",
+      "company_name_en": "PTT PUBLIC COMPANY LIMITED",
+      "display": "PTT Public Company Limited"
+    },
+    {
+      "symbol": "OR",
+      "company_name_en": "PTT OIL AND RETAIL BUSINESS PUBLIC COMPANY LIMITED",
+      "display": "PTT Oil And Retail Business Public Company Limited"
+    },
+    {
+      "symbol": "SCGP",
+      "company_name_en": "SCG PACKAGING PUBLIC COMPANY LIMITED",
+      "display": "SCG Packaging Public Company Limited"
+    },
+    {
+      "symbol": "CPALL",
+      "company_name_en": "CP ALL PUBLIC COMPANY LIMITED",
+      "display": "CP All Public Company Limited"
+    },
+    {
+      "symbol": "CPAXT",
+      "company_name_en": "CP AXTRA PUBLIC COMPANY LIMITED",
+      "display": "CP Axtra Public Company Limited"
+    },
+    {
+      "symbol": "BGRIM",
+      "company_name_en": "B.GRIMM POWER PUBLIC COMPANY LIMITED",
+      "display": "B.Grimm Power Public Company Limited"
+    },
+    {
+      "symbol": "L&E",
+      "company_name_en": "LIGHTING & EQUIPMENT PUBLIC COMPANY LIMITED",
+      "display": "Lighting & Equipment Public Company Limited"
+    },
+    {
+      "symbol": "IRCP",
+      "company_name_en": "INTERNATIONAL RESEARCH CORPORATION PUBLIC CO., LTD.",
+      "display": "International Research Corporation Public Co., Ltd."
+    },
+    {
+      "symbol": "SJWD",
+      "company_name_en": "SCGJWD LOGISTICS PUBLIC COMPANY LIMITED",
+      "display": "SCGJWD Logistics Public Company Limited"
+    },
+    {
+      "symbol": "BPS",
+      "company_name_en": "BPS Technology Public Company Limited",
+      "display": "BPS Technology Public Company Limited"
+    },
+    {
+      "symbol": "ADVICE",
+      "company_name_en": "Advice IT Infinite Public Company Limited",
+      "display": "Advice IT Infinite Public Company Limited"
+    },
+    {
+      "symbol": "ITC",
+      "company_name_en": "i-Tail Corporation Public Company Limited",
+      "display": "i-Tail Corporation Public Company Limited"
+    },
+    {
+      "symbol": "TMAN",
+      "company_name_en": "T.Man Pharmaceutical Public Company Limited",
+      "display": "T.Man Pharmaceutical Public Company Limited"
+    },
+    {
+      "symbol": "AAI",
+      "company_name_en": "Asian Alliance International Public Company Limited",
+      "display": "Asian Alliance International Public Company Limited"
+    },
+    {
+      "symbol": "BBGI",
+      "company_name_en": "BBGI PUBLIC COMPANY LIMITED",
+      "display": "BBGI Public Company Limited"
+    },
+    {
+      "symbol": "PTTEP",
+      "company_name_en": "PTT EXPLORATION AND PRODUCTION PUBLIC COMPANY LIMITED",
+      "display": "PTT Exploration And Production Public Company Limited"
+    },
+    {
+      "symbol": "PTTGC",
+      "company_name_en": "PTT GLOBAL CHEMICAL PUBLIC COMPANY LIMITED",
+      "display": "PTT Global Chemical Public Company Limited"
+    },
+    {
+      "symbol": "CPR",
+      "company_name_en": "CPR GOMU INDUSTRIAL PUBLIC COMPANY LIMITED",
+      "display": "CPR Gomu Industrial Public Company Limited"
+    }
+  ]
+}
