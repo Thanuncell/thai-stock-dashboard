@@ -334,7 +334,7 @@ export function retainWatchlistNews(items,stocks,timestamp=Date.now()) {
   for(const item of items){
     const published=Date.parse(item.pubDate);
     if(!Number.isFinite(published)||published<timestamp-30*86400000||published>timestamp+600000
-      ||['UNVERIFIED','REJECTED'].includes(item.verification?.status))continue;
+      ||item.verification?.status!=='VERIFIED')continue;
     const matchedSymbols=(item.matchedSymbols||[]).filter(symbol=>symbols.has(symbol));if(!matchedSymbols.length)continue;
     const key=newsKey(item),old=unique.get(key);
     unique.set(key,{...(old||item),matchedSymbols:[...new Set([...(old?.matchedSymbols||[]),...matchedSymbols])]});

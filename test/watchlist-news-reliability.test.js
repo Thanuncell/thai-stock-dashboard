@@ -82,3 +82,26 @@ test('unknown-stock company names require reviewed registry provenance rather th
  assert.equal((await service.getWatchlistNews([stock],{ownerId:'A'})).items.length,1);
  assert.equal(matchesWatchlistStock(stock,'Untrusted Company announces results'),false);
 });
+
+test('symbol-only stock outside the alias list uses a unique reviewed registry identity without extra RSS requests',async()=>{
+ const row={symbol:'XYZ',active:true,provider:'Yahoo Finance',provider_symbol:'XYZ.BK',company_name_en:'Example Manufacturing Public Company Limited',name_source:'https://www.sec.or.th/example',name_checked_at:'2026-10-01T00:00:00Z'};
+ let registryCalls=0,rssCalls=0;
+ const service=createNewsService({now:()=>NOW,registrySearch:async()=>{registryCalls++;return [row];},fetchImpl:async value=>{rssCalls++;assert.ok(new URL(value).searchParams.get('q').includes(row.company_name_en));return new Response(xml([{...story('XYZ'),title:row.company_name_en+' announces operating results'}]));}});
+ const result=await service.getWatchlistNews([{symbol:'XYZ'}],{ownerId:'A'});
+ assert.equal(result.items.length,1);assert.deepEqual(result.items[0].matchedSymbols,['XYZ']);assert.equal(registryCalls,1);assert.equal(rssCalls,1);
+});
+
+for(const failure of ['unavailable','duplicate','timeout','incorrect-mapping','unreviewed'])test('symbol-only registry '+failure+' fails safely without trusting client aliases or retrying RSS',async()=>{
+ const row={symbol:'XYZ',active:true,provider:'Yahoo Finance',provider_symbol:'XYZ.BK',company_name_en:'Example Manufacturing Public Company Limited',name_source:'https://www.sec.or.th/example',name_checked_at:'2026-10-01T00:00:00Z'};
+ let registryCalls=0,rssCalls=0;
+ const service=createNewsService({now:()=>NOW,registrySearch:async()=>{
+  registryCalls++;
+  if(failure==='unavailable')throw Error('Registry unavailable');
+  if(failure==='timeout')return new Promise(()=>{});
+  if(failure==='duplicate')return [row,{...row}];
+  return [{...row,...(failure==='incorrect-mapping'?{provider_symbol:'OTHER.BK'}:{name_source:''})}];
+ },fetchImpl:async()=>{rssCalls++;return new Response(xml([{...story('XYZ'),title:row.company_name_en+' announces operating results'}]));}});
+ const result=await service.getWatchlistNews([{symbol:'XYZ'}],{ownerId:'A'});
+ assert.equal(result.items.length,0);assert.equal(registryCalls,1);assert.equal(rssCalls,1);
+ assert.equal(matchesWatchlistStock({symbol:'XYZ',name:row.company_name_en},row.company_name_en),false);
+});

@@ -55,7 +55,7 @@ function createWatchlistNews({fetchStock,registrySearch=async()=>[],isRejected=(
   const stocks=normalizeWatchlistNewsStocks(rawStocks),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),deadlineMs);
   try{
    // Only reviewed registry names extend identity; client-supplied names are not evidence.
-   if(stocks.some(stock=>stock.name&&stock.name!==stock.symbol)){
+   if(stocks.length){
     let lookupTimer;try{
      const rows=await Promise.race([registrySearch(),new Promise(resolve=>{lookupTimer=setTimeout(()=>resolve([]),750);})]);
      const counts=new Map();for(const row of rows)counts.set(row.symbol,(counts.get(row.symbol)||0)+1);
