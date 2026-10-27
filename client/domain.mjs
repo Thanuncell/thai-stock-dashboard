@@ -329,6 +329,19 @@ export function watchlistNewsViewState(data) {
   return data.items.length ? 'fresh' : 'empty';
 }
 
+export function retainWatchlistNews(items,stocks,timestamp=Date.now()) {
+  const symbols=new Set(stocks.map(stock=>stock.symbol)),unique=new Map();
+  for(const item of items){
+    const published=Date.parse(item.pubDate);
+    if(!Number.isFinite(published)||published<timestamp-30*86400000||published>timestamp+600000
+      ||item.verification?.status!=='VERIFIED')continue;
+    const matchedSymbols=(item.matchedSymbols||[]).filter(symbol=>symbols.has(symbol));if(!matchedSymbols.length)continue;
+    const key=newsKey(item),old=unique.get(key);
+    unique.set(key,{...(old||item),matchedSymbols:[...new Set([...(old?.matchedSymbols||[]),...matchedSymbols])]});
+  }
+  return [...unique.values()].sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate));
+}
+
 export function newsDisplayAnalysis(item, cached) {
   if (['UNVERIFIED', 'REJECTED'].includes(item?.verification?.status)) return null;
   const stored = ['ai', 'rules'].includes(item?.analysisMode) && String(item.analysisSummary || '').trim()

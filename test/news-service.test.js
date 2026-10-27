@@ -553,8 +553,8 @@ test('invalid Retry-After still produces bounded 503 backoff and identical reque
     }
   });
   const stocks = [{ symbol: 'PTT', name: 'ปตท.' }];
-  await assert.rejects(service.getWatchlistNews(stocks), /503/);
-  await assert.rejects(service.getWatchlistNews(stocks), /cooldown/i);
+  assert.equal((await service.getWatchlistNews(stocks)).dataState,'unavailable');
+  assert.equal((await service.getWatchlistNews(stocks)).stockStatus[0].reason,'PROVIDER_COOLDOWN');
   assert.equal(calls, 1);
 
   timestamp += 31 * 1000;

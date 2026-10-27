@@ -6,6 +6,24 @@ const assert = require('node:assert/strict');
 let domain;
 test.before(async () => { domain = await import('../client/domain.mjs'); });
 
+test('retained Watchlist items intersect current stocks, merge identities and drop expired/negative news',()=>{
+ const time=Date.now(),item={title:'public',url:'https://www.kaohoon.com/news/shared',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED'}};
+ const items=domain.retainWatchlistNews([item,{...item,url:item.url+'?utm_source=rss',matchedSymbols:['KBANK']},{...item,url:item.url+'expired',pubDate:new Date(time-31*86400000).toISOString()},{...item,url:item.url+'bad',verification:{status:'REJECTED'}}],[{symbol:'PTT'},{symbol:'KBANK'}],time);
+ assert.equal(items.length,1);assert.deepEqual(new Set(items[0].matchedSymbols),new Set(['PTT','KBANK']));
+});
+
+test('Watchlist retention fails closed for missing/unknown verification and preserves only current verified associations',()=>{
+ const time=Date.now(),good={title:'Verified public news',url:'https://www.kaohoon.com/news/strict',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED'}};
+ const bad=[undefined,{}, {status:'UNKNOWN'},{status:'UNVERIFIED'},{status:'REJECTED'}].map((verification,i)=>({...good,url:good.url+'/'+i,verification}));
+ const expired={...good,url:good.url+'/expired',pubDate:new Date(time-31*86400000).toISOString()};
+ const added=domain.retainWatchlistNews([good,...bad,expired],[{symbol:'PTT'},{symbol:'OR'},{symbol:'KBANK'}],time);
+ assert.equal(added.length,1);assert.deepEqual(added[0].matchedSymbols,['PTT','OR']);
+ const removed=domain.retainWatchlistNews(added,[{symbol:'PTT'}],time);assert.equal(removed.length,1);assert.deepEqual(removed[0].matchedSymbols,['PTT']);
+ assert.deepEqual(domain.retainWatchlistNews(added,[{symbol:'KBANK'}],time),[]);
+ const duplicate=domain.retainWatchlistNews([good,{...good,url:good.url+'?utm_source=rss',matchedSymbols:['KBANK']}],[{symbol:'PTT'},{symbol:'KBANK'}],time);
+ assert.equal(duplicate.length,1);assert.deepEqual(new Set(duplicate[0].matchedSymbols),new Set(['PTT','KBANK']));
+});
+
 test('display rules never block actual AI and negative verification cannot inherit analysis',()=>{
  const item={title:'PTT',analysisMode:'rules',analysisSummary:'Read-time rules',verification:{status:'VERIFIED'}};
  assert.equal(domain.newsDisplayAnalysis(item).mode,'rules');

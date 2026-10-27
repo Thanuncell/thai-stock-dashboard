@@ -104,13 +104,13 @@ test('metadata ambiguity and explicit failed verification cannot claim verificat
  assert.equal(reviewNewsItem(input({title:'Login',url:'https://www.kaohoon.com/login'}),{status:'VERIFIED'}).status,'REJECTED');
 });
 test('risky probe budget never lets remaining unverified items escape quarantine',async()=>{
- const items=Array.from({length:5},(_,i)=>input({title:title+' '+i,url:'https://news.google.com/articles/risky-'+i,sourceName:'Thunhoon',snippet:''}));
+ const items=Array.from({length:5},(_,i)=>input({title:'PTT '+title+' '+i,url:'https://news.google.com/articles/risky-'+i,sourceName:'Thunhoon',snippet:''}));
  let targetCalls=0;
  const service=createNewsService({fetchImpl:async value=>{
   const u=String(value);if(u.includes('/rss/search?'))return new Response(rss(items));
   if(u.includes('news.google.com/articles/'))return new Response('',{status:302,headers:{location:'https://thunhoon.com/article/'+u.split('-').at(-1)}});
   targetCalls++;const i=u.split('/').at(-1);
-  return new Response('<article><h1>'+title+' '+i+'</h1>'+text+'</article>',{headers:{'content-type':'text/html'}});
+  return new Response('<article><h1>PTT '+title+' '+i+'</h1>'+text+'</article>',{headers:{'content-type':'text/html'}});
  }});
  const result=await service.getNews();assert.equal(result.items.length,3);assert.equal(targetCalls,3);
  assert.ok(result.items.every(item=>item.verification.status==='VERIFIED'));assert.equal(service.quarantineReport().length,2);
@@ -197,9 +197,9 @@ test('uncertain article checks preserve verified LKG only for the same Watchlist
   return new Response('',{status:403});
  }});
  const stocks=[{symbol:'PTT',name:'PTT company'}];
- await service.getNews();await service.getWatchlistNews(stocks,{ownerId:'A'});uncertain=true;time+=1000;
+ await service.getNews();await service.getWatchlistNews(stocks,{ownerId:'A',refresh:true});uncertain=true;time+=1000;
  assert.equal((await service.getNews()).dataState,'stale');
- const a=await service.getWatchlistNews(stocks,{ownerId:'A'});assert.equal(a.dataState,'stale');assert.equal(a.items.length,1);
+ const a=await service.getWatchlistNews(stocks,{ownerId:'A',refresh:true});assert.equal(a.dataState,'stale');assert.equal(a.items.length,1);
  const b=await service.getWatchlistNews(stocks,{ownerId:'B'});assert.equal(b.dataState,'unavailable');assert.equal(b.items.length,0);
  uncertain=false;time+=1000;assert.equal((await service.getNews()).dataState,'fresh');
 });
@@ -213,23 +213,23 @@ test('mixed Watchlist verification is partial while cache, owner isolation and b
   return new Response('',{status:403});
  }});
  const stocks=[{symbol:'PTT',name:'PTT company'}];
- const fresh=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ const fresh=await service.getWatchlistNews(stocks,{ownerId:'A',refresh:true});
  assert.equal(fresh.dataState,'fresh');assert.equal(fresh.partial,false);assert.equal(fresh.stale,false);
  mode='mixed';time+=1000;
- const mixed=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ const mixed=await service.getWatchlistNews(stocks,{ownerId:'A',refresh:true});
  assert.equal(mixed.dataState,'partial');assert.equal(mixed.partial,true);assert.equal(mixed.stale,false);
  assert.deepEqual(mixed.items.map(item=>item.url),[good.url]);assert.equal(service.quarantineReport()[0].status,'UNVERIFIED');
  mode='uncertain';time+=1000;
  const other=await service.getWatchlistNews(stocks,{ownerId:'B'});
  assert.equal(other.dataState,'unavailable');assert.equal(other.items.length,0);
- const retained=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ const retained=await service.getWatchlistNews(stocks,{ownerId:'A',refresh:true});
  assert.equal(retained.dataState,'stale');assert.equal(retained.partial,true);assert.equal(retained.stale,true);
  assert.deepEqual(retained.items,mixed.items);assert.equal(retained.fetchedAt,mixed.fetchedAt);
  time+=31*60000;
- const expired=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ const expired=await service.getWatchlistNews(stocks,{ownerId:'A',refresh:true});
  assert.equal(expired.dataState,'unavailable');assert.equal(expired.items.length,0);
  mode='fresh';time+=1000;
- const recovered=await service.getWatchlistNews(stocks,{ownerId:'A'});
+ const recovered=await service.getWatchlistNews(stocks,{ownerId:'A',refresh:true});
  assert.equal(recovered.dataState,'fresh');assert.equal(recovered.partial,false);assert.equal(recovered.stale,false);
 });
 

@@ -35,7 +35,8 @@ import {
   zoomChartViewport,
   watchlistNewsViewState,
   newsDisplayAnalysis,
-  canRequestNewsAnalysis
+  canRequestNewsAnalysis,
+  retainWatchlistNews
 } from './client/domain.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -1381,7 +1382,12 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
   const requestId = ++watchlistNewsRequestId;
   watchlistNewsController?.abort();
   watchlistNewsController=null;
-  if(watchlistNewsScope!==scope){latestWatchlistNews=[];watchlistNewsFetchedAt=0;watchlistNewsMatchInfo=null;}
+  if(watchlistNewsScope!==scope){
+    let sameList=false;try{const previous=JSON.parse(watchlistNewsScope);sameList=previous[0]===userStorageScope&&previous[1]===activeWatchlistId;}catch{}
+    latestWatchlistNews=sameList&&Date.now()-watchlistNewsFetchedAt<=30*60000?retainWatchlistNews(latestWatchlistNews,watchlist):[];
+    if(!latestWatchlistNews.length)watchlistNewsFetchedAt=0;
+    watchlistNewsMatchInfo=null;
+  }
   watchlistNewsScope=scope;
   const symbols = watchlist.map(item => item.symbol).filter(Boolean);
   if (!symbols.length) {
@@ -1407,7 +1413,8 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
     if(!Array.isArray(data.items))throw Error('Invalid Watchlist News response');
     watchlistNewsMatchInfo = {
       matchedCandidates: Number.isFinite(data.matchedCandidates) ? data.matchedCandidates : null,
-      qualityExcluded: Number.isFinite(data.qualityExcluded) ? data.qualityExcluded : null
+      qualityExcluded: Number.isFinite(data.qualityExcluded) ? data.qualityExcluded : null,
+      stockStatus:Array.isArray(data.stockStatus)?data.stockStatus:[],limited:Boolean(data.limited)
     };
     if (data.dataState === 'unavailable' && !data.items.length && latestWatchlistNews.length
       && Date.now() - watchlistNewsFetchedAt <= 30 * 60000) {
@@ -1588,17 +1595,22 @@ function renderWatchlistNews() {
       :watchlistNewsMatchInfo?.matchedCandidates===0?'ยังไม่พบข่าวที่ตรงกับหุ้นในรายการติดตาม'
       :watchlistNewsMatchInfo?.qualityExcluded>0?'พบข่าวที่เกี่ยวข้อง แต่ยังไม่มีข่าวที่ผ่านการตรวจสอบ'
       :watchlistEmptyText();
-    renderNewsItemsInto(root,[],message);const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
+    const stocks=watchlistNewsMatchInfo?.stockStatus||[],incomplete=stocks.filter(stock=>stock.dataState!=='fresh').length;
+    renderNewsItemsInto(root,[],message+(incomplete?` · ยังอัปเดตไม่ครบ ${incomplete}/${stocks.length} หุ้น`:''));const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
   }
   const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
   watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
-  if(state==='loading'||state==='stale'||state==='partial'){
+  if(state==='loading'||state==='stale'||state==='partial'||watchlistNewsMatchInfo?.limited){
     const notice=document.createElement('div');notice.className='news-title';notice.setAttribute('role','status');
     notice.textContent=state==='loading'?'กำลังอัปเดตข่าว…'
       :state==='stale'?'แสดงข่าวล่าสุดที่โหลดไว้ · ข้อมูลอาจยังไม่เป็นปัจจุบัน'
-      :'แสดงเฉพาะข่าวที่ตรวจสอบผ่าน · ข่าวบางส่วนยังรอการตรวจสอบ';root.prepend(notice);
+      :'แสดงเฉพาะข่าวที่ตรวจสอบผ่าน · ข่าวบางส่วนยังรอการตรวจสอบ';
+    const stocks=watchlistNewsMatchInfo?.stockStatus||[];
+    if(stocks.length){const incomplete=stocks.filter(stock=>stock.dataState!=='fresh').length;if(incomplete)notice.textContent+=` · ยังอัปเดตไม่ครบ ${incomplete}/${stocks.length} หุ้น`;}
+    if(watchlistNewsMatchInfo?.limited)notice.textContent+=' · ผลค้นหาบางหุ้นถึงขีดจำกัด แสดงข่าวล่าสุดที่เก็บไว้';
+    root.prepend(notice);
   }
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
     watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToPageTop();

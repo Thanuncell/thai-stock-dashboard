@@ -126,19 +126,20 @@ const providerFetch = observability.observedFetch(globalThis.fetch);
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
-const stockSearchService = require('./server/search-service').createStockSearchService({
-  providerSearch: (query, options) => marketService.search(query, options),
-  registrySearch: async () => {
+const searchRegistry = async () => {
     if (!coverageRepository.configured) return [];
     const result = await responseCache.get('search-registry', {ttlMs:300000,staleIfErrorMs:0,errorBackoffMs:5000}, () => coverageRepository.listSearchCandidates());
     return result.value;
-  }
+  };
+const stockSearchService = require('./server/search-service').createStockSearchService({
+  providerSearch: (query, options) => marketService.search(query, options),
+  registrySearch: searchRegistry
 });
 const manualCoverageHandler = createManualCoverageHandler({
   controller: createControlledCoverage({ fetchImpl: providerFetch,
     onVerified: (symbol, verification) => invalidateVerifiedMarket(responseCache, symbol, verification) }), readJson, send
 });
-const newsService = createNewsService({ fetchImpl: providerFetch });
+const newsService = createNewsService({ fetchImpl: providerFetch, registrySearch: searchRegistry });
 const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch });
 const settradeProvider = createSettradeProvider({ fetchImpl: providerFetch });
 const marketOverviewService = createMarketOverviewService({ provider: settradeProvider });
@@ -357,7 +358,7 @@ async function handle(req, res) {
       const stocks = normalizeWatchlistNewsStocks(raw);
       const cacheKey = createWatchlistNewsCacheKey(stocks, user.id);
       const force = url.searchParams.get('refresh') === '1' && !limited(`watch-news-refresh:${user.id}`, 3);
-      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks, {ownerId:user.id}), {force});
+      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks, {ownerId:user.id,refresh:force}), {force});
       return send(res, 200, data);
     } catch (error) {
       return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ', detail: error.message });
