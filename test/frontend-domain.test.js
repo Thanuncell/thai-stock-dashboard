@@ -6,6 +6,24 @@ const assert = require('node:assert/strict');
 let domain;
 test.before(async () => { domain = await import('../client/domain.mjs'); });
 
+test('display rules never block actual AI and negative verification cannot inherit analysis',()=>{
+ const item={title:'PTT',analysisMode:'rules',analysisSummary:'Read-time rules',verification:{status:'VERIFIED'}};
+ assert.equal(domain.newsDisplayAnalysis(item).mode,'rules');
+ assert.equal(domain.newsDisplayAnalysis(item,{mode:'ai',summary:'Real AI result'}).mode,'ai');
+ assert.equal(domain.newsDisplayAnalysis(item,{mode:'unavailable',summary:''}).mode,'rules');
+ for(const status of ['UNVERIFIED','REJECTED'])assert.equal(domain.newsDisplayAnalysis({...item,verification:{status}},{mode:'ai',summary:'Other result'}),null);
+ assert.equal(domain.newsDisplayAnalysis({...item,analysisMode:'',analysisSummary:''}),null);
+ assert.equal(domain.sentimentHeadline('PTT กำไรเพิ่ม'),'บวก');assert.equal(domain.sentimentHeadline('PTT ขาดทุน'),'ลบ');
+ assert.equal(domain.sentimentHeadline('PTT รายงานข้อมูล'),'เป็นกลาง');
+});
+
+test('analysis requests stay below endpoint budget without timers and cooldown can expire',()=>{
+ const calls=[];for(let time=0;time<60000;time+=100){if(domain.canRequestNewsAnalysis(time,calls))calls.push(time);}
+ assert.equal(calls.length,6);assert.equal(domain.canRequestNewsAnalysis(59999,calls),false);
+ assert.equal(domain.canRequestNewsAnalysis(60000,calls),true);
+ assert.equal(domain.canRequestNewsAnalysis(61000,[],62000),false);assert.equal(domain.canRequestNewsAnalysis(62000,[],62000),true);
+});
+
 test('Search display formats reviewed SEC names without modifying source records or symbols', () => {
   const { rows } = require('./fixtures/search-company-display.json');
   const before = structuredClone(rows);

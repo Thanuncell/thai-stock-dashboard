@@ -329,6 +329,22 @@ export function watchlistNewsViewState(data) {
   return data.items.length ? 'fresh' : 'empty';
 }
 
+export function newsDisplayAnalysis(item, cached) {
+  if (['UNVERIFIED', 'REJECTED'].includes(item?.verification?.status)) return null;
+  const stored = ['ai', 'rules'].includes(item?.analysisMode) && String(item.analysisSummary || '').trim()
+    ? {summary:item.analysisSummary,mode:item.analysisMode,basis:'archive'} : null;
+  if (cached?.mode === 'ai' && cached.summary) return cached;
+  if (stored?.mode === 'ai' && cached?.mode !== 'unavailable') return stored;
+  if (cached?.mode === 'rules' && cached.summary) return cached;
+  return stored?.mode === 'rules' ? stored : null;
+}
+
+export function canRequestNewsAnalysis(timestamp, calls = [], cooldownUntil = 0) {
+  const recent = calls.filter(time => timestamp - time < 60000);
+  return timestamp >= cooldownUntil && recent.length < 6
+    && (!recent.length || timestamp - recent.at(-1) >= 10000);
+}
+
 export function sentimentHeadline(headline) {
   const text = String(headline || '');
   const positive = /(กำไรเพิ่ม|กำไรพุ่ง|โตเด่น|เติบโต|บวก|รับอานิสงส์|ปรับขึ้น|เพิ่มขึ้น|ยอดขายโต|ซื้อคืน|ปันผลเพิ่ม|ผ่านจุดต่ำสุด|ฟื้นตัว|ชนะประมูล|คว้างาน)/i;

@@ -31,7 +31,8 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    const page=await context.newPage();await seedPage(page,'token-a');await page.goto(base+'/?symbol=PTT#news',{waitUntil:'domcontentloaded'});
    await page.waitForSelector('body.authenticated');await page.waitForFunction(()=>document.querySelector('#news-section')?.textContent.includes('สรุปไม่พร้อม'));
    const calls=state.analysisCalls.length;await pause(500);assert.equal(state.analysisCalls.length,calls,'unavailable cannot trigger a repeat loop');
-   assert.ok(calls>0);assert.match(await page.locator('#news-section').textContent(),/ยังไม่ประเมิน/);assert.doesNotMatch(await page.locator('#news-section').textContent(),/โดย AI|LEGACY_SUMMARY_MUST_NOT_OVERRIDE_UNAVAILABLE/);
+   assert.ok(calls>0);assert.match(await page.locator('#news-section .news-impact').first().textContent(),/บวก/);assert.doesNotMatch(await page.locator('#news-section').textContent(),/โดย AI|LEGACY_SUMMARY_MUST_NOT_OVERRIDE_UNAVAILABLE/);
+   await page.evaluate(()=>{const original=Date.now;Date.now=()=>original()+11000;});
    state.version=2;state.holdA=true;await page.locator('#refresh-news').click();for(let attempt=0;attempt<100&&!state.release;attempt++)await pause(20);assert.ok(state.release);
    await page.locator('#logout-button').click();await page.waitForSelector('#login-form:not([hidden])');
    await page.locator('#login-form input[name="email"]').fill('b@example.test');await page.locator('#login-form input[name="password"]').fill('fixture-password');
@@ -39,7 +40,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    state.holdA=false;state.release();
    await page.waitForFunction(()=>document.querySelector('#news-section')?.textContent.includes('สรุปไม่พร้อม'));await pause(300);
    assert.ok(state.analysisCalls.includes('B'));assert.doesNotMatch(await page.locator('body').textContent(),/OWNER_A_ONLY_OLD_RESPONSE/);
-   console.log(JSON.stringify({viewport:label,unavailableTruth:'PASS',noAnalysisReplay:'PASS',noInventedSentiment:'PASS',accountAnalysisFence:'PASS'}));
+   console.log(JSON.stringify({viewport:label,unavailableTruth:'PASS',noAnalysisReplay:'PASS',independentHeadlineSentiment:'PASS',accountAnalysisFence:'PASS'}));
    await context.close();
   }
  }finally{await browser?.close().catch(()=>{});server.kill();}

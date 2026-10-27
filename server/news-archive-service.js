@@ -5,6 +5,7 @@ const { allowedNewsUrl } = require('../lib/news-policy');
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { reviewNewsItem } = require('../lib/news-quality');
+const { withNewsRulesSummary } = require('../lib/news-summary');
 
 const RETENTION_DAYS = 365;
 const MAX_PAGE_SIZE = 50;
@@ -134,7 +135,7 @@ function createNewsArchiveService({
       analysisMode: ['ai', 'rules'].includes(row?.analysis_mode) && String(row?.analysis_summary || '').trim() ? row.analysis_mode : ''
     };
     const verification = reviewArchivedNewsRow(row);
-    return safeUrl && verification.status === 'VERIFIED' ? { ...item, verification } : null;
+    return safeUrl && verification.status === 'VERIFIED' ? withNewsRulesSummary({ ...item, verification }) : null;
   }
 
   async function buildArchiveSnapshot() {

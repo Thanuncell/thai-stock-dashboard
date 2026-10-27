@@ -183,7 +183,7 @@ test('News uses fresh Archive Featured fallback and never leaves archived analys
   const renderNews = appSource.match(/function renderNews\(\) \{[\s\S]*?\n\}/)?.[0] || '';
   const renderNewsItem = appSource.match(/function renderNewsItem\([\s\S]*?\n\}/)?.[0] || '';
   assert.match(renderNews, /liveFeatured\.length \? liveFeatured : selectNewsForDisplay\(archiveFeatured/);
-  assert.match(renderNewsItem, /\['ai', 'rules'\]\.includes\(item\.analysisMode\)/);
+  assert.match(renderNewsItem, /newsDisplayAnalysis\(item,newsAnalyses\.get\(newsKey\(item\)\)\)/);
   assert.match(renderNewsItem, /ยังไม่มีบทสรุปสำหรับข่าวนี้/);
   assert.doesNotMatch(renderNewsItem, /กำลังอ่านและสรุปเนื้อหาข่าว/);
   assert.match(appSource, /analyzeNewsBriefs\(\[\.\.\.latestNews, \.\.\.latestWatchlistNews\]\)/);

@@ -4,6 +4,7 @@ const {inspectNewsArticle}=require('../lib/news-article');
 const {reviewNewsItem,classifyNewsItem}=require('../lib/news-quality');
 const {createNewsService}=require('../server/news-service');
 const {createNewsArchiveService,planNewsArchiveCleanup}=require('../server/news-archive-service');
+const {withNewsRulesSummary,fallbackNewsSummary}=require('../lib/news-summary');
 const url='https://www.kaohoon.com/news/123',title='Company earnings announcement';
 const text='This company announced its operating results, investment plan and disclosed the reporting period. This is synthetic fixture content, not actual market news.';
 const ld=record=>'<script type="application/ld+json">'+JSON.stringify(record)+'</script>';
@@ -11,6 +12,67 @@ const article=(changes={})=>({'@type':'NewsArticle',url,headline:title,articleBo
 const input=(changes={})=>({title,url:'https://news.google.com/articles/item',source:'infoquest',sourceName:'InfoQuest',snippet:text,...changes});
 const success=items=>({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({items})}]}]});
 const rss=items=>'<rss><channel>'+items.map(item=>`<item><title>${item.title}</title><link>${item.url}</link><pubDate>${item.pubDate||new Date().toISOString()}</pubDate><description>${item.snippet||''}</description><source>${item.sourceName||'Thunhoon'}</source></item>`).join('')+'</channel></rss>';
+
+test('rules require verified sufficient snippets, use earnings wording selectively and preserve actual AI',()=>{
+ const earnings=input({title:'PTT รายงานผลประกอบการ',snippet:'บริษัทเปิดเผยตัวเลขกำไรและรายละเอียดผลประกอบการล่าสุด'});
+ const summary='ข้อความข่าวมีคำสำคัญเกี่ยวกับผลประกอบการ ควรตรวจสอบตัวเลขและรายละเอียดจากข่าวต้นฉบับ';
+ assert.equal(withNewsRulesSummary(earnings).analysisSummary,summary);
+ assert.equal(withNewsRulesSummary({...earnings,snippet:'สั้น',url}).analysisSummary,'');
+ assert.equal(withNewsRulesSummary({...earnings,snippet:'สั้น',url,analysisMode:'rules',analysisSummary:'Old unsupported rules'}).analysisSummary,'');
+ assert.equal(withNewsRulesSummary({...earnings,analysisMode:'rules',analysisSummary:'Old positive wording'}).analysisSummary,summary);
+ assert.equal(withNewsRulesSummary({...earnings,snippet:' '.repeat(100),url}).analysisMode,'');
+ for(const status of ['UNVERIFIED','REJECTED'])assert.equal(withNewsRulesSummary({...earnings,verification:{status},analysisMode:'ai',analysisSummary:'must not pass'}),null);
+ assert.equal(withNewsRulesSummary({...earnings,snippet:'',url:'https://news.google.com/articles/no-proof'}),null);
+ assert.notEqual(withNewsRulesSummary(input({title:'โครงการลงทุนใหม่',snippet:'บริษัทแจ้งรายละเอียดโครงการลงทุนและแผนดำเนินงานล่าสุด'})).analysisSummary,summary);
+ assert.equal(fallbackNewsSummary('x'),'');
+ const actual={...earnings,analysisMode:'ai',analysisSummary:'Actual fixture AI result'};
+ assert.deepEqual(withNewsRulesSummary(actual),actual);
+});
+
+test('archive-only verified rows get read-time rules without AI, writes or changing source rows',async()=>{
+ const rows=[
+  {fingerprint:'earnings',title:'PTT รายงานผลประกอบการ',url:'https://www.kaohoon.com/news/101',source:'kaohoon',source_name:'ข่าวหุ้น',snippet:'บริษัทเปิดเผยตัวเลขกำไรและรายละเอียดผลประกอบการล่าสุด',published_at:new Date().toISOString()},
+  {fingerprint:'sparse',title:'PTT company announcement',url:'https://www.kaohoon.com/news/102',source:'kaohoon',snippet:'',published_at:new Date().toISOString()},
+  {fingerprint:'uncertain',title:'PTT company announcement',url:'https://news.google.com/articles/no-proof',source:'infoquest',snippet:'',published_at:new Date().toISOString()},
+  {fingerprint:'rejected',title:'Login',url:'https://www.kaohoon.com/login',source:'kaohoon',snippet:text,published_at:new Date().toISOString()}
+ ];
+ const before=structuredClone(rows);let calls=0;
+ const archive=createNewsArchiveService({env:{SUPABASE_URL:'https://fixture.supabase.co',SUPABASE_SECRET_KEY:'sb_secret_synthetic'},fetchImpl:async(u,init)=>{
+  assert.ok(!init.method||init.method==='GET');assert.ok(!String(u).includes('openai'));calls++;
+  return Response.json(rows,{headers:{'content-range':'0-3/4'}});
+ }});
+ const result=await archive.list({featuredCount:0});assert.equal(calls,1);assert.equal(result.items.length,2);
+ const earnings=result.items.find(row=>row.fingerprint==='earnings');assert.equal(earnings.analysisMode,'rules');assert.match(earnings.analysisSummary,/เกี่ยวกับผลประกอบการ/);
+ const sparse=result.items.find(row=>row.fingerprint==='sparse');assert.equal(sparse.analysisSummary,'');assert.equal(sparse.analysisMode,'');
+ assert.equal(result.quarantined,1);assert.equal(result.rejected,1);assert.deepEqual(rows,before);
+});
+
+for(const code of ['rate_limit_exceeded','insufficient_quota'])test('news and standalone rules remain usable when AI returns '+code,async()=>{
+ let aiCalls=0;
+ const news=input({title:'PTT รายงานผลประกอบการ',snippet:'บริษัทเปิดเผยตัวเลขกำไรและรายละเอียดผลประกอบการล่าสุด'});
+ const service=createNewsService({env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async value=>{
+  if(String(value).includes('/rss/search?'))return new Response(rss([news]));
+  if(String(value).includes('api.openai.com')){aiCalls++;return Response.json({error:{code}},{status:429});}
+  return new Response('',{status:404});
+ }});
+ const feed=await service.getNews();assert.equal(feed.items[0].analysisMode,'rules');assert.equal(aiCalls,0);
+ const analysis=await service.analyse([news]);assert.equal(analysis.mode,'rules');assert.equal(aiCalls,1);
+ assert.equal((await service.getWatchlistNews([{symbol:'PTT'}])).items[0].analysisSummary,feed.items[0].analysisSummary);assert.equal(aiCalls,1);
+});
+
+test('the same news can upgrade from cached upstream-429 Rules to real AI after bounded expiry',async()=>{
+ let current=Date.now(),calls=0;
+ const service=createNewsService({now:()=>current,env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async value=>{
+  if(!String(value).includes('api.openai.com'))return new Response('',{status:404});calls++;
+  return calls===1?Response.json({error:{code:'rate_limit_exceeded'}},{status:429})
+   :Response.json(success([{id:0,summary:'Real result after temporary limit'}]));
+ }});
+ const news=input();assert.equal((await service.analyse([news])).mode,'rules');
+ assert.equal((await service.analyse([news])).mode,'rules');assert.equal(calls,1);
+ current+=5*60000+1;
+ const recovered=await service.analyse([news]);assert.equal(recovered.mode,'ai');assert.equal(calls,2);
+ assert.equal((await service.analyse([news])).items[0].summary,recovered.items[0].summary);assert.equal(calls,2);
+});
 
 test('JSON-LD article identity binds URL/type before articleBody and ignores a longer related article',()=>{
  assert.equal(inspectNewsArticle(ld(article()),{url,title}).text,text);

@@ -8,6 +8,7 @@ const { reviewNewsItem } = require('../lib/news-quality');
 const { inspectNewsArticle, articleIdentity } = require('../lib/news-article');
 const { newsAnalysisRequest, parseNewsAnalysis, safeAiDiagnostic } = require('../lib/news-analysis');
 const { createWatchlistNewsCacheKey } = require('./reliability');
+const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
 
 const FEEDS = Object.freeze([
   ['thunhoon', 'ทันหุ้น', 'site:thunhoon.com'],
@@ -44,17 +45,6 @@ const MAX_RISKY_TARGET_BYTES = 256_000;
 function sourceFromOutlet(name = '') {
   const mapped = (OUTLET_SOURCE.find(([pattern]) => pattern.test(name)) || [null, null])[1];
   return mapped || (matchBrokerFirms(name).length ? 'broker' : 'other');
-}
-
-function fallbackNewsSummary(title = '') {
-  const text = String(title);
-  if (/(กำไรเพิ่ม|กำไรพุ่ง|โตเด่น|เติบโต|ปันผลเพิ่ม|ฟื้นตัว|ชนะประมูล|คว้างาน|ยอดขายโต)/i.test(text)) {
-    return 'ข้อความข่าวมีคำสำคัญเชิงบวก ควรตรวจสอบบริบท ตัวเลข และผลกระทบจากข่าวต้นฉบับ';
-  }
-  if (/(ขาดทุน|กำไรลด|ร่วง|หดตัว|ผิดนัด|ถูกฟ้อง|เพิ่มทุน|ลดเป้า|เลื่อนโครงการ|ต้นทุนพุ่ง)/i.test(text)) {
-    return 'ข้อความข่าวมีคำสำคัญเกี่ยวกับความเสี่ยง ควรตรวจสอบรายละเอียดและผลกระทบจากข่าวต้นฉบับ';
-  }
-  return 'คำสำคัญยังไม่เพียงพอสำหรับประเมินผลกระทบ ควรอ่านรายละเอียดจากข่าวต้นฉบับ';
 }
 
 function parseRetryAfter(value, timestamp) {
@@ -283,7 +273,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
       }
     }
     const items = dedupeNewsItems(settled.flatMap(result => result.status === 'fulfilled' ? result.value : []))
-      .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
+      .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).map(withNewsRulesSummary).filter(Boolean);
     const errors = settled.map((result, index) => result.status === 'rejected' ? FEEDS[index][0] : null).filter(Boolean);
     const cooldownError = settled.find(result => result.status === 'rejected' && result.reason?.providerCooldown)?.reason;
     if (cooldownError) {
@@ -427,7 +417,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const result=prepared.map(item=>{
       if(reviewNewsItem(item).status!=='VERIFIED')return {summary:'',mode:'unavailable',basis:'headline'};
       let cached=analysisCache.get(cacheKey(item));
-      if(!cached){cached=item.snippet?{summary:fallbackNewsSummary(item.snippet),mode:'rules',basis:'snippet',expiresAt:Number(now())+5*60*1000}
+      if(!cached){const summary=withNewsRulesSummary(item)?.analysisSummary || '';cached=summary?{summary,mode:'rules',basis:'snippet',expiresAt:Number(now())+5*60*1000}
         :{summary:'',mode:'unavailable',basis:'headline',expiresAt:Number(now())+5*60*1000};analysisCache.set(cacheKey(item),cached);}
       return {summary:cached.summary,mode:cached.mode,basis:cached.basis};
     });
@@ -484,7 +474,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
       && item.matchedSymbols.length);
     const qualityItems = await keepQualityItems(parsedItems);
     const items = dedupeNewsItems(qualityItems)
-      .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).slice(0, 30);
+      .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).slice(0, 30).map(withNewsRulesSummary).filter(Boolean);
     const uncertain = qualityItems.unverifiedCount > 0;
     const unavailable = !items.length && uncertain;
     if (unavailable) {

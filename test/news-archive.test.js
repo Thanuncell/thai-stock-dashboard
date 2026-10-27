@@ -187,7 +187,7 @@ test('archive returns a quality-gated seven-day Featured fallback before paginat
   assert.ok([...first.items, ...second.items].every(item => !featuredKeys.has(item.fingerprint)));
   assert.equal(first.total, rows.length - 2 - first.featured.length, 'invalid date, non-news row and Featured rows are excluded from the Latest total');
   assert.equal(calls, 1, 'Featured and paginated Latest reuse one bounded archive snapshot');
-  assert.equal(first.featured.find(item => item.fingerprint === 'row-1').analysisSummary, 'สรุปที่บันทึกและตรวจสอบแล้ว');
+  assert.equal(first.featured.find(item => item.fingerprint === 'row-1').analysisSummary, 'ข้อความข่าวมีคำสำคัญเกี่ยวกับผลประกอบการ ควรตรวจสอบตัวเลขและรายละเอียดจากข่าวต้นฉบับ');
 });
 
 test('archive Featured fallback keeps source, search, total and persisted-summary validation', async () => {
@@ -211,9 +211,10 @@ test('archive Featured fallback keeps source, search, total and persisted-summar
   assert.equal(result.featured.length, 5);
   assert.equal(result.total, 4);
   assert.ok([...result.featured, ...result.items].every(item => item.source === 'infoquest' && item.title.includes('กำไร')));
-  const unverified = [...result.featured, ...result.items].find(item => item.fingerprint === 'row-22');
-  assert.equal(unverified.analysisSummary, '');
-  assert.equal(unverified.analysisMode, '');
+  const invalidStored = [...result.featured, ...result.items].find(item => item.fingerprint === 'row-22');
+  assert.notEqual(invalidStored.analysisSummary, 'ห้ามนำมาแสดง');
+  assert.equal(invalidStored.analysisSummary, 'ข้อความข่าวมีคำสำคัญเกี่ยวกับผลประกอบการ ควรตรวจสอบตัวเลขและรายละเอียดจากข่าวต้นฉบับ');
+  assert.equal(invalidStored.analysisMode, 'rules');
 });
 
 test('archive fails closed when the persisted dataset exceeds its bounded scan limit', async () => {
