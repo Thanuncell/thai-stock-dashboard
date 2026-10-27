@@ -171,6 +171,7 @@ function clearPrivateState() {
   alertHistory = [];
   unreadAlerts = 0;
   latestWatchlistNews = [];
+  newsAnalyses.clear();
   watchlistNewsRequestId += 1;
   watchlistNewsController?.abort();
   watchlistNewsController = null;
@@ -1394,37 +1395,40 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
   }
 }
 async function analyzeNewsBriefs(items) {
-  if (newsAnalysisPending || !items.length) return;
+  if (!isCurrentPrivateIdentity() || newsAnalysisPending || !items.length) return;
   const fresh = [...new Map(items.map(item => [newsKey(item), item])).values()]
     .filter(item => !newsAnalyses.has(newsKey(item))).slice(0, 8);
   if (!fresh.length) return;
   newsAnalysisPending = true;
-  const targets = fresh.map(item => ({ source: item.sourceName || item.source || '', title: String(item.title || '').slice(0, 300), url: item.url, snippet: String(item.snippet || '').slice(0, 1200) }));
+  const analysisIdentity = capturePrivateIdentity();
+  const targets = fresh.map(item => ({ source: item.sourceName || item.source || '', title: String(item.title || '').slice(0, 300), url: item.url, snippet: String(item.snippet || '').slice(0, 1200), verification: item.verification }));
   try {
     const response = await apiFetch('/api/news-analysis', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: targets }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'วิเคราะห์ข่าวไม่สำเร็จ');
-    (data.items || []).forEach((result, index) => {
-      const item = fresh[index];
-      if (item && result?.summary) newsAnalyses.set(newsKey(item), { summary: result.summary, mode: result.mode || data.mode || 'rules', basis: result.basis || 'headline' });
+    if (!isCurrentPrivateIdentity(analysisIdentity)) return;
+    fresh.forEach((item, index) => {
+      const result = data.items?.[index];
+      const mode = ['ai', 'rules'].includes(result?.mode) && typeof result.summary === 'string' && result.summary.trim() ? result.mode : 'unavailable';
+      newsAnalyses.set(newsKey(item), { summary: mode === 'unavailable' ? '' : result.summary, mode, basis: result?.basis || 'headline' });
     });
   } catch (_) {
-    fresh.forEach(item => newsAnalyses.set(newsKey(item), { summary: 'อ่านรายละเอียดข่าวและตัวเลขในข่าวต้นฉบับเพิ่มเติมก่อนประเมินผลกระทบต่อหุ้น', mode: 'rules' }));
+    if (isCurrentPrivateIdentity(analysisIdentity)) fresh.forEach(item => newsAnalyses.set(newsKey(item), { summary: '', mode: 'unavailable', basis: 'headline' }));
   } finally {
     newsAnalysisPending = false;
     renderNews();
     renderWatchlistNews();
-    if ([...latestNews, ...latestWatchlistNews].some(item => !newsAnalyses.has(newsKey(item)))) queueMicrotask(() => analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]));
+    if (isCurrentPrivateIdentity() && [...latestNews, ...latestWatchlistNews].some(item => !newsAnalyses.has(newsKey(item)))) queueMicrotask(() => analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]));
   }
 }
 function renderNewsItem(item, options = {}) {
-  const mood = options.mood || sentimentHeadline(item.title || '');
   const relatedSymbols = item.matchedSymbols || [];
-  const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
   const analysis = newsAnalyses.get(newsKey(item));
   const persistedSummary = ['ai', 'rules'].includes(item.analysisMode) ? String(item.analysisSummary || '').trim() : '';
-  const summary = analysis?.summary || persistedSummary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้';
-  const analysisMode = analysis?.summary ? analysis.mode : persistedSummary ? item.analysisMode : 'unavailable';
+  const summary = analysis ? analysis.summary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้' : persistedSummary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้';
+  const analysisMode = analysis ? analysis.summary ? analysis.mode : 'unavailable' : persistedSummary ? item.analysisMode : 'unavailable';
+  const mood = analysisMode === 'unavailable' ? 'ยังไม่ประเมิน' : options.mood || sentimentHeadline(item.title || '');
+  const cls = mood === 'บวก' ? 'impact-positive' : mood === 'ลบ' ? 'impact-negative' : 'impact-neutral';
   const mode = analysisMode === 'ai'
     ? `โดย AI · ${analysis?.basis === 'article' ? 'อ่านเนื้อหาข่าว' : analysis?.basis === 'snippet' ? 'อ่านข้อความย่อข่าว' : 'อ่านพาดหัว'}`
     : analysisMode === 'rules' ? 'สรุปจากคำสำคัญ' : 'สรุปไม่พร้อม';
@@ -1444,7 +1448,7 @@ function renderNewsItem(item, options = {}) {
   source.textContent = item.sourceName || item.source || 'ข่าว';
   const impact = document.createElement('span');
   impact.className = `news-impact ${cls}`;
-  impact.title = 'ประเมินจากพาดหัวข่าว ไม่ใช่เนื้อหาฉบับเต็ม';
+  impact.title = 'คำสำคัญจากพาดหัว ไม่ใช่การประเมิน Sentiment โดย AI';
   impact.textContent = mood;
   tags.append(source, impact);
   if (item.brokerCategory || item.source === 'broker') {

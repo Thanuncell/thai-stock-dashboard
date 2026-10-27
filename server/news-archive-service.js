@@ -4,7 +4,7 @@ const { createHash } = require('node:crypto');
 const { allowedNewsUrl } = require('../lib/news-policy');
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
-const { classifyNewsItem } = require('../lib/news-quality');
+const { reviewNewsItem } = require('../lib/news-quality');
 
 const RETENTION_DAYS = 365;
 const MAX_PAGE_SIZE = 50;
@@ -20,6 +20,20 @@ const SOURCE_TIER = Object.freeze({ official: 4, settrade: 3, infoquest: 2, efin
 
 function archiveFingerprint(item) {
   return createHash('sha256').update(newsFingerprint(item)).digest('hex');
+}
+
+function reviewArchivedNewsRow(row) {
+  if (!allowedNewsUrl(row?.url) || !Number.isFinite(Date.parse(row?.published_at))) return { status: 'REJECTED', reason: 'INVALID_ARCHIVE_IDENTITY' };
+  return reviewNewsItem({ title: row.title, url: row.url, source: row.source, sourceName: row.source_name, snippet: row.snippet || '' });
+}
+
+// Offline review plan only. Hiding is enforced by the same read predicate; no SQL or delete action.
+function planNewsArchiveCleanup(rows = []) {
+  const candidates = rows.map(row => ({ fingerprint: row.fingerprint, ...reviewArchivedNewsRow(row) }))
+    .filter(item => item.status !== 'VERIFIED').map(item => ({ ...item, action: 'HIDE_PENDING_REVIEW' }));
+  return { dryRun: true, writes: 0, totalRows: rows.length,
+    quarantined: candidates.filter(item=>item.status==='UNVERIFIED').length,
+    rejected: candidates.filter(item=>item.status==='REJECTED').length, candidates };
 }
 
 function createNewsArchiveService({
@@ -40,14 +54,14 @@ function createNewsArchiveService({
   let archiveSnapshotVersion = 0;
 
   function headers(extra = {}) {
-    return { apikey: secretKey, Authorization: `Bearer ${secretKey}`, ...extra };
+    return { apikey: secretKey, ...(secretKey.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${secretKey}` }), ...extra };
   }
 
   function toRow(item) {
     const safeUrl = allowedNewsUrl(item?.url);
     const publishedAt = Date.parse(item?.pubDate);
     const timestamp = Number(now());
-    if (!safeUrl || !String(item?.title || '').trim() || !Number.isFinite(publishedAt) || !classifyNewsItem(item).accepted) return null;
+    if (!safeUrl || !String(item?.title || '').trim() || !Number.isFinite(publishedAt) || reviewNewsItem(item).status !== 'VERIFIED') return null;
     if (publishedAt < timestamp - RETENTION_DAYS * 24 * 60 * 60 * 1000 || publishedAt > timestamp + 10 * 60 * 1000) return null;
     return {
       fingerprint: archiveFingerprint(item),
@@ -60,8 +74,8 @@ function createNewsArchiveService({
       fetched_at: new Date(timestamp).toISOString(),
       matched_symbols: [...new Set((item.matchedSymbols || []).map(normalizeSymbol).filter(Boolean))].slice(0, 30),
       broker_firms: [...new Set((item.matchedBrokerFirms || []).map(value => String(value).slice(0, 12)))].slice(0, 10),
-      analysis_summary: item.analysisSummary ? String(item.analysisSummary).slice(0, 450) : null,
-      analysis_mode: item.analysisMode ? String(item.analysisMode).slice(0, 24) : null
+      analysis_summary: ['ai', 'rules'].includes(item.analysisMode) && item.analysisSummary ? String(item.analysisSummary).slice(0, 450) : null,
+      analysis_mode: ['ai', 'rules'].includes(item.analysisMode) && item.analysisSummary ? item.analysisMode : null
     };
   }
 
@@ -119,7 +133,8 @@ function createNewsArchiveService({
       analysisSummary: ['ai', 'rules'].includes(row?.analysis_mode) ? String(row?.analysis_summary || '').trim().slice(0, 450) : '',
       analysisMode: ['ai', 'rules'].includes(row?.analysis_mode) && String(row?.analysis_summary || '').trim() ? row.analysis_mode : ''
     };
-    return safeUrl && classifyNewsItem(item).accepted ? item : null;
+    const verification = reviewArchivedNewsRow(row);
+    return safeUrl && verification.status === 'VERIFIED' ? { ...item, verification } : null;
   }
 
   async function buildArchiveSnapshot() {
@@ -156,10 +171,13 @@ function createNewsArchiveService({
     }
     const accepted = rows.map(fromRow).filter(Boolean);
     const displayable = dedupeNewsItems(accepted);
+    const review = planNewsArchiveCleanup(rows);
     return {
       items: displayable,
       rawTotal: rows.length,
       qualityFiltered: rows.length - accepted.length,
+      quarantined: review.quarantined,
+      rejected: review.rejected,
       deduplicated: accepted.length - displayable.length
     };
   }
@@ -223,6 +241,8 @@ function createNewsArchiveService({
       pageSize: safePageSize,
       total: paginated.length,
       qualityFiltered: snapshot.qualityFiltered,
+      quarantined: snapshot.quarantined,
+      rejected: snapshot.rejected,
       deduplicated: snapshot.deduplicated,
       maxAgeDays: RETENTION_DAYS,
       coverage: 'up-to-365-days-subject-to-source-availability'
@@ -240,5 +260,7 @@ module.exports = {
   MAX_PAGE_SIZE,
   RETENTION_DAYS,
   archiveFingerprint,
-  createNewsArchiveService
+  createNewsArchiveService,
+  planNewsArchiveCleanup,
+  reviewArchivedNewsRow
 };

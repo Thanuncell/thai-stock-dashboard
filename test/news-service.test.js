@@ -15,8 +15,8 @@ function rss(items) {
 test('Watchlist News keeps relevant unknown publishers and rejects only invalid items', async () => {
   const recent = new Date().toUTCString();
   const body = rss([
-    { title: 'PTT เดินหน้าลงทุน', url: 'https://news.google.com/articles/unknown', pubDate: recent, sourceName: 'สำนักข่าวท้องถิ่น' },
-    { title: 'PTT เดินหน้าลงทุน', url: 'https://news.google.com/articles/unknown', pubDate: recent, sourceName: 'สำนักข่าวท้องถิ่น' },
+    { title: 'PTT เดินหน้าลงทุน', url: 'https://news.google.com/articles/unknown', pubDate: recent, sourceName: 'สำนักข่าวท้องถิ่น', snippet: 'บริษัทเปิดเผยรายละเอียดและกรอบเวลาโครงการลงทุนใหม่' },
+    { title: 'PTT เดินหน้าลงทุน', url: 'https://news.google.com/articles/unknown', pubDate: recent, sourceName: 'สำนักข่าวท้องถิ่น', snippet: 'บริษัทเปิดเผยรายละเอียดและกรอบเวลาโครงการลงทุนใหม่' },
     { title: 'AOT เปิดเส้นทางใหม่', url: 'https://news.google.com/articles/unrelated', pubDate: recent, sourceName: 'สำนักข่าวท้องถิ่น' },
     { title: 'PTT URL ไม่ปลอดภัย', url: 'http://news.google.com/articles/bad', pubDate: recent, sourceName: 'สำนักข่าวท้องถิ่น' },
     { title: 'PTT วันที่เสีย', url: 'https://news.google.com/articles/date', pubDate: 'not-a-date', sourceName: 'สำนักข่าวท้องถิ่น' }
@@ -205,7 +205,8 @@ test('short or unusual headlines use article evidence instead of title length al
     NEWS_QUALITY_DECISION.ACCEPT
   ]);
   assert.equal(results[3].decision, NEWS_QUALITY_DECISION.AMBIGUOUS);
-  assert.ok(results.every(result => result.accepted), 'title shape alone must not discard a potentially genuine article');
+  assert.ok(results.slice(0,3).every(result => result.accepted), 'short genuine articles retain their evidence');
+  assert.equal(results[3].accepted, false, 'title-only uncertainty is quarantined rather than marked verified');
 });
 
 test('official announcements and genuine shareholder articles remain accepted', () => {
@@ -410,7 +411,7 @@ test('targeted SET recruiting and SETTRADE company-board pages are rejected with
   assert.ok(genuine.every(item => classifyNewsItem(item).accepted));
 });
 
-test('risky Thunhoon target checks reject proven missing pages but keep access-denied pages unverified', async () => {
+test('risky Thunhoon target checks reject missing pages and quarantine access-denied pages', async () => {
   const pubDate = new Date().toUTCString();
   const item = {
     title: 'THG รายงานความคืบหน้าธุรกิจล่าสุด',
@@ -440,7 +441,8 @@ test('risky Thunhoon target checks reject proven missing pages but keep access-d
       : new Response('', { status: 403, headers: { 'content-type': 'text/html' } })
   });
   const retained = await denied.getNews();
-  assert.deepEqual(retained.items.map(entry => entry.title), [item.title]);
+  assert.deepEqual(retained.items, []);
+  assert.equal(denied.quarantineReport()[0].status, 'UNVERIFIED');
 });
 
 test('risky target evidence distinguishes 410 and empty articles from 429 and timeout uncertainty', async () => {
@@ -471,8 +473,8 @@ test('risky target evidence distinguishes 410 and empty articles from 429 and ti
   assert.deepEqual((await loadWith(() => new Response('<main><nav>เมนู</nav></main>', {
     status: 200, headers: { 'content-type': 'text/html' }
   }))).items, []);
-  assert.deepEqual((await loadWith(() => new Response('', { status: 429 }))).items.map(entry => entry.title), [item.title]);
-  assert.deepEqual((await loadWith(Error('timeout'))).items.map(entry => entry.title), [item.title]);
+  assert.deepEqual((await loadWith(() => new Response('', { status: 429 }))).items, []);
+  assert.deepEqual((await loadWith(Error('timeout'))).items, []);
 });
 
 test('proven non-news items are excluded before AI article extraction', async () => {
