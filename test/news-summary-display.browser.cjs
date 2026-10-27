@@ -37,7 +37,8 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    assert.doesNotMatch(await card(other.title).locator('.news-ai-summary').textContent(),/เกี่ยวกับผลประกอบการ/);
    assert.match(await card(sparse.title).locator('.news-ai-summary').textContent(),/สรุปไม่พร้อม/);
    assert.match(await card(sparse.title).locator('.news-impact').textContent(),/บวก/);
-   state.live=true;await page.locator('#refresh-news').click();await page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled);
+   const limited=page.waitForResponse(response=>response.url().endsWith('/api/news-analysis')&&response.status()===429);
+   state.live=true;await page.locator('#refresh-news').click();await limited;await page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled);
    assert.equal(state.calls.length,1);assert.deepEqual(state.calls[0].map(item=>item.url),[target.url]);
    assert.match(await card(target.title).locator('.news-ai-summary').textContent(),/เกี่ยวกับผลประกอบการ/);
    for(let i=0;i<12;i++){await page.locator('#refresh-news').click();await page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled);}

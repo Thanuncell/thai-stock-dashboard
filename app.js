@@ -1345,8 +1345,11 @@ async function getArchiveNews({ page = newsPage } = {}) {
     archiveNews = Array.isArray(data.items) ? data.items : [];
     // Use one accepted stored summary across live and archived representations.
     for (const item of [...archiveFeaturedNews, ...archiveNews]) {
-      if ((!newsAnalyses.has(newsKey(item)) || (item.analysisMode === 'ai' && newsAnalyses.get(newsKey(item))?.mode !== 'ai')) && !pendingNewsAnalysisKeys.has(newsKey(item))
-        && ['ai', 'rules'].includes(item.analysisMode) && String(item.analysisSummary || '').trim()) {
+      if (['UNVERIFIED', 'REJECTED'].includes(item.verification?.status)) continue;
+      if ((!newsAnalyses.has(newsKey(item)) || (item.analysisMode === 'ai' && newsAnalyses.get(newsKey(item))?.mode !== 'ai'))
+        && (!pendingNewsAnalysisKeys.has(newsKey(item)) || (item.analysisMode === 'ai' && item.verification?.status === 'VERIFIED'))
+        && ['ai', 'rules'].includes(item.analysisMode) && String(item.analysisSummary || '').trim()
+        && (item.analysisMode !== 'ai' || item.verification?.status === 'VERIFIED')) {
         newsAnalyses.set(newsKey(item), {summary:String(item.analysisSummary).trim(),mode:item.analysisMode,basis:'archive'});
       }
     }
@@ -1461,6 +1464,12 @@ async function analyzeNewsBriefs(items) {
     fresh.forEach((item, index) => {
       const result = data.items?.[index];
       const mode = ['ai', 'rules'].includes(result?.mode) && typeof result.summary === 'string' && result.summary.trim() ? result.mode : 'unavailable';
+      const current = newsAnalyses.get(newsKey(item));
+      const prior = newsDisplayAnalysis(item,current);
+      if (mode !== 'ai' && prior?.mode === 'ai' && (current?.mode === 'ai' || item.verification?.status === 'VERIFIED')) {
+        newsAnalyses.set(newsKey(item),prior);
+        return;
+      }
       newsAnalyses.set(newsKey(item), { summary: mode === 'unavailable' ? '' : result.summary, mode, basis: result?.basis || 'headline' });
     });
   } catch (_) {

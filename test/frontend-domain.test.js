@@ -24,6 +24,19 @@ test('analysis requests stay below endpoint budget without timers and cooldown c
  assert.equal(domain.canRequestNewsAnalysis(61000,[],62000),false);assert.equal(domain.canRequestNewsAnalysis(62000,[],62000),true);
 });
 
+test('verified stored AI survives cached unavailable while legacy and negative evidence remain restricted',()=>{
+ const stored={url:'https://www.kaohoon.com/news/verified',analysisMode:'ai',analysisSummary:'Verified stored AI'};
+ const unavailable={mode:'unavailable',summary:''};
+ assert.equal(domain.newsDisplayAnalysis({...stored,verification:{status:'VERIFIED',basis:'metadata'}},unavailable)?.summary,stored.analysisSummary);
+ assert.equal(domain.newsDisplayAnalysis(stored,unavailable),null,'legacy summary has no verified evidence');
+ assert.equal(domain.newsDisplayAnalysis(stored),null,'legacy AI cannot enter display/cache before a current attempt either');
+ for(const status of ['UNVERIFIED','REJECTED']){
+  assert.equal(domain.newsDisplayAnalysis({...stored,verification:{status}},unavailable),null);
+  assert.equal(domain.newsDisplayAnalysis({...stored,verification:{status}},{mode:'ai',summary:'Cached AI'}),null);
+ }
+ assert.equal(domain.newsDisplayAnalysis({...stored,analysisMode:'unknown',verification:{status:'VERIFIED'}},unavailable),null);
+});
+
 test('Search display formats reviewed SEC names without modifying source records or symbols', () => {
   const { rows } = require('./fixtures/search-company-display.json');
   const before = structuredClone(rows);

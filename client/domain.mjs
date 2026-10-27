@@ -332,9 +332,10 @@ export function watchlistNewsViewState(data) {
 export function newsDisplayAnalysis(item, cached) {
   if (['UNVERIFIED', 'REJECTED'].includes(item?.verification?.status)) return null;
   const stored = ['ai', 'rules'].includes(item?.analysisMode) && String(item.analysisSummary || '').trim()
+    && (item.analysisMode !== 'ai' || item.verification?.status === 'VERIFIED')
     ? {summary:item.analysisSummary,mode:item.analysisMode,basis:'archive'} : null;
   if (cached?.mode === 'ai' && cached.summary) return cached;
-  if (stored?.mode === 'ai' && cached?.mode !== 'unavailable') return stored;
+  if (stored?.mode === 'ai') return stored;
   if (cached?.mode === 'rules' && cached.summary) return cached;
   return stored?.mode === 'rules' ? stored : null;
 }

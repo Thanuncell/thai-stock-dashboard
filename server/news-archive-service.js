@@ -74,9 +74,7 @@ function createNewsArchiveService({
       published_at: new Date(publishedAt).toISOString(),
       fetched_at: new Date(timestamp).toISOString(),
       matched_symbols: [...new Set((item.matchedSymbols || []).map(normalizeSymbol).filter(Boolean))].slice(0, 30),
-      broker_firms: [...new Set((item.matchedBrokerFirms || []).map(value => String(value).slice(0, 12)))].slice(0, 10),
-      analysis_summary: ['ai', 'rules'].includes(item.analysisMode) && item.analysisSummary ? String(item.analysisSummary).slice(0, 450) : null,
-      analysis_mode: ['ai', 'rules'].includes(item.analysisMode) && item.analysisSummary ? item.analysisMode : null
+      broker_firms: [...new Set((item.matchedBrokerFirms || []).map(value => String(value).slice(0, 12)))].slice(0, 10)
     };
   }
 
@@ -102,7 +100,10 @@ function createNewsArchiveService({
     if (!configured) return { configured: false, ingested: 0, cleanupRan: false };
     const rows = [...new Map(items.map(toRow).filter(Boolean).map(row => [row.fingerprint, row])).values()];
     if (!rows.length) return { configured: true, ingested: 0, cleanupRan: false };
-    await request('news_archive?on_conflict=fingerprint', {
+    // Feed ingestion refreshes metadata only. Omitted analysis columns cannot
+    // overwrite a persisted AI summary, even during concurrent conflict updates.
+    const params = new URLSearchParams({ on_conflict: 'fingerprint', columns: Object.keys(rows[0]).join(',') });
+    await request(`news_archive?${params}`, {
       method: 'POST',
       headers: headers({
         'content-type': 'application/json',
