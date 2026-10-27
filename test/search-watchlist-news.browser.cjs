@@ -22,7 +22,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     if(url.origin===base&&url.pathname==='/api/search'){
      const q=url.searchParams.get('q').toLowerCase();
      if(state.searchHold===q){state.searchHold=null;await new Promise(resolve=>{state.releaseSearch=resolve;});}
-     const items=(q==='tha'?['THAI','THANI']:q==='ptt'?['PTT']:q==='thani'?['THANI']:q==='thai'?['THAI']:[]).map(symbol=>({symbol,name:symbol,exchange:'SET'}));return json({items});
+     const items=(q==='amata'?['AMATA']:q==='tha'?['THAI','THANI']:q==='ptt'?['PTT']:q==='thani'?['THANI']:q==='thai'?['THAI']:[]).map(symbol=>({symbol,name:({AMATA:'AMATA CORPORATION PUBLIC COMPANY LIMITED',THAI:'THAI AIRWAYS INTERNATIONAL PUBLIC COMPANY LIMITED',THANI:'Ratchthani Leasing Public Company Limited'})[symbol]||symbol,exchange:'SET'}));return json({items});
     }
     if(url.origin===base&&url.pathname==='/api/watchlist-news'){
      const stocks=JSON.parse(url.searchParams.get('stocks')),symbol=stocks[0]?.symbol||'NONE';
@@ -40,7 +40,12 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    const page=await context.newPage();page.on('pageerror',error=>console.error('Fixture page error:',error.message));
    await seedPage(page,'token-a');await page.goto(base+'/?symbol=PTT#chart',{waitUntil:'domcontentloaded'});
    await page.waitForSelector('body.authenticated');await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.dataset.state==='fresh');
-   const input=page.locator('#stock-search');await input.fill('tha');await page.waitForSelector('.suggestion-item[data-symbol="THANI"]');
+   const input=page.locator('#stock-search');await input.fill('amata');await page.waitForSelector('.suggestion-item[data-symbol="AMATA"]');
+   assert.equal(await page.locator('.suggestion-item[data-symbol="AMATA"] .suggestion-name').textContent(),'Amata Corporation Public Company Limited');
+   assert.equal(await page.locator('.suggestion-item[data-symbol="AMATA"]').getAttribute('data-name'),'AMATA CORPORATION PUBLIC COMPANY LIMITED');
+   await input.fill('tha');await page.waitForSelector('.suggestion-item[data-symbol="THANI"]');
+   assert.equal(await page.locator('.suggestion-item[data-symbol="THAI"] .suggestion-name').textContent(),'Thai Airways International Public Company Limited');
+   assert.match(await page.locator('#symbol-suggestions').textContent(),/Public Company Limited/);
    await input.press('Enter');await pause(100);assert.equal(new URL(page.url()).searchParams.get('symbol'),'PTT','ambiguous prefix must not open first result');
    await page.locator('.suggestion-item[data-symbol="THANI"]').click();await page.waitForFunction(()=>new URL(location.href).searchParams.get('symbol')==='THANI');
    state.searchHold='ptt';await input.fill('ptt');await page.waitForFunction(()=>document.querySelector('#symbol-suggestions')?.textContent.includes('กำลัง'));
@@ -68,7 +73,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    await page.locator('#login-form button[type="submit"]').click();await page.waitForSelector('body.authenticated');
    await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('CPALL ข่าว'));
    releaseOldNews();await pause(100);assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/THANI ข่าว|THAI ข่าว/);
-   console.log(JSON.stringify({viewport:label,prefixAndEnter:'PASS',staleSearchResponse:'PASS',newsScopeLoading:'PASS',retainedNewsAndAnalysisRace:'PASS',recovery:'PASS',accountAB:'PASS'}));
+   console.log(JSON.stringify({viewport:label,readableEnglishName:'PASS',originalNamePreserved:'PASS',prefixAndEnter:'PASS',staleSearchResponse:'PASS',newsScopeLoading:'PASS',retainedNewsAndAnalysisRace:'PASS',recovery:'PASS',accountAB:'PASS'}));
    await context.close();
   }
  }finally{await browser?.close().catch(()=>{});server.kill();}

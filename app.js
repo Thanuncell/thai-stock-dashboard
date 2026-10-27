@@ -14,6 +14,7 @@ import {
   defaultChartViewport,
   escapeHtml,
   findPriceLevels,
+  formatSearchCompanyName,
   mergeWatchlists,
   marketOverviewStatus,
   navigationUrl,
@@ -927,7 +928,7 @@ function showSuggestions(items, message = '') {
     box.innerHTML = '<div class="suggestion-message">ไม่พบหุ้นที่ตรงกับคำค้น</div>';
   } else {
     box.innerHTML = items.map(item => `<button class="suggestion-item" type="button" role="option" data-symbol="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name)}">
-      <span class="suggestion-ticker">${escapeHtml(item.symbol)}</span><span class="suggestion-name">${escapeHtml(item.name)}</span><small>${escapeHtml(item.exchange)} · เลือกเพื่อดูกราฟ</small>
+      <span class="suggestion-ticker">${escapeHtml(item.symbol)}</span><span class="suggestion-name">${escapeHtml(formatSearchCompanyName(item.name, item.symbol))}</span><small>${escapeHtml(item.exchange)} · เลือกเพื่อดูกราฟ</small>
     </button>`).join('');
   }
   box.classList.add('visible');

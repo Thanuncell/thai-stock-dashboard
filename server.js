@@ -130,7 +130,7 @@ const stockSearchService = require('./server/search-service').createStockSearchS
   providerSearch: (query, options) => marketService.search(query, options),
   registrySearch: async () => {
     if (!coverageRepository.configured) return [];
-    const result = await responseCache.get('search-registry', {ttlMs:300000,staleIfErrorMs:0,errorBackoffMs:5000}, () => coverageRepository.listCandidates());
+    const result = await responseCache.get('search-registry', {ttlMs:300000,staleIfErrorMs:0,errorBackoffMs:5000}, () => coverageRepository.listSearchCandidates());
     return result.value;
   }
 });
