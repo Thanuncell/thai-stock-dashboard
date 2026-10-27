@@ -39,15 +39,15 @@ for(const failure of ['html','truncated','429'])test(`Watchlist ${failure} prese
  const service=createNewsService({now:()=>time,fetchImpl:async()=>{calls++;return broken?failure==='429'?new Response('denied',{status:429}):new Response(failure==='html'?'<html>temporary error</html>':'<rss><channel><item>broken</channel></rss>'):new Response(rss);}});
  const stocks=[{symbol:'THAI',name:'THAI'}],before=await service.getWatchlistNews(stocks,{ownerId:'owner-a'});assert.equal(before.items.length,1);
  const beforeCalls=calls;broken=true;time+=1000;
- const retained=await service.getWatchlistNews(stocks,{ownerId:'owner-a'});assert.equal(retained.items.length,1);assert.equal(retained.stale,true);assert.equal(retained.fetchedAt,before.fetchedAt);
- await assert.rejects(service.getWatchlistNews(stocks,{ownerId:'owner-b'}));
+ const retained=await service.getWatchlistNews(stocks,{ownerId:'owner-a',refresh:true});assert.equal(retained.items.length,1);assert.equal(retained.stale,true);assert.equal(retained.fetchedAt,before.fetchedAt);
+ assert.equal((await service.getWatchlistNews(stocks,{ownerId:'owner-b'})).dataState,'unavailable');
  if(failure==='429')assert.equal(calls,beforeCalls+1);
- time+=31*60000;await assert.rejects(service.getWatchlistNews(stocks,{ownerId:'owner-a'}));
+ time+=31*60000;assert.equal((await service.getWatchlistNews(stocks,{ownerId:'owner-a',refresh:true})).dataState,'unavailable');
 });
-test('a valid empty RSS response stays genuinely empty, while owner caches remain separate',async()=>{
+test('a valid empty refresh retains unexpired verified stories, while owner caches remain separate',async()=>{
  let empty=false;const service=createNewsService({now:()=>NOW,fetchImpl:async()=>new Response(empty?'<rss><channel></channel></rss>':rss)});
  assert.equal((await service.getWatchlistNews([{symbol:'THAI'}])).items.length,1);empty=true;
- const none=await service.getWatchlistNews([{symbol:'THAI'}]);assert.equal(none.items.length,0);assert.equal(none.stale,false);
+ const none=await service.getWatchlistNews([{symbol:'THAI'}],{refresh:true});assert.equal(none.items.length,1);assert.equal(none.stale,false);
  const cache=createMemoryCache(),stocks=[{symbol:'THAI',name:'Thai'}];let loads=0;
  const keyA=createWatchlistNewsCacheKey(stocks,'a'),keyB=createWatchlistNewsCacheKey(stocks,'b');assert.notEqual(keyA,keyB);
  await cache.get(keyA,PROVIDER_POLICIES.watchlistNews,async()=>++loads);await cache.get(keyB,PROVIDER_POLICIES.watchlistNews,async()=>++loads);
@@ -62,7 +62,7 @@ test('Watchlist News reports bounded no-match diagnostics without exposing the w
  assert.equal(result.items.length,0);
  assert.equal(result.matchedCandidates,0);
  assert.equal(result.qualityExcluded,0);
- assert.ok(!JSON.stringify(result).includes('THAI'));
+ assert.deepEqual(result.stockStatus.map(stock=>stock.symbol),['THAI']);assert.ok(!JSON.stringify(result).includes('ownerId'));
 });
 
 test('Watchlist distinguishes no-match from deterministic quality exclusions without accepting rejected news',async()=>{

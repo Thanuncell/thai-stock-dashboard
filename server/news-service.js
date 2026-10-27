@@ -9,6 +9,8 @@ const { inspectNewsArticle, articleIdentity } = require('../lib/news-article');
 const { newsAnalysisRequest, parseNewsAnalysis, safeAiDiagnostic } = require('../lib/news-analysis');
 const { createWatchlistNewsCacheKey } = require('./reliability');
 const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
+const { createWatchlistNews, abortable } = require('./watchlist-news');
+const { matchesWatchlistStock, watchlistStockQuery } = require('../lib/watchlist-news-identity');
 
 const FEEDS = Object.freeze([
   ['thunhoon', 'ทันหุ้น', 'site:thunhoon.com'],
@@ -82,7 +84,7 @@ async function readBoundedText(response, limit = MAX_RISKY_TARGET_BYTES) {
   return new TextDecoder().decode(bytes);
 }
 
-function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, logger = console, now = Date.now, analysisTimeoutMs = 30000 } = {}) {
+function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000 } = {}) {
   if (!Number.isInteger(analysisTimeoutMs) || analysisTimeoutMs < 1 || analysisTimeoutMs > 30000) throw Error('Invalid AI timeout');
   const analysisCache = new Map();
   let openAiCooldownUntil = 0;
@@ -96,6 +98,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
   let rssQueue = Promise.resolve();
   let googleCooldownUntil = 0;
   let googleFailureCount = 0;
+  let googleAccessDenied = false;
 
   function providerCooldownError(status = 0) {
     const error = Error(status ? `Google News RSS HTTP ${status}` : 'Google News RSS cooldown active');
@@ -112,16 +115,19 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     googleCooldownUntil = Math.max(googleCooldownUntil, Number(now()) + Math.max(exponential, retryAfter || 0));
   }
 
-  function fetchGoogleRss(url) {
+  function fetchGoogleRss(url, signal) {
     if (rssPending.has(url)) return rssPending.get(url);
     const task = rssQueue.catch(() => {}).then(async () => {
+      if (signal?.aborted) throw providerCooldownError();
+      if (googleAccessDenied) throw providerCooldownError(403);
       if (Number(now()) < googleCooldownUntil) throw providerCooldownError();
+      const requestSignal = signal || AbortSignal.timeout(12000);
       let response;
       try {
-        response = await fetchImpl(url, {
+        response = await abortable(fetchImpl(url, {
           headers: { 'user-agent': 'SETscope/1.0 news reader (local prototype)', accept: 'application/rss+xml, application/xml, text/xml' },
-          signal: AbortSignal.timeout(12000)
-        });
+          signal: requestSignal
+        }),requestSignal);
       } catch (error) {
         beginGoogleCooldown();
         const wrapped = providerCooldownError();
@@ -132,10 +138,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         beginGoogleCooldown(response);
         throw providerCooldownError(response.status);
       }
+      if ([401,403].includes(response.status)){googleAccessDenied=true;throw providerCooldownError(response.status);}
       if (!response.ok) throw Error(`Google News RSS HTTP ${response.status}`);
       googleFailureCount = 0;
       googleCooldownUntil = 0;
-      return response.text();
+      return abortable(readBoundedText(response,512000),requestSignal);
     });
     rssPending.set(url, task);
     rssQueue = task.then(() => undefined, () => undefined);
@@ -163,7 +170,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     return value;
   }
 
-  async function validateRiskyTarget(item) {
+  async function validateRiskyTarget(item, signal) {
     const key = String(item.url || '');
     const cached = riskyTargetCache.get(key);
     if (cached && Number(now()) < cached.expiresAt) return cached.value;
@@ -172,15 +179,16 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     try {
       let response;
       for (let redirect = 0; redirect < 4; redirect++) {
+        if(signal?.aborted)throw Error('WATCHLIST_DEADLINE');
         if (blockedArticleOrigins.has(target.origin)) return { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_ACCESS_DENIED' };
-        response = await fetchImpl(target, {
+        response = await abortable(fetchImpl(target, {
           redirect: 'manual',
           headers: {
             'user-agent': 'Mozilla/5.0 (compatible; SETscope news verifier/1.0)',
             accept: 'text/html,application/xhtml+xml'
           },
-          signal: AbortSignal.timeout(7000)
-        });
+          signal: signal || AbortSignal.timeout(7000)
+        }),signal);
         if (![301, 302, 303, 307, 308].includes(response.status)) break;
         const next = resolveAllowedNewsRedirect(target, response.headers.get('location'));
         if (!next) return cacheRiskyTarget(key, { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_NOT_VERIFIED' }, RISKY_TARGET_UNVERIFIED_CACHE_MS);
@@ -194,7 +202,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         || !/text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type') || '')) {
         return cacheRiskyTarget(key, { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_NOT_VERIFIED' }, RISKY_TARGET_UNVERIFIED_CACHE_MS);
       }
-      const html = await readBoundedText(response);
+      const html = await abortable(readBoundedText(response),signal);
       if (response.url && articleIdentity(response.url) !== articleIdentity(target.href)) return { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_RESPONSE_URL_MISMATCH' };
       const inspected = inspectNewsArticle(html, { url: target.href, title: item.title });
       const {text, ...evidence} = inspected;
@@ -222,9 +230,9 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         && (item.source === 'thunhoon' || /ทันหุ้น|thunhoon/i.test(item.sourceName || ''));
       const cached = riskyTargetCache.get(String(item.url || ''));
       const cachedEvidence = cached && Number(now()) < cached.expiresAt;
-      if (risky && (cachedEvidence || budget.remaining > 0)) {
+      if (risky && !budget.signal?.aborted && (cachedEvidence || budget.remaining > 0)) {
         if (!cachedEvidence) budget.remaining -= 1;
-        const validation = await validateRiskyTarget(item);
+        const validation = await validateRiskyTarget(item,budget.signal);
         evidence = reviewNewsItem(item, validation);
         if (validation.status === 'VERIFIED' && validation.resolvedUrl) item = { ...item, url: validation.resolvedUrl };
       }
@@ -426,69 +434,33 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     return {items:result,mode:modes.size===1?[...modes][0]:modes.size?'mixed':'unavailable',aiConfigured:Boolean(env.OPENAI_API_KEY)};
   }
 
-  async function getWatchlistNews(rawStocks = '', { ownerId = '' } = {}) {
-    const requested = normalizeWatchlistNewsStocks(rawStocks);
-    if (!requested.length) {
-      const fetchedAt = new Date(Number(now())).toISOString();
-      return { items: [], fetchedAt, asOf: null, source: 'Google News', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30, matchedCandidates: 0, qualityExcluded: 0 };
-    }
-    const snapshotKey = createWatchlistNewsCacheKey(requested, ownerId);
-    const terms = requested.flatMap(item => [`"${item.symbol}"`, ...(item.name.length > 3 ? [`"${item.name}"`] : [])]).join(' OR ');
-    const url = GOOGLE_RSS_PREFIX + encodeURIComponent(`(${terms}) when:30d`) + '&hl=th&gl=TH&ceid=TH:th';
+  async function fetchWatchlistStock(stock,budget,parentSignal) {
+    const controller=new AbortController(),relay=()=>controller.abort();
+    parentSignal.addEventListener('abort',relay,{once:true});
+    const timer=setTimeout(()=>controller.abort(),5000);
     let xml;
     try {
-      xml = await fetchGoogleRss(url);
-      if(!/<rss(?:\s|>)/i.test(xml)||!/<\/rss\s*>/i.test(xml)||!/<channel(?:\s|>)/i.test(xml)||!/<\/channel\s*>/i.test(xml)
-        ||(xml.match(/<item(?:\s|>)/gi)||[]).length!==(xml.match(/<\/item\s*>/gi)||[]).length)throw Error('Invalid Watchlist RSS response');
-    } catch (error) {
-      const fallback = staleFallback(snapshotKey, error);
-      if (fallback) return fallback;
-      throw error;
-    }
-    const channel = xml.match(/<channel(?:\s[^>]*)?>([\s\S]*?)<\/channel\s*>/i)?.[1] || xml;
-    const cutoff = Number(now()) - 30 * 24 * 60 * 60 * 1000;
-    const parsedItems = [...channel.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi)].map(match => {
-      const block = match[1];
-      const title = decodeXml(xmlTag(block, 'title'));
-      const url = decodeXml(xmlTag(block, 'link'));
-      const pubDate = decodeXml(xmlTag(block, 'pubDate'));
-      const snippet = decodeXml(xmlTag(block, 'description')).slice(0, 1200);
-      const haystack = title + ' ' + snippet;
-      const matchedSymbols = requested.filter(stock => {
-        const escaped = stock.symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return (stock.symbol.length >= 3 && new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'i').test(haystack))
-          || (stock.name.length > 3 && haystack.toLocaleLowerCase('th').includes(stock.name.toLocaleLowerCase('th')));
-      }).map(stock => stock.symbol);
-      const outletName = decodeXml(xmlTag(block, 'source'));
-      return decorateBrokerAttribution({
-        source: sourceFromOutlet(outletName),
-        sourceName: outletName || 'ข่าวหุ้นไทย',
-        title,
-        url,
-        pubDate,
-        snippet,
-        matchedSymbols
-      });
-    }).filter(item => item.title && allowedNewsUrl(item.url)
-      && Number.isFinite(Date.parse(item.pubDate)) && Date.parse(item.pubDate) >= cutoff
-      && item.matchedSymbols.length);
-    const qualityItems = await keepQualityItems(parsedItems);
-    const items = dedupeNewsItems(qualityItems)
-      .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).slice(0, 30).map(withNewsRulesSummary).filter(Boolean);
-    const uncertain = qualityItems.unverifiedCount > 0;
-    const unavailable = !items.length && uncertain;
-    if (unavailable) {
-      const fallback = staleFallback(snapshotKey, Error('ARTICLE_UNVERIFIED'));
-      if (fallback) return fallback;
-    }
-    const fetchedAt = new Date(Number(now())).toISOString();
-    const asOfMs = items.map(item => Date.parse(item.pubDate)).filter(Number.isFinite)
-      .reduce((latest, value) => Math.max(latest, value), 0);
-    const result = { items, fetchedAt, asOf: asOfMs ? new Date(asOfMs).toISOString() : null, source: 'Google News', stale: false, partial: uncertain, dataState: unavailable ? 'unavailable' : uncertain ? 'partial' : 'fresh', maxAgeDays: 30,
-      matchedCandidates: parsedItems.length, qualityExcluded: Math.max(0, parsedItems.length - qualityItems.length) };
-    if (!unavailable) rememberValidated(snapshotKey, result);
-    return result;
+      const url=GOOGLE_RSS_PREFIX+encodeURIComponent(watchlistStockQuery(stock))+'&hl=th&gl=TH&ceid=TH:th';
+      xml=await fetchGoogleRss(url,controller.signal);
+    } finally {clearTimeout(timer);parentSignal.removeEventListener('abort',relay);}
+    if(parentSignal.aborted)throw Error('WATCHLIST_DEADLINE');
+    if(!/<rss(?:\s|>)/i.test(xml)||!/<\/rss\s*>/i.test(xml)||!/<channel(?:\s|>)/i.test(xml)||!/<\/channel\s*>/i.test(xml)
+      ||(xml.match(/<item(?:\s|>)/gi)||[]).length!==(xml.match(/<\/item\s*>/gi)||[]).length)throw Error('Invalid Watchlist RSS response');
+    const blocks=[...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi)];
+    const parsed=blocks.slice(0,100).map(match=>{
+      const block=match[1],title=decodeXml(xmlTag(block,'title')),url=decodeXml(xmlTag(block,'link'));
+      const pubDate=decodeXml(xmlTag(block,'pubDate')),snippet=decodeXml(xmlTag(block,'description')).slice(0,1200),outlet=decodeXml(xmlTag(block,'source'));
+      return decorateBrokerAttribution({title,url,pubDate,snippet,source:sourceFromOutlet(outlet),sourceName:outlet||'ข่าวหุ้นไทย',
+        matchedSymbols:matchesWatchlistStock(stock,title+' '+snippet)?[stock.symbol]:[]});
+    }).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
+      &&Date.parse(item.pubDate)>=Number(now())-30*86400000&&Date.parse(item.pubDate)<=Number(now())+600000&&item.matchedSymbols.length);
+    const quality=await keepQualityItems(parsed,budget);
+    return {items:quality.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:quality.unverifiedCount,
+      matchedCandidates:parsed.length,qualityExcluded:parsed.length-quality.length,limited:blocks.length>100,
+      rejectedKeys:parsed.filter(item=>reviewNewsItem(item).status==='REJECTED'||quarantine.get(newsFingerprint(item))?.status==='REJECTED').map(newsFingerprint)};
   }
+  const getWatchlistNews=createWatchlistNews({fetchStock:fetchWatchlistStock,registrySearch,now,deadlineMs:watchlistDeadlineMs,
+    isRejected:item=>quarantine.get(newsFingerprint(item))?.status==='REJECTED'});
 
   return { analyse, getNews, getWatchlistNews, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
 }

@@ -32,7 +32,7 @@ test('Watchlist News API isolates account caches, refreshes explicitly and retai
  const a=await request(path);assert.equal(a.status,200);const initialFeeds=feeds;
  assert.equal((await request(path)).body.items[0].title,a.body.items[0].title);assert.equal(feeds,initialFeeds);
  const b=await request(path,'token-b');assert.equal(b.status,200);assert.notEqual(b.body.items[0].title,a.body.items[0].title);
- const refreshed=await request(path+'&refresh=1');assert.equal(refreshed.status,200);assert.notEqual(refreshed.body.items[0].title,a.body.items[0].title);
+ const refreshed=await request(path+'&refresh=1');assert.equal(refreshed.status,200);assert.equal(refreshed.body.items.length,2);assert.ok(refreshed.body.items.some(item=>item.title!==a.body.items[0].title));
  assert.equal((await request(path,'token-b')).body.items[0].title,b.body.items[0].title);
  broken=true;const stale=await request(path+'&refresh=1');assert.equal(stale.status,200);assert.equal(stale.body.stale,true);assert.equal(stale.body.items[0].title,refreshed.body.items[0].title);
 });

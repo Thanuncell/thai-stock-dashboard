@@ -6,6 +6,12 @@ const assert = require('node:assert/strict');
 let domain;
 test.before(async () => { domain = await import('../client/domain.mjs'); });
 
+test('retained Watchlist items intersect current stocks, merge identities and drop expired/negative news',()=>{
+ const time=Date.now(),item={title:'public',url:'https://www.kaohoon.com/news/shared',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED'}};
+ const items=domain.retainWatchlistNews([item,{...item,url:item.url+'?utm_source=rss',matchedSymbols:['KBANK']},{...item,url:item.url+'expired',pubDate:new Date(time-31*86400000).toISOString()},{...item,url:item.url+'bad',verification:{status:'REJECTED'}}],[{symbol:'PTT'},{symbol:'KBANK'}],time);
+ assert.equal(items.length,1);assert.deepEqual(new Set(items[0].matchedSymbols),new Set(['PTT','KBANK']));
+});
+
 test('display rules never block actual AI and negative verification cannot inherit analysis',()=>{
  const item={title:'PTT',analysisMode:'rules',analysisSummary:'Read-time rules',verification:{status:'VERIFIED'}};
  assert.equal(domain.newsDisplayAnalysis(item).mode,'rules');
