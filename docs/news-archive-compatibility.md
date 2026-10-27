@@ -8,4 +8,8 @@ Rollback must use an evidence-aware application in archive read-only mode, prese
 
 Validation uses synthetic news and an isolated PostgreSQL 17 database. Native database tests exercise the application's payload through a SQL test transport; this is not live Supabase/PostgREST or Production acceptance. Production migration, merge, deployment and activation remain separately gated.
 
+New equivalent verification advances its observation time atomically; delayed older results cannot replace it. Equal-time conflicting observations retain the committed decision. Metadata cannot advance or replace stronger article evidence.
+
+Evidence-mode associations require a trusted pipeline decision bound to the same item. Refresh uses a normalized, bounded, add-only union, retaining existing entries first. Missing entries do not request removal; removing an incorrect association requires separately reviewed correction. Older observations do not refresh associations. Compatibility writers cannot change associations on evidence-backed rows. Stored summaries and first-seen history remain independent.
+
 The isolated database suite is available through `test:news-evidence:postgres17`. It requires the explicitly configured local test database and creates its own temporary database. Production credentials must not be used.

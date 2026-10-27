@@ -155,6 +155,113 @@ test('AC-G1-09/10: native PostgreSQL evidence, concurrency and compatible rollba
       const row=(await pool.query('select a.*,news_archive_subject_hash(a) native_hash from news_archive a where url=$1',[item.url])).rows[0];
       assert.equal(row.native_hash,rowSubjectHash(row));assert.equal(reviewArchivedNewsRow(row).basis,'article');
     });
+    await t.test('P1: equivalent T3 verification fences delayed T2 rejection and retries',async()=>{
+      const time=Date.now(),pubDate=new Date(time-10000).toISOString(),url='https://thunhoon.com/article-951001';
+      const first=article({url,pubDate,checkedAt:time-3000}),latest=article({url,pubDate,checkedAt:time-1000});
+      assert.equal((await service().ingest([first])).ingested,1);
+      const before=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      assert.equal((await service().ingest([latest])).ingested,1);
+      const fresh=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      assert.equal(+fresh.verification_checked_at,time-1000);assert.equal(Number(fresh.verification_revision),Number(before.verification_revision)+1);
+      const rejected=issueEvidence(first,{status:'REJECTED',reason:'ARTICLE_NOT_FOUND',basis:'article'},{checkedAt:time-2000});
+      assert.equal((await service().ingest([],{assessments:[{item:first,verification:rejected}]})).retained,1);
+      assert.equal((await service().ingest([latest])).retained,1);
+      const final=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      assert.equal(final.verification_status,'VERIFIED');assert.equal(final.verification_revision,fresh.verification_revision);
+      assert.equal(+final.first_seen_at,+before.first_seen_at);assert.ok(validStoredEvidence(final));
+      const bad={...first,title:'Login'},lateNegative=issueEvidence(bad,{status:'REJECTED',reason:'ARTICLE_NOT_FOUND',basis:'article'},{checkedAt:time-2000});
+      assert.equal((await service().ingest([],{assessments:[{item:bad,verification:lateNegative}]})).retained,1,
+        'reclassifying a trusted observation must not mint a later ordering timestamp');
+    });
+    await t.test('P2: trusted association refresh is additive, bounded and visible to stock filters',async()=>{
+      const time=Date.now(),pubDate=new Date(time-10000).toISOString(),url='https://thunhoon.com/article-951002';
+      const first=article({url,pubDate,checkedAt:time-3000,matchedSymbols:['PTT'],matchedBrokerFirms:['FSS']});
+      await service().ingest([first]);
+      await writer.query("update news_archive set analysis_summary='Association AI',analysis_mode='ai' where url=$1",[url]);
+      const before=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      const refresh=article({url,pubDate,checkedAt:time-1000,matchedSymbols:[' ptt ','or','OR'],matchedBrokerFirms:[' fss ','KGI']});
+      assert.equal((await service().ingest([refresh])).ingested,1);
+      const after=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      assert.deepEqual(after.matched_symbols,['PTT','OR']);assert.deepEqual(after.broker_firms,['FSS','KGI']);
+      assert.ok(validStoredEvidence(after));assert.equal(after.analysis_summary,'Association AI');
+      assert.equal(+after.first_seen_at,+before.first_seen_at);assert.equal(after.fingerprint,before.fingerprint);
+      assert.ok((await service('read').list({symbol:'OR'})).items.some(x=>x.url===url));
+      const {mergeStockNews}=require('../server/watchlist-news');
+      assert.equal(mergeStockNews((await service('read').list({symbol:'OR'})).items,[{symbol:'OR'}],Date.now()).some(x=>x.url===url),true);
+      const newer=article({url,pubDate,checkedAt:time,matchedSymbols:['OR'],matchedBrokerFirms:[]});
+      await service().ingest([newer]);
+      const preserved=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      assert.deepEqual(preserved.matched_symbols,['PTT','OR']);assert.deepEqual(preserved.broker_firms,['FSS','KGI']);
+      assert.ok(validStoredEvidence(preserved));
+      await writer.query("update news_archive set matched_symbols='{BAD}',broker_firms='{}',first_seen_at=now() where url=$1",[url]);
+      const oldWriter=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      assert.deepEqual(oldWriter.matched_symbols,preserved.matched_symbols);assert.deepEqual(oldWriter.broker_firms,preserved.broker_firms);
+      assert.equal(oldWriter.analysis_summary,'Association AI');assert.equal(+oldWriter.first_seen_at,+before.first_seen_at);assert.ok(validStoredEvidence(oldWriter));
+    });
+    await t.test('P1: competing T2 negative and T3 equivalent writers converge through revision conflicts',async()=>{
+      for(const negativeFirst of [true,false]){
+        const time=Date.now(),url='https://thunhoon.com/article-95100'+(negativeFirst?'3':'4'),pubDate=new Date(time-10000).toISOString();
+        const first=article({url,pubDate,checkedAt:time-3000}),latest=article({url,pubDate,checkedAt:time-1000});
+        await service().ingest([first]);
+        const rejection=issueEvidence(first,{status:'REJECTED',reason:'ARTICLE_NOT_FOUND',basis:'article'},{checkedAt:time-2000});
+        let readers=0,release;const barrier=new Promise(resolve=>{release=resolve;});
+        beforeRevisionRead=async()=>{if(++readers===2)release();await barrier;};
+        const reject=()=>service().ingest([],{assessments:[{item:first,verification:rejection}]}),verify=()=>service().ingest([latest]);
+        let results;try{results=await Promise.all(negativeFirst?[reject(),verify()]:[verify(),reject()]);}finally{beforeRevisionRead=null;}
+        assert.equal(results.reduce((n,r)=>n+r.ingested,0),1);assert.equal(results.reduce((n,r)=>n+r.conflicts,0),1);
+        await verify();assert.equal((await reject()).retained,1);
+        const row=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+        assert.equal(row.verification_status,'VERIFIED');assert.equal(+row.verification_checked_at,time-1000);assert.ok(validStoredEvidence(row));
+        const tie=issueEvidence(latest,{status:'REJECTED',reason:'ARTICLE_NOT_FOUND',basis:'article'},{checkedAt:time-1000});
+        assert.equal((await service().ingest([],{assessments:[{item:latest,verification:tie}]})).retained,1);
+      }
+    });
+    await t.test('P2: association union is bounded, broker binding stays valid and retries are idempotent',async()=>{
+      const time=Date.now(),url='https://thunhoon.com/article-951005',pubDate=new Date(time-10000).toISOString();
+      const first=article({url,pubDate,checkedAt:time-3000,matchedSymbols:['PTT']});await service().ingest([first]);
+      const refreshed=article({url,pubDate,checkedAt:time-1000,
+        matchedSymbols:['PTT',...Array.from({length:40},(_,i)=>'S'+i)],matchedBrokerFirms:Array.from({length:15},(_,i)=>'B'+i)});
+      assert.equal((await service().ingest([refreshed])).ingested,1);
+      const row=(await pool.query('select a.*,news_archive_subject_hash(a) native_hash from news_archive a where url=$1',[url])).rows[0];
+      assert.equal(row.matched_symbols.length,30);assert.equal(row.broker_firms.length,10);assert.ok(row.matched_symbols.includes('PTT'));
+      assert.ok(validStoredEvidence(row));assert.equal(row.native_hash,row.verification_subject_hash);
+      assert.equal((await service().ingest([refreshed])).retained,1);
+      const before=(await pool.query('select to_jsonb(a) data from news_archive a where url=$1',[url])).rows[0].data;
+      const spoof={...JSON.parse(JSON.stringify(first)),snippet:'Sufficient synthetic metadata source evidence',matchedSymbols:['BAD'],matchedBrokerFirms:['BAD'],
+        verification:{status:'VERIFIED',reason:'ARTICLE_IDENTITY_VERIFIED',basis:'article',checkedAt:'2099-01-01T00:00:00Z'}};
+      await service().ingest([spoof]);
+      assert.deepEqual((await pool.query('select to_jsonb(a) data from news_archive a where url=$1',[url])).rows[0].data,before);
+      const negative=issueEvidence(first,{status:'REJECTED',reason:'ARTICLE_NOT_FOUND',basis:'article'},{checkedAt:time});
+      await service().ingest([],{assessments:[{item:first,verification:negative}]});
+      const rejected=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      assert.deepEqual(rejected.matched_symbols,row.matched_symbols);assert.deepEqual(rejected.broker_firms,row.broker_firms);assert.ok(validStoredEvidence(rejected));
+    });
+    await t.test('P1/P2: invalid association rolls back the entire RPC batch',async()=>{
+      let payload;
+      const capture=createNewsArchiveService({env,fetchImpl:async(input,init={})=>{
+        if(String(input).endsWith('/upsert_news_archive_evidence')){payload=JSON.parse(init.body).p_rows;return Response.json(payload.map(r=>({fingerprint:r.fingerprint,outcome:'persisted'})));}
+        return Response.json([]);
+      }});
+      await capture.ingest([article({url:'https://thunhoon.com/article-951006'}),article({url:'https://thunhoon.com/article-951007'})]);
+      payload[1].matched_symbols=['bad association'];
+      await assert.rejects(writer.query('select * from upsert_news_archive_evidence($1::jsonb)',[JSON.stringify(payload)]),/NEWS_ASSOCIATION_INVALID/);
+      assert.equal((await pool.query('select count(*)::int n from news_archive where fingerprint=any($1::text[])',[payload.map(r=>r.fingerprint)])).rows[0].n,0);
+    });
+    await t.test('P2: weaker trusted metadata can add associations without advancing article evidence',async()=>{
+      const time=Date.now(),pubDate=new Date(time-10000).toISOString(),url='https://thunhoon.com/article-951008';
+      const first=article({url,pubDate,checkedAt:time-3000,matchedSymbols:['PTT'],matchedBrokerFirms:['FSS']});
+      await service().ingest([first]);
+      const metadata={...JSON.parse(JSON.stringify(first)),verification:undefined,brokerCategory:true,matchedSymbols:['OR']};
+      metadata.verification=reviewNewsItem(metadata);assert.equal(metadata.verification.basis,'metadata');
+      assert.equal((await service().ingest([metadata])).ingested,1);
+      const after=(await pool.query('select * from news_archive where url=$1',[url])).rows[0];
+      assert.deepEqual(after.matched_symbols,['PTT','OR']);assert.equal(after.verification_basis,'article');
+      assert.equal(+after.verification_checked_at,time-3000);assert.ok(validStoredEvidence(after));
+      const rejection=issueEvidence(first,{status:'REJECTED',reason:'ARTICLE_NOT_FOUND',basis:'article'},{checkedAt:time-2000});
+      await service().ingest([],{assessments:[{item:first,verification:rejection}]});
+      assert.equal((await service().ingest([metadata])).retained,1);
+      assert.equal((await pool.query('select verification_status from news_archive where url=$1',[url])).rows[0].verification_status,'REJECTED');
+    });
   }finally{
     if(writer)await writer.end();await pool.end();
     await admin.query('drop database '+database);await admin.end();

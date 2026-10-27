@@ -4,6 +4,7 @@ const {createWatchlistNewsCacheKey}=require('./reliability');
 const {matchesWatchlistStock,watchlistStockQuery}=require('../lib/watchlist-news-identity');
 const {newsFingerprint}=require('../lib/broker-news');
 const {reviewNewsItem}=require('../lib/news-quality');
+const {mergeEvidenceAssociations}=require('../lib/news-evidence');
 const {registryCompanyName}=require('./search-company-names');
 const AGE=30*86400000,TTL=300000,LKG=1800000,PER_STOCK=30;
 function abortable(task,signal){
@@ -19,7 +20,7 @@ function mergeStockNews(items,stocks,now){
   if(!Number.isFinite(published)||published<now-AGE||published>now+600000||reviewNewsItem(item).status!=='VERIFIED')continue;
   const matchedSymbols=(item.matchedSymbols||[]).filter(symbol=>symbols.has(symbol));if(!matchedSymbols.length)continue;
   const key=newsFingerprint(item),old=unique.get(key);
-  unique.set(key,{...item,matchedSymbols:[...new Set([...(old?.matchedSymbols||[]),...matchedSymbols])]});
+  unique.set(key,mergeEvidenceAssociations(item,{...item,matchedSymbols:[...new Set([...(old?.matchedSymbols||[]),...matchedSymbols])]},old?[old]:[]));
  }
  return [...unique.values()].sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate));
 }

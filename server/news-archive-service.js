@@ -6,13 +6,14 @@ const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { reviewNewsItem } = require('../lib/news-quality');
 const { withNewsRulesSummary } = require('../lib/news-summary');
-const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence } = require('../lib/news-evidence');
+const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash } = require('../lib/news-evidence');
 const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
   'verification_checked_at','verification_subject_hash','verification_revision','canonical_url','canonical_key','verification_provenance'];
 
 function rowItem(row) {
   return { title: row.title, url: row.url, source: row.source, sourceName: row.source_name, snippet: row.snippet || '',
-    pubDate: row.published_at, brokerCategory: Boolean(row.broker_firms?.length) };
+    pubDate: row.published_at, brokerCategory: Boolean(row.broker_firms?.length),
+    matchedSymbols: row.matched_symbols || [], matchedBrokerFirms: row.broker_firms || [] };
 }
 
 const RETENTION_DAYS = 365;
@@ -29,6 +30,13 @@ const SOURCE_TIER = Object.freeze({ official: 4, settrade: 3, infoquest: 2, efin
 
 function archiveFingerprint(item) {
   return createHash('sha256').update(newsFingerprint(item)).digest('hex');
+}
+
+function mergeRowAssociations(target, first, second) {
+  const merged = newsAssociations({ matchedSymbols: [...first.matched_symbols, ...second.matched_symbols],
+    matchedBrokerFirms: [...first.broker_firms, ...second.broker_firms] });
+  target.matched_symbols = merged.matchedSymbols; target.broker_firms = merged.matchedBrokerFirms;
+  target.verification_subject_hash = rowSubjectHash(target);
 }
 
 function reviewArchivedNewsRow(row) {
@@ -88,10 +96,15 @@ function createNewsArchiveService({
       snippet: String(item.snippet || '').trim().slice(0, 1200),
       published_at: new Date(publishedAt).toISOString(),
       fetched_at: new Date(timestamp).toISOString(),
-      matched_symbols: [...new Set((item.matchedSymbols || []).map(normalizeSymbol).filter(Boolean))].slice(0, 30),
-      broker_firms: [...new Set((item.matchedBrokerFirms || []).map(value => String(value).slice(0, 12)))].slice(0, 10)
+      matched_symbols: [...new Set((Array.isArray(item.matchedSymbols) ? item.matchedSymbols : []).map(normalizeSymbol).filter(Boolean))].slice(0, 30),
+      broker_firms: [...new Set((Array.isArray(item.matchedBrokerFirms) ? item.matchedBrokerFirms : []).map(value => String(value).slice(0, 12)))].slice(0, 10)
     };
     if (evidenceMode === 'write') {
+      // Associations must have been observed before the trusted pipeline decision.
+      // Deriving metadata acceptance here cannot authorize caller-supplied links.
+      const associations = trustedEvidence(item, verification) ? newsAssociations(item) : newsAssociations({});
+      row.matched_symbols = associations.matchedSymbols;
+      row.broker_firms = associations.matchedBrokerFirms;
       const projected = rowItem(row);
       // Recheck the final stored shape, including truncation and broker attribution.
       const bound = projectEvidence(item, projected, decision);
@@ -141,7 +154,13 @@ function createNewsArchiveService({
         && Date.parse(row.verification_checked_at) < Date.parse(previous.verification_checked_at)) continue;
       if (previous?.verification_status === 'REJECTED' && row.verification_status === 'VERIFIED' && row.verification_basis === 'metadata') continue;
       if (previous?.verification_basis === 'article' && previous.verification_status === 'VERIFIED'
-        && row.verification_basis === 'metadata' && row.verification_status === 'VERIFIED') continue;
+        && row.verification_basis === 'metadata' && row.verification_status === 'VERIFIED') {
+        if (previous.verification_subject_hash === row.verification_subject_hash) mergeRowAssociations(previous, previous, row);
+        continue;
+      }
+      if (evidenceMode === 'write' && previous?.verification_status === 'VERIFIED' && row.verification_status === 'VERIFIED') {
+        mergeRowAssociations(row, previous, row);
+      }
       unique.set(row.fingerprint, row);
     }
     const rows = [...unique.values()];

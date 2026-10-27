@@ -73,6 +73,8 @@ begin
         OLD.verification_checked_at,OLD.verification_subject_hash,OLD.canonical_url,OLD.canonical_key,OLD.verification_provenance) then
         raise exception 'NEWS_EVIDENCE_REVISION_REQUIRED';
       end if;
+      -- Old writers cannot remove or invent associations on evidence-backed rows.
+      NEW.matched_symbols:=OLD.matched_symbols; NEW.broker_firms:=OLD.broker_firms;
       -- Compatibility writers cannot detach a committed decision from its subject.
       if public.news_archive_subject_hash(NEW) is distinct from public.news_archive_subject_hash(OLD) then
         NEW.title:=OLD.title; NEW.url:=OLD.url; NEW.source:=OLD.source; NEW.source_name:=OLD.source_name;
@@ -97,6 +99,7 @@ create function public.upsert_news_archive_evidence(p_rows jsonb)
 returns table(fingerprint text,outcome text) language plpgsql security invoker
 set search_path = public, pg_temp as $$
 declare v jsonb; incoming public.news_archive; current_row public.news_archive; expected bigint; changed integer;
+  equivalent boolean; keep_evidence boolean;
 begin
   if jsonb_typeof(p_rows)<>'array' or jsonb_array_length(p_rows)>50 then raise exception 'NEWS_BATCH_INVALID'; end if;
   if (select count(*)<>count(distinct x->>'fingerprint') from jsonb_array_elements(p_rows) x) then
@@ -112,6 +115,11 @@ begin
     if incoming.fingerprint is null or incoming.fingerprint !~ '^[a-f0-9]{64}$' or expected is null or expected < -1 then raise exception 'NEWS_IDENTITY_INVALID'; end if;
     incoming.verification_revision:=1;
     if not public.news_archive_evidence_valid(incoming) then raise exception 'NEWS_EVIDENCE_INVALID'; end if;
+    if cardinality(coalesce(incoming.matched_symbols,'{}'))>30 or cardinality(coalesce(incoming.broker_firms,'{}'))>10
+      or exists(select 1 from unnest(incoming.matched_symbols) s where s is null or s !~ '^[A-Z0-9&.-]{1,20}$')
+      or exists(select 1 from unnest(incoming.broker_firms) s where s is null or s !~ '^[A-Z0-9&.-]{1,12}$') then
+      raise exception 'NEWS_ASSOCIATION_INVALID';
+    end if;
     fingerprint:=incoming.fingerprint;
     select a.* into current_row from public.news_archive a where a.fingerprint=incoming.fingerprint for update;
     if not found then
@@ -131,14 +139,47 @@ begin
     if expected<>current_row.verification_revision then outcome:='conflict'; return next; continue; end if;
     -- Uncertainty cannot erase previously committed legacy or verified news.
     if incoming.verification_status='UNVERIFIED' then outcome:='retained'; return next; continue; end if;
-    if public.news_archive_evidence_valid(current_row) and (
-      incoming.verification_checked_at<current_row.verification_checked_at
-      or (incoming.verification_status='UNVERIFIED' and current_row.verification_status='VERIFIED')
-      or (incoming.verification_status='VERIFIED' and incoming.verification_basis='metadata'
-        and (current_row.verification_basis='article' or current_row.verification_status='REJECTED'))
-      or (incoming.verification_status=current_row.verification_status and incoming.verification_basis=current_row.verification_basis
-        and incoming.verification_reason=current_row.verification_reason and incoming.verification_subject_hash=current_row.verification_subject_hash)
-    ) then outcome:='retained'; return next; continue; end if;
+    equivalent:=incoming.verification_status=current_row.verification_status and incoming.verification_basis=current_row.verification_basis
+      and incoming.verification_reason=current_row.verification_reason and incoming.verification_subject_hash=current_row.verification_subject_hash;
+    keep_evidence:=false;
+    if public.news_archive_evidence_valid(current_row) then
+      -- Equal-time conflicting observations retain the committed decision; an exact
+      -- retry may only add trusted associations, never flip the outcome.
+      if incoming.verification_checked_at<current_row.verification_checked_at
+        or (incoming.verification_checked_at=current_row.verification_checked_at and not equivalent) then
+        outcome:='retained'; return next; continue;
+      end if;
+      keep_evidence:=incoming.verification_status='VERIFIED' and incoming.verification_basis='metadata'
+        and (current_row.verification_basis='article' or current_row.verification_status='REJECTED');
+      if keep_evidence and not (current_row.verification_status='VERIFIED'
+        and incoming.verification_subject_hash=current_row.verification_subject_hash) then
+        outcome:='retained'; return next; continue;
+      end if;
+    end if;
+    -- Add-only, existing-first union: refresh cannot remove accepted associations.
+    -- A negative observation changes visibility, not the stored associations.
+    if incoming.verification_status='VERIFIED' then
+      select coalesce(array_agg(value order by first_n),'{}') into incoming.matched_symbols from (
+        select upper(btrim(value)) value,min(n) first_n from unnest(coalesce(current_row.matched_symbols,'{}')||coalesce(incoming.matched_symbols,'{}')) with ordinality x(value,n)
+        where upper(btrim(value)) ~ '^[A-Z0-9&.-]{1,20}$' group by upper(btrim(value)) order by min(n) limit 30
+      ) a;
+      select coalesce(array_agg(value order by first_n),'{}') into incoming.broker_firms from (
+        select upper(btrim(value)) value,min(n) first_n from unnest(coalesce(current_row.broker_firms,'{}')||coalesce(incoming.broker_firms,'{}')) with ordinality x(value,n)
+        where upper(btrim(value)) ~ '^[A-Z0-9&.-]{1,12}$' group by upper(btrim(value)) order by min(n) limit 10
+      ) a;
+    else
+      incoming.matched_symbols:=current_row.matched_symbols; incoming.broker_firms:=current_row.broker_firms;
+    end if;
+    if keep_evidence or (equivalent and incoming.verification_checked_at=current_row.verification_checked_at) then
+      if incoming.matched_symbols is not distinct from current_row.matched_symbols and incoming.broker_firms is not distinct from current_row.broker_firms then
+        outcome:='retained'; return next; continue;
+      end if;
+      update public.news_archive a set matched_symbols=incoming.matched_symbols,broker_firms=incoming.broker_firms,
+        verification_revision=current_row.verification_revision+1 where a.id=current_row.id;
+      outcome:='persisted'; return next; continue;
+    end if;
+    -- Rebind only the accepted projection after preserving broker attribution.
+    incoming.verification_subject_hash:=public.news_archive_subject_hash(incoming);
     update public.news_archive a set title=incoming.title,url=incoming.url,source=incoming.source,source_name=incoming.source_name,
       snippet=incoming.snippet,published_at=incoming.published_at,fetched_at=incoming.fetched_at,
       matched_symbols=coalesce(incoming.matched_symbols,'{}'),broker_firms=coalesce(incoming.broker_firms,'{}'),

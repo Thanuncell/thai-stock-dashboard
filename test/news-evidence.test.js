@@ -101,3 +101,64 @@ test('read-only compatibility mode makes zero write or cleanup requests',async()
   const service=createNewsArchiveService({env:{...env,SETSCOPE_NEWS_EVIDENCE:'read'},fetchImpl:()=>{throw Error('Unexpected write');}});
   assert.equal((await service.ingest([article()])).persistence,'read-only');
 });
+
+test('P2: association capability is bound to the item and normalized before persistence',async()=>{
+  const {trustedEvidence}=require('../lib/news-evidence');
+  const item=article({matchedSymbols:[' ptt ','PTT'],matchedBrokerFirms:[' fss ','FSS']});
+  assert.ok(trustedEvidence(item));
+  for(const changed of [{...item,matchedSymbols:['OR']},{...item,matchedBrokerFirms:['KGI']},{...item,url:'https://thunhoon.com/article-999999'}]){
+    assert.equal(trustedEvidence(changed),null);
+    const db=memoryTransport();await db.service().ingest([changed]);assert.equal(db.rows.size,0);
+  }
+  const db=memoryTransport();await db.service().ingest([item]);
+  const row=[...db.rows.values()][0];assert.deepEqual(row.matched_symbols,['PTT']);assert.deepEqual(row.broker_firms,['FSS']);
+});
+
+test('P1/P2: caller timestamps and associations are not promoted by metadata acceptance',async()=>{
+  const item={title:'Q3',url:'https://news.google.com/articles/association',source:'other',sourceName:'Unknown publisher',
+    snippet:'Sufficient synthetic metadata source evidence',pubDate:new Date().toISOString(),matchedSymbols:['BAD'],matchedBrokerFirms:['BAD'],
+    checkedAt:'2099-01-01T00:00:00Z',verification:{status:'VERIFIED',reason:'ARTICLE_IDENTITY_VERIFIED',basis:'article',checkedAt:'2099-01-01T00:00:00Z'}};
+  const db=memoryTransport();await db.service().ingest([item]);const row=[...db.rows.values()][0];
+  assert.deepEqual(row.matched_symbols,[]);assert.deepEqual(row.broker_firms,[]);assert.equal(row.verification_basis,'metadata');
+  assert.ok(Date.parse(row.verification_checked_at)<Date.now()+1000);
+  const trusted={...item,verification:reviewNewsItem({...item,verification:undefined})};
+  const pipeline=memoryTransport();await pipeline.service().ingest([trusted]);
+  assert.deepEqual([...pipeline.rows.values()][0].matched_symbols,['BAD']);
+});
+
+test('P1: trusted observation time survives hard-negative reclassification',()=>{
+  const {trustedEvidence}=require('../lib/news-evidence');
+  const item=article({title:'Login'}),checkedAt=Date.now()-5000;
+  const negative=issueEvidence(item,{status:'REJECTED',reason:'ARTICLE_NOT_FOUND',basis:'article'},{checkedAt});
+  const reviewed=reviewNewsItem(item,negative);
+  assert.equal(reviewed.basis,'metadata');assert.equal(reviewed.status,'REJECTED');
+  assert.equal(Date.parse(trustedEvidence(item,reviewed).checkedAt),checkedAt);
+});
+
+test('P2: duplicate candidates merge trusted associations before the bounded RPC',async()=>{
+  const pubDate=new Date(Date.now()-1000).toISOString(),checkedAt=Date.now();
+  const first=article({pubDate,checkedAt,matchedSymbols:['PTT'],matchedBrokerFirms:['FSS']});
+  const second=article({pubDate,checkedAt:checkedAt+1,matchedSymbols:['OR'],matchedBrokerFirms:['KGI']});
+  const db=memoryTransport();await db.service().ingest([first,second]);assert.equal(db.rows.size,1);
+  const row=[...db.rows.values()][0];assert.deepEqual(row.matched_symbols,['PTT','OR']);assert.deepEqual(row.broker_firms,['FSS','KGI']);
+  assert.equal(row.verification_subject_hash,rowSubjectHash(row));
+  const metadata={...JSON.parse(JSON.stringify(first)),brokerCategory:true,matchedSymbols:['OR'],verification:undefined};
+  metadata.verification=reviewNewsItem(metadata);
+  const weaker=memoryTransport();await weaker.service().ingest([first,metadata]);
+  const retained=[...weaker.rows.values()][0];assert.deepEqual(retained.matched_symbols,['PTT','OR']);assert.equal(retained.verification_basis,'article');
+});
+
+test('P2: existing Watchlist and broker merges preserve article-only verification',async()=>{
+  const {mergeStockNews}=require('../server/watchlist-news'),{dedupeNewsItems}=require('../lib/broker-news'),{trustedEvidence}=require('../lib/news-evidence');
+  const time=Date.now(),pubDate=new Date(time-1000).toISOString();
+  const first=article({pubDate,checkedAt:time-200,matchedSymbols:['PTT'],matchedBrokerFirms:['FSS']});
+  const second=article({pubDate,checkedAt:time-100,matchedSymbols:['OR'],matchedBrokerFirms:['KGI']});
+  const watchlist=mergeStockNews([first,second],[{symbol:'PTT'},{symbol:'OR'}],Date.now());
+  assert.equal(reviewNewsItem(watchlist[0]).status,'VERIFIED');assert.equal(reviewNewsItem(watchlist[0]).basis,'article');
+  const brokers=dedupeNewsItems([first,second]);assert.equal(reviewNewsItem(brokers[0]).status,'VERIFIED');
+  assert.equal(Date.parse(trustedEvidence(brokers[0]).checkedAt),time-100);
+  const db=memoryTransport();await db.service().ingest(brokers);
+  assert.deepEqual([...db.rows.values()][0].broker_firms,['FSS','KGI']);
+  const forged={...JSON.parse(JSON.stringify(second)),matchedBrokerFirms:['BAD']};
+  const safe=dedupeNewsItems([first,forged])[0];assert.ok(!safe.matchedBrokerFirms.includes('BAD'));assert.ok(trustedEvidence(safe));
+});
