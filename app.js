@@ -552,10 +552,10 @@ function renderSettradeOverview(data) {
     conditionNode.textContent = `ภาวะตลาด: ${condition}`;
     conditionNode.className = `market-condition ${direction}`;
   }
-  $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<div class="market-breadth-group"><b>${escapeHtml(group.market)}</b>${(group.items || []).map(item => {
+  $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<table class="market-breadth-group"><caption>${escapeHtml(group.market)}</caption><thead><tr><th scope="col">สถานะ</th><th scope="col">จำนวนหุ้น</th><th scope="col">ปริมาณซื้อขาย <small>('000)</small></th></tr></thead><tbody>${(group.items || []).map(item => {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
-    return `<div><span>${breadthLabels[key] || escapeHtml(item.label)}</span><strong>${number(item.count)} หุ้น</strong><small>ปริมาณซื้อขาย ('000) ${number(item.volumeThousand)}</small></div>`;
-  }).join('')}</div>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
+    return `<tr><td>${breadthLabels[key] || escapeHtml(item.label)}</td><td>${number(item.count)}</td><td>${number(item.volumeThousand)}</td></tr>`;
+  }).join('')}</tbody></table>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
   setText('#market-close-summary', data.closeSummary || 'ยังไม่มีสรุปภาวะตลาดรอบนี้');
   const nvdr = data.nvdr || {};
   const marketMillion = toFiniteNumber(nvdr.marketMillion), nvdrMillion = toFiniteNumber(nvdr.nvdrMillion), ratioPercent = toFiniteNumber(nvdr.ratioPercent);
@@ -1595,23 +1595,12 @@ function renderWatchlistNews() {
       :watchlistNewsMatchInfo?.matchedCandidates===0?'ยังไม่พบข่าวที่ตรงกับหุ้นในรายการติดตาม'
       :watchlistNewsMatchInfo?.qualityExcluded>0?'พบข่าวที่เกี่ยวข้อง แต่ยังไม่มีข่าวที่ผ่านการตรวจสอบ'
       :watchlistEmptyText();
-    const stocks=watchlistNewsMatchInfo?.stockStatus||[],incomplete=stocks.filter(stock=>stock.dataState!=='fresh').length;
-    renderNewsItemsInto(root,[],message+(incomplete?` · ยังอัปเดตไม่ครบ ${incomplete}/${stocks.length} หุ้น`:''));const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
+    renderNewsItemsInto(root,[],message);const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
   }
   const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
   watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
   const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
-  if(state==='loading'||state==='stale'||state==='partial'||watchlistNewsMatchInfo?.limited){
-    const notice=document.createElement('div');notice.className='news-title';notice.setAttribute('role','status');
-    notice.textContent=state==='loading'?'กำลังอัปเดตข่าว…'
-      :state==='stale'?'แสดงข่าวล่าสุดที่โหลดไว้ · ข้อมูลอาจยังไม่เป็นปัจจุบัน'
-      :'แสดงเฉพาะข่าวที่ตรวจสอบผ่าน · ข่าวบางส่วนยังรอการตรวจสอบ';
-    const stocks=watchlistNewsMatchInfo?.stockStatus||[];
-    if(stocks.length){const incomplete=stocks.filter(stock=>stock.dataState!=='fresh').length;if(incomplete)notice.textContent+=` · ยังอัปเดตไม่ครบ ${incomplete}/${stocks.length} หุ้น`;}
-    if(watchlistNewsMatchInfo?.limited)notice.textContent+=' · ผลค้นหาบางหุ้นถึงขีดจำกัด แสดงข่าวล่าสุดที่เก็บไว้';
-    root.prepend(notice);
-  }
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
     watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToPageTop();
   });
