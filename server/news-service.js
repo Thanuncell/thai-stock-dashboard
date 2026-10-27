@@ -34,6 +34,8 @@ const GOOGLE_RSS_BACKOFF_BASE_MS = 30_000;
 const GOOGLE_RSS_BACKOFF_MAX_MS = 15 * 60 * 1000;
 const GOOGLE_RSS_RETRY_AFTER_MAX_MS = 30 * 60 * 1000;
 const NEWS_STALE_FALLBACK_MS = 30 * 60 * 1000;
+const OPENAI_MIN_COOLDOWN_MS = 60_000;
+const OPENAI_DEFAULT_COOLDOWN_MS = 5 * 60_000;
 const RISKY_TARGET_CACHE_MS = 6 * 60 * 60 * 1000;
 const RISKY_TARGET_UNVERIFIED_CACHE_MS = 5 * 60 * 1000;
 const MAX_RISKY_TARGET_CHECKS = 3;
@@ -47,12 +49,12 @@ function sourceFromOutlet(name = '') {
 function fallbackNewsSummary(title = '') {
   const text = String(title);
   if (/(กำไรเพิ่ม|กำไรพุ่ง|โตเด่น|เติบโต|ปันผลเพิ่ม|ฟื้นตัว|ชนะประมูล|คว้างาน|ยอดขายโต)/i.test(text)) {
-    return 'พาดหัวชี้โอกาสเชิงบวก ควรตรวจสอบว่าผลประกอบการหรือมูลค่างานมีนัยสำคัญและต่อเนื่องเพียงใด';
+    return 'ข้อความข่าวมีคำสำคัญเชิงบวก ควรตรวจสอบบริบท ตัวเลข และผลกระทบจากข่าวต้นฉบับ';
   }
   if (/(ขาดทุน|กำไรลด|ร่วง|หดตัว|ผิดนัด|ถูกฟ้อง|เพิ่มทุน|ลดเป้า|เลื่อนโครงการ|ต้นทุนพุ่ง)/i.test(text)) {
-    return 'พาดหัวมีความเสี่ยงเชิงลบ ควรดูผลกระทบต่อกำไร กระแสเงินสด และกำหนดเวลาที่ระบุในข่าว';
+    return 'ข้อความข่าวมีคำสำคัญเกี่ยวกับความเสี่ยง ควรตรวจสอบรายละเอียดและผลกระทบจากข่าวต้นฉบับ';
   }
-  return 'พาดหัวยังไม่ชี้ผลบวกหรือลบชัดเจน ควรอ่านรายละเอียด ตัวเลข และเงื่อนไขก่อนประเมินผลต่อหุ้น';
+  return 'คำสำคัญยังไม่เพียงพอสำหรับประเมินผลกระทบ ควรอ่านรายละเอียดจากข่าวต้นฉบับ';
 }
 
 function parseRetryAfter(value, timestamp) {
@@ -93,6 +95,9 @@ async function readBoundedText(response, limit = MAX_RISKY_TARGET_BYTES) {
 function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, logger = console, now = Date.now, analysisTimeoutMs = 30000 } = {}) {
   if (!Number.isInteger(analysisTimeoutMs) || analysisTimeoutMs < 1 || analysisTimeoutMs > 30000) throw Error('Invalid AI timeout');
   const analysisCache = new Map();
+  let openAiCooldownUntil = 0;
+  let openAiInFlight = null;
+  let openAiQuotaBlocked = false;
   const quarantine = new Map();
   const blockedArticleOrigins = new Set();
   const rssPending = new Map();
@@ -373,8 +378,12 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const cacheKey = item => newsFingerprint(item) + '|' + item.title + '|' + item.snippet;
     for (const [key, entry] of analysisCache) if (entry.expiresAt <= Number(now())) analysisCache.delete(key);
     const clean = prepared.filter(item => reviewNewsItem(item).status === 'VERIFIED');
-    const fresh = clean.filter(item => !analysisCache.has(cacheKey(item)));
-    if (fresh.length && env.OPENAI_API_KEY) {
+    // Concurrent requests share the completed result rather than caching a competing fallback.
+    if (openAiInFlight) await openAiInFlight;
+    const fresh = [...new Map(clean.filter(item => !analysisCache.has(cacheKey(item))).map(item => [cacheKey(item), item])).values()];
+    if (fresh.length && env.OPENAI_API_KEY && !openAiInFlight && !openAiQuotaBlocked && Number(now()) >= openAiCooldownUntil) {
+      let release;
+      openAiInFlight = new Promise(resolve => { release = resolve; });
       let timer;
       const controller = new AbortController();
       try {
@@ -390,19 +399,30 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
               method:'POST', headers:{authorization:'Bearer '+env.OPENAI_API_KEY,'content-type':'application/json'},
               body:JSON.stringify(newsAnalysisRequest(material,env.OPENAI_MODEL || 'gpt-4.1-mini')), signal:controller.signal
             });
+            if (response.status === 429) {
+              const retryAfter = parseRetryAfter(response.headers.get('retry-after'), Number(now()));
+              // Honor valid Retry-After up to the existing bounded header limit.
+              openAiCooldownUntil = Math.max(openAiCooldownUntil, Number(now()) + Math.max(OPENAI_MIN_COOLDOWN_MS, retryAfter || OPENAI_DEFAULT_COOLDOWN_MS));
+            }
             let body;
             try { body = JSON.parse(await readBoundedText(response,128000)); }
             catch { if (response.ok) throw Error('AI_INVALID_RESPONSE'); }
-            if (!response.ok) { const error=Error('AI_HTTP_FAILURE');error.diagnostic=safeAiDiagnostic(response.status,body,material.length);throw error; }
+            if (!response.ok) {
+              if (response.status === 429) {
+                openAiQuotaBlocked = ['insufficient_quota','credit_balance_exhausted','billing_hard_limit_reached'].includes(body?.error?.code);
+              }
+              const error=Error('AI_HTTP_FAILURE');error.diagnostic=safeAiDiagnostic(response.status,body,material.length);throw error;
+            }
             return body;
           })()]);
           const summaries=parseNewsAnalysis(payload,material);
           for (const item of material) analysisCache.set(item.cacheKey,{summary:summaries.get(item.id),mode:'ai',basis:item.basis,expiresAt:Number(now())+6*60*60*1000});
         }
       } catch (error) {
+        if (error.message === 'AI_TIMEOUT') openAiCooldownUntil = Math.max(openAiCooldownUntil, Number(now()) + OPENAI_MIN_COOLDOWN_MS);
         // Never log raw API bodies, error messages, input news, tokens or headers.
         logger.warn('News AI analysis unavailable:',JSON.stringify(error.diagnostic || {status:0,code:error.message==='AI_TIMEOUT'?'TIMEOUT':'INVALID_RESPONSE'}));
-      } finally { clearTimeout(timer); }
+      } finally { clearTimeout(timer); openAiInFlight = null; release(); }
     }
     const result=prepared.map(item=>{
       if(reviewNewsItem(item).status!=='VERIFIED')return {summary:'',mode:'unavailable',basis:'headline'};
@@ -420,7 +440,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const requested = normalizeWatchlistNewsStocks(rawStocks);
     if (!requested.length) {
       const fetchedAt = new Date(Number(now())).toISOString();
-      return { items: [], fetchedAt, asOf: null, source: 'Google News', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30 };
+      return { items: [], fetchedAt, asOf: null, source: 'Google News', stale: false, partial: false, dataState: 'fresh', maxAgeDays: 30, matchedCandidates: 0, qualityExcluded: 0 };
     }
     const snapshotKey = createWatchlistNewsCacheKey(requested, ownerId);
     const terms = requested.flatMap(item => [`"${item.symbol}"`, ...(item.name.length > 3 ? [`"${item.name}"`] : [])]).join(' OR ');
@@ -474,7 +494,8 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const fetchedAt = new Date(Number(now())).toISOString();
     const asOfMs = items.map(item => Date.parse(item.pubDate)).filter(Number.isFinite)
       .reduce((latest, value) => Math.max(latest, value), 0);
-    const result = { items, fetchedAt, asOf: asOfMs ? new Date(asOfMs).toISOString() : null, source: 'Google News', stale: false, partial: uncertain, dataState: unavailable ? 'unavailable' : uncertain ? 'partial' : 'fresh', maxAgeDays: 30 };
+    const result = { items, fetchedAt, asOf: asOfMs ? new Date(asOfMs).toISOString() : null, source: 'Google News', stale: false, partial: uncertain, dataState: unavailable ? 'unavailable' : uncertain ? 'partial' : 'fresh', maxAgeDays: 30,
+      matchedCandidates: parsedItems.length, qualityExcluded: Math.max(0, parsedItems.length - qualityItems.length) };
     if (!unavailable) rememberValidated(snapshotKey, result);
     return result;
   }

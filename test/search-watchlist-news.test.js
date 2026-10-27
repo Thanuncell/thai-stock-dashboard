@@ -55,3 +55,20 @@ test('a valid empty RSS response stays genuinely empty, while owner caches remai
  assert.equal((await cache.get(keyA,PROVIDER_POLICIES.watchlistNews,async()=>++loads,{force:true})).value,3);
  assert.equal((await cache.get(keyB,PROVIDER_POLICIES.watchlistNews,async()=>++loads)).value,2);
 });
+test('Watchlist News reports bounded no-match diagnostics without exposing the watchlist', async () => {
+ const service=createNewsService({now:()=>NOW,fetchImpl:async()=>new Response('<rss><channel></channel></rss>')});
+ const result=await service.getWatchlistNews([{symbol:'THAI',name:'THAI'}]);
+ assert.equal(result.dataState,'fresh');
+ assert.equal(result.items.length,0);
+ assert.equal(result.matchedCandidates,0);
+ assert.equal(result.qualityExcluded,0);
+ assert.ok(!JSON.stringify(result).includes('THAI'));
+});
+
+test('Watchlist distinguishes no-match from deterministic quality exclusions without accepting rejected news',async()=>{
+ const rejected=rss.replace('THAI รายงานผลประกอบการล่าสุด','THAI Login').replace('https://news.google.com/articles/fixture-thai','https://www.kaohoon.com/login');
+ const service=createNewsService({now:()=>NOW,fetchImpl:async()=>new Response(rejected)});
+ const result=await service.getWatchlistNews([{symbol:'THAI'}]);
+ assert.equal(result.items.length,0);assert.equal(result.matchedCandidates,1);assert.equal(result.qualityExcluded,1);
+ assert.equal(service.quarantineReport()[0].status,'REJECTED');
+});

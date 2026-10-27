@@ -188,3 +188,78 @@ test('analysis respects negative verification and cannot be authorized by a clie
   input({snippet:'',verification:{status:'VERIFIED'}}),null]);
  assert.ok(result.items.every(item=>item.mode==='unavailable'));assert.equal(calls,0);
 });
+test('OpenAI 429 uses a bounded provider cooldown and preserves labelled fallback', async () => {
+ let current=Date.parse('2026-10-27T04:00:00.000Z'), aiCalls=0;
+ const service=createNewsService({now:()=>current,env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async(value)=>{
+  if(!String(value).includes('api.openai.com'))return new Response('',{status:404});
+  aiCalls++;
+  if(aiCalls===1)return Response.json({error:{code:'rate_limit_exceeded'}},{status:429,headers:{'retry-after':'120'}});
+  return Response.json(success([{id:0,summary:'AI answer after cooldown'}]));
+ }});
+ const first=await service.analyse([input({url:'https://news.google.com/articles/cooldown-1'})]);
+ assert.equal(first.items[0].mode,'rules');assert.equal(aiCalls,1);
+ const second=await service.analyse([input({url:'https://news.google.com/articles/cooldown-2'})]);
+ assert.equal(second.items[0].mode,'rules');assert.equal(aiCalls,1,'other articles cannot bypass the cooldown');
+ current+=121000;
+ const recovered=await service.analyse([input({url:'https://news.google.com/articles/cooldown-3'})]);
+ assert.equal(recovered.items[0].mode,'ai');assert.equal(aiCalls,2);
+});
+
+test('concurrent identical analysis shares one provider result and deduplicates batch material',async()=>{
+ let calls=0,release;
+ const service=createNewsService({env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async(value)=>{
+  if(!String(value).includes('api.openai.com'))return new Response('',{status:404});
+  calls++;await new Promise(resolve=>{release=resolve;});
+  return Response.json(success([{id:0,summary:'Shared synthetic result'}]));
+ }});
+ const first=service.analyse([input(),input()]);
+ while(!release)await new Promise(resolve=>setImmediate(resolve));
+ const second=service.analyse([input()]);release();
+ const [a,b]=await Promise.all([first,second]);
+ assert.equal(calls,1);assert.deepEqual(a.items[0],b.items[0]);assert.deepEqual(a.items[0],a.items[1]);assert.equal(b.mode,'ai');
+});
+
+for(const retryAfter of ['600','Tue, 27 Oct 2026 04:10:00 GMT','invalid',''])test('429 respects cooldown header '+JSON.stringify(retryAfter),async()=>{
+ let current=Date.parse('2026-10-27T04:00:00Z'),calls=0;
+ const start=current,delay=retryAfter===''||retryAfter==='invalid'?300000:600000;
+ const service=createNewsService({now:()=>current,env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async(value)=>{
+  if(!String(value).includes('api.openai.com'))return new Response('',{status:404});calls++;
+  return calls===1?new Response('not-json',{status:429,headers:{'retry-after':retryAfter}}):Response.json(success([{id:0,summary:'Recovered fixture'}]));
+ }});
+ assert.equal((await service.analyse([input({url:url+'/1'})])).mode,'rules');
+ current=start+delay-1;assert.equal((await service.analyse([input({url:url+'/2'})])).mode,'rules');assert.equal(calls,1);
+ current=start+delay+1;assert.equal((await service.analyse([input({url:url+'/3'})])).mode,'ai');assert.equal(calls,2);
+});
+
+test('quota 429 stops further provider requests for this service instance without automatic retry',async()=>{
+ let current=Date.now(),calls=0;
+ const service=createNewsService({now:()=>current,env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async(value)=>{
+  if(!String(value).includes('api.openai.com'))return new Response('',{status:404});calls++;
+  return Response.json({error:{code:'insufficient_quota'}},{status:429});
+ }});
+ assert.equal((await service.analyse([input()])).mode,'rules');current+=24*60*60*1000;
+ assert.equal((await service.analyse([input({url:url+'/other'})])).mode,'rules');assert.equal(calls,1);
+});
+
+test('a temporary 429 code is not permanently blocked by a broader quota error type',async()=>{
+ let current=Date.now(),calls=0;
+ const service=createNewsService({now:()=>current,env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async(value)=>{
+  if(!String(value).includes('api.openai.com'))return new Response('',{status:404});calls++;
+  return calls===1?Response.json({error:{code:'rate_limit_exceeded',type:'insufficient_quota'}},{status:429,headers:{'retry-after':'60'}})
+   :Response.json(success([{id:0,summary:'Recovered temporary limit'}]));
+ }});
+ assert.equal((await service.analyse([input()])).mode,'rules');current+=61000;
+ assert.equal((await service.analyse([input({url:url+'/after'})])).mode,'ai');assert.equal(calls,2);
+});
+
+test('ignored AI abort cannot cache late output or start an immediate repeated request',async()=>{
+ let calls=0,release,signal;
+ const service=createNewsService({analysisTimeoutMs:10,env:{OPENAI_API_KEY:'synthetic-key'},fetchImpl:async(value,init)=>{
+  if(!String(value).includes('api.openai.com'))return new Response('',{status:404});calls++;signal=init.signal;
+  await new Promise(resolve=>{release=resolve;});return Response.json(success([{id:0,summary:'Late output must not win'}]));
+ }});
+ assert.equal((await service.analyse([input()])).mode,'rules');assert.equal(signal.aborted,true);
+ assert.equal((await service.analyse([input({url:url+'/other'})])).mode,'rules');assert.equal(calls,1);
+ release();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal((await service.analyse([input()])).mode,'rules');
+});

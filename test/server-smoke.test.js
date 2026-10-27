@@ -206,7 +206,10 @@ test('backend API response contracts remain stable before service extraction', a
   assert.equal(archive.maxAgeDays, 365);
 
   const watchlistNews = JSON.parse((await request(base, '/api/watchlist-news?stocks=%5B%7B%22symbol%22%3A%22PTT%22%7D%5D', { headers })).body);
-  assert.deepEqual(Object.keys(watchlistNews).sort(), ['asOf', 'dataState', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
+  assert.deepEqual(Object.keys(watchlistNews).sort(), ['asOf', 'dataState', 'fetchedAt', 'items', 'matchedCandidates', 'maxAgeDays', 'partial', 'qualityExcluded', 'source', 'stale']);
+  assert.equal(Number.isInteger(watchlistNews.matchedCandidates), true);
+  assert.equal(Number.isInteger(watchlistNews.qualityExcluded), true);
+  assert.ok(watchlistNews.qualityExcluded <= watchlistNews.matchedCandidates);
 
   const news = JSON.parse((await request(base, '/api/news', { headers })).body);
   assert.deepEqual(Object.keys(news).sort(), ['asOf', 'dataState', 'errors', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
