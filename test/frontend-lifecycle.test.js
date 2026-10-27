@@ -147,7 +147,7 @@ test('Watchlist workspace search, collapse and News jump preserve membership and
 
 test('UI cleanup labels remain presentation-only and truthful', () => {
   assert.match(appSource, /setText\('#set-volume', wholeNumber\(resolved\.volumeThousand\)\)/);
-  assert.match(appSource, /ปริมาณซื้อขาย \('000\)/);
+  assert.match(appSource, /ปริมาณซื้อขาย <small>\('000\)<\/small>/);
   assert.match(indexSource, /กำลังอัปเดตข้อมูลจาก SETTRADE\.\.\./);
   assert.match(appSource, /อัปเดตข้อมูลไม่สำเร็จ/);
   assert.doesNotMatch(domainSource, /บางส่วนไม่พร้อม/);

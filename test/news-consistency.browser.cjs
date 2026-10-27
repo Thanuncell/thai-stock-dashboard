@@ -59,7 +59,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    await refresh('unavailable');assert.equal(await page.locator('#watchlist-news-list').getAttribute('data-state'),'unavailable');
    await refresh('error');assert.equal(await page.locator('#watchlist-news-list').getAttribute('data-state'),'error');
    await refresh('partial');assert.equal(await page.locator('#watchlist-news-list').getAttribute('data-state'),'partial');
-   assert.match(await page.locator('#watchlist-news-list').textContent(),/แสดงเฉพาะข่าวที่ตรวจสอบผ่าน/);
+   assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/แสดงเฉพาะข่าวที่ตรวจสอบผ่าน|ยังอัปเดตไม่ครบ/);
    assert.match(await page.locator('#watchlist-news-list').textContent(),/UNIFIED_NEWS_SUMMARY/);
    await refresh('error');assert.equal(await page.locator('#watchlist-news-list').getAttribute('data-state'),'stale');
    await refresh('fresh');assert.equal(await page.locator('#watchlist-news-list').getAttribute('data-state'),'fresh');
