@@ -6,6 +6,14 @@ const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { reviewNewsItem } = require('../lib/news-quality');
 const { withNewsRulesSummary } = require('../lib/news-summary');
+const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence } = require('../lib/news-evidence');
+const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
+  'verification_checked_at','verification_subject_hash','verification_revision','canonical_url','canonical_key','verification_provenance'];
+
+function rowItem(row) {
+  return { title: row.title, url: row.url, source: row.source, sourceName: row.source_name, snippet: row.snippet || '',
+    pubDate: row.published_at, brokerCategory: Boolean(row.broker_firms?.length) };
+}
 
 const RETENTION_DAYS = 365;
 const MAX_PAGE_SIZE = 50;
@@ -25,7 +33,11 @@ function archiveFingerprint(item) {
 
 function reviewArchivedNewsRow(row) {
   if (!allowedNewsUrl(row?.url) || !Number.isFinite(Date.parse(row?.published_at))) return { status: 'REJECTED', reason: 'INVALID_ARCHIVE_IDENTITY' };
-  return reviewNewsItem({ title: row.title, url: row.url, source: row.source, sourceName: row.source_name, snippet: row.snippet || '' });
+  const item = rowItem(row), metadata = reviewNewsItem(item);
+  if (metadata.status === 'REJECTED') return metadata;
+  if (!EVIDENCE_FIELDS.some(key => key !== 'verification_revision' && row[key] !== null && row[key] !== undefined)) return metadata;
+  if (!validStoredEvidence(row)) return { status: 'UNVERIFIED', reason: 'ARCHIVE_EVIDENCE_MISMATCH', basis: 'metadata' };
+  return reviewNewsItem(item, restoreEvidence(item, row));
 }
 
 // Offline review plan only. Hiding is enforced by the same read predicate; no SQL or delete action.
@@ -47,6 +59,7 @@ function createNewsArchiveService({
   const secretKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY || '';
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/, '');
   const configured = Boolean(/^https:\/\//.test(baseUrl) && secretKey);
+  const evidenceMode = ['read', 'write'].includes(env.SETSCOPE_NEWS_EVIDENCE) ? env.SETSCOPE_NEWS_EVIDENCE : '';
   const safeScanChunkSize = Math.max(1, Math.min(1000, Number.parseInt(scanChunkSize, 10) || ARCHIVE_SCAN_CHUNK_SIZE));
   const safeMaxScanRows = Math.max(safeScanChunkSize, Math.min(100_000, Number.parseInt(maxScanRows, 10) || MAX_ARCHIVE_SCAN_ROWS));
   let lastCleanupAt = 0;
@@ -58,13 +71,15 @@ function createNewsArchiveService({
     return { apikey: secretKey, ...(secretKey.startsWith('sb_secret_') ? {} : { Authorization: `Bearer ${secretKey}` }), ...extra };
   }
 
-  function toRow(item) {
+  function toRow(item, verification = item?.verification, allowNegative = false) {
     const safeUrl = allowedNewsUrl(item?.url);
     const publishedAt = Date.parse(item?.pubDate);
     const timestamp = Number(now());
-    if (!safeUrl || !String(item?.title || '').trim() || !Number.isFinite(publishedAt) || reviewNewsItem(item).status !== 'VERIFIED') return null;
+    const decision = reviewNewsItem(item, verification);
+    if (!safeUrl || !String(item?.title || '').trim() || !Number.isFinite(publishedAt)
+      || (decision.status !== 'VERIFIED' && !(allowNegative && trustedEvidence(item, verification)))) return null;
     if (publishedAt < timestamp - RETENTION_DAYS * 24 * 60 * 60 * 1000 || publishedAt > timestamp + 10 * 60 * 1000) return null;
-    return {
+    const row = {
       fingerprint: archiveFingerprint(item),
       title: String(item.title).trim().slice(0, 500),
       url: safeUrl.href.slice(0, 2000),
@@ -76,6 +91,17 @@ function createNewsArchiveService({
       matched_symbols: [...new Set((item.matchedSymbols || []).map(normalizeSymbol).filter(Boolean))].slice(0, 30),
       broker_firms: [...new Set((item.matchedBrokerFirms || []).map(value => String(value).slice(0, 12)))].slice(0, 10)
     };
+    if (evidenceMode === 'write') {
+      const projected = rowItem(row);
+      // Recheck the final stored shape, including truncation and broker attribution.
+      const bound = projectEvidence(item, projected, decision);
+      const finalDecision = reviewNewsItem(projected, bound);
+      if (finalDecision.status !== decision.status) return null;
+      const columns = evidenceColumns(projected, row, finalDecision);
+      if (!columns) return null;
+      Object.assign(row, columns);
+    }
+    return row;
   }
 
   async function request(path, init = {}) {
@@ -96,25 +122,69 @@ function createNewsArchiveService({
     return true;
   }
 
-  async function ingest(items = []) {
+  async function ingest(items = [], { assessments = [] } = {}) {
     if (!configured) return { configured: false, ingested: 0, cleanupRan: false };
-    const rows = [...new Map(items.map(toRow).filter(Boolean).map(row => [row.fingerprint, row])).values()];
+    if (evidenceMode === 'read') return { configured: true, ingested: 0, cleanupRan: false, persistence: 'read-only' };
+    const candidates = items.map(item => toRow(item)).filter(Boolean);
+    if (evidenceMode === 'write') {
+      for (const assessment of assessments.slice(0, 200)) {
+        if (assessment.verification?.status === 'VERIFIED' || !trustedEvidence(assessment.item, assessment.verification)) continue;
+        const row = toRow(assessment.item, assessment.verification, true);
+        if (row) candidates.push(row);
+      }
+    }
+    const unique = new Map();
+    for (const row of candidates) {
+      const previous = unique.get(row.fingerprint);
+      if (previous?.verification_status === 'VERIFIED' && row.verification_status === 'UNVERIFIED') continue;
+      if (previous?.verification_checked_at && row.verification_checked_at
+        && Date.parse(row.verification_checked_at) < Date.parse(previous.verification_checked_at)) continue;
+      if (previous?.verification_status === 'REJECTED' && row.verification_status === 'VERIFIED' && row.verification_basis === 'metadata') continue;
+      if (previous?.verification_basis === 'article' && previous.verification_status === 'VERIFIED'
+        && row.verification_basis === 'metadata' && row.verification_status === 'VERIFIED') continue;
+      unique.set(row.fingerprint, row);
+    }
+    const rows = [...unique.values()];
     if (!rows.length) return { configured: true, ingested: 0, cleanupRan: false };
     // Feed ingestion refreshes metadata only. Omitted analysis columns cannot
     // overwrite a persisted AI summary, even during concurrent conflict updates.
-    const params = new URLSearchParams({ on_conflict: 'fingerprint', columns: Object.keys(rows[0]).join(',') });
-    await request(`news_archive?${params}`, {
+    let ingested = rows.length, conflicts = 0, retained = 0;
+    if (evidenceMode === 'write') {
+      ingested = 0;
+      for (let offset = 0; offset < rows.length; offset += 50) {
+        const batch = rows.slice(offset, offset + 50);
+        const params = new URLSearchParams({ select: 'fingerprint,verification_revision', fingerprint: `in.(${batch.map(row => row.fingerprint).join(',')})` });
+        const current = await (await request(`news_archive?${params}`, { headers: headers() })).json();
+        const revisions = new Map(current.map(row => [row.fingerprint, Number(row.verification_revision)]));
+        const response = await request('rpc/upsert_news_archive_evidence', {
+          method: 'POST', headers: headers({ 'content-type': 'application/json' }),
+          body: JSON.stringify({ p_rows: batch.map(row => ({ ...row, expected_revision: revisions.get(row.fingerprint) ?? -1 })) })
+        });
+        const outcomes = await response.json();
+        if (!Array.isArray(outcomes) || outcomes.length !== batch.length
+          || outcomes.some((outcome, index) => outcome.fingerprint !== batch[index].fingerprint
+            || !['persisted','retained','conflict','not_inserted'].includes(outcome.outcome))) throw Error('News archive invalid write acknowledgement');
+        ingested += outcomes.filter(row => row.outcome === 'persisted').length;
+        conflicts += outcomes.filter(row => row.outcome === 'conflict').length;
+        retained += outcomes.filter(row => row.outcome === 'retained').length;
+      }
+    } else {
+      const params = new URLSearchParams({ on_conflict: 'fingerprint', columns: Object.keys(rows[0]).join(',') });
+      await request(`news_archive?${params}`, {
       method: 'POST',
       headers: headers({
         'content-type': 'application/json',
         Prefer: 'resolution=merge-duplicates,return=minimal'
       }),
       body: JSON.stringify(rows)
-    });
+      });
+    }
     archiveSnapshotVersion += 1;
     archiveSnapshot = null;
-    const cleanupRan = await cleanupIfDue();
-    return { configured: true, ingested: rows.length, cleanupRan };
+    let cleanupRan = false, cleanupUnavailable = false;
+    try { if (ingested > 0) cleanupRan = await cleanupIfDue(); } catch { cleanupUnavailable = true; }
+    return { configured: true, ingested, cleanupRan, ...(evidenceMode === 'write' ? { conflicts, retained } : {}),
+      ...(cleanupUnavailable ? { cleanupUnavailable: true } : {}) };
   }
 
   function fromRow(row) {
@@ -141,7 +211,8 @@ function createNewsArchiveService({
 
   async function buildArchiveSnapshot() {
     const params = new URLSearchParams({
-      select: 'fingerprint,title,url,source,source_name,snippet,published_at,first_seen_at,fetched_at,matched_symbols,broker_firms,analysis_summary,analysis_mode',
+      select: 'fingerprint,title,url,source,source_name,snippet,published_at,first_seen_at,fetched_at,matched_symbols,broker_firms,analysis_summary,analysis_mode'
+        + (evidenceMode ? ',' + EVIDENCE_FIELDS.join(',') : ''),
       order: 'published_at.desc,id.desc'
     });
     const rows = [];
