@@ -77,8 +77,22 @@ test('bounded candidate window, cache, denial and timeout never drain or retry a
  await review.review(news);await review.review(news);assert.equal(calls,1);
  let more=0;const bounded=reviewer(async()=>{more++;return response(html(item()));});
  await bounded.review(news);await bounded.review(news);assert.equal(more,3);
- const timeout=reviewer(async(_u,init)=>new Promise((_,reject)=>init.signal.addEventListener('abort',()=>reject(Error('timeout')),{once:true})));
- const result=await timeout.inspect(item(),{signal:AbortSignal.timeout(10)});assert.equal(result.link.status,'UNVERIFIED');
+ const controller=new AbortController();let seenSignal,aborted=false;
+ const timeout=reviewer(async(_u,{signal})=>{
+  seenSignal=signal;
+  return new Promise((_,reject)=>{
+   const onAbort=()=>{aborted=true;reject(signal.reason);};
+   if(signal.aborted)onAbort();else signal.addEventListener('abort',onAbort,{once:true});
+  });
+ });
+ // The fake transport owns no socket. Keep its deadline referenced until it settles;
+ // AbortSignal.timeout() alone does not keep Node 20's event loop alive.
+ const deadline=setTimeout(()=>controller.abort(Error('synthetic request deadline')),10);
+ try{
+  const result=await timeout.inspect(item(),{signal:controller.signal});
+  assert.equal(seenSignal,controller.signal);assert.equal(aborted,true);
+  assert.equal(result.link.status,'UNVERIFIED');assert.equal(result.link.reason,'ARTICLE_REQUEST_TIMEOUT');
+ }finally{clearTimeout(deadline);}
 });
 test('runtime pinned transport rejects private/rebinding destinations before request, including redirect hops',async()=>{
  let sockets=0,lookups=0;const transport=createNewsTransport({lookup:async()=>{lookups++;return [{address:'8.8.8.8',family:4},{address:'127.0.0.1',family:4}];},requestImpl:()=>{sockets++;throw Error('Must not connect');}});
