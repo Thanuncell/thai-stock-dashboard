@@ -1,6 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),http=require('node:http');
 process.env.SUPABASE_URL='https://fixture.supabase.co';process.env.SUPABASE_ANON_KEY='synthetic-public';process.env.SUPABASE_SECRET_KEY='synthetic-fixture';delete process.env.OPENAI_API_KEY;
+process.env.SETSCOPE_NEWS_EVIDENCE='write';
 let feeds=0,registryReads=0,searchCalls=0,broken=false;
 globalThis.fetch=async(input,init={})=>{
  const url=new URL(String(input));
@@ -10,6 +11,10 @@ globalThis.fetch=async(input,init={})=>{
  if(url.pathname==='/v1/finance/search'){searchCalls++;return Response.json({quotes:[{symbol:'THAI.BK',quoteType:'EQUITY',longname:'Thai Airways'}]});}
  if(url.hostname==='news.google.com'&&url.pathname==='/rss/search'){
   feeds++;return new Response(broken?'<html>temporary failure</html>':`<rss><channel><item><title>THAI รายงานผลประกอบการรอบที่ ${feeds}</title><link>https://thunhoon.com/article/story-${feeds}</link><pubDate>${new Date().toUTCString()}</pubDate><source>ทันหุ้น</source></item></channel></rss>`);
+ }
+ if(url.hostname==='thunhoon.com'){
+  const id=url.pathname.split('-').at(-1),title='THAI รายงานผลประกอบการรอบที่ '+id;
+  return new Response('<script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url:url.href,headline:title,datePublished:new Date().toISOString(),articleBody:('THAI disclosed operating results and investment plans. ').repeat(5)})+'</script>',{headers:{'content-type':'text/html'}});
  }
  throw Error('Unexpected fixture upstream');
 };

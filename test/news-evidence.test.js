@@ -10,10 +10,10 @@ const { getAssessments } = require('../lib/news-evidence');
 
 test('RSS discovery, article probe and archive retain private trusted evidence end to end',async()=>{
   const url='https://thunhoon.com/article-123456',date=new Date().toUTCString();
-  const news=createNewsService({fetchImpl:async input=>{
+  const news=createNewsService({env,fetchImpl:async input=>{
     if(String(input).includes('/rss/search?'))return new Response(`<rss><channel><item><title>Q3</title><link>https://news.google.com/articles/opaque</link><source>Thunhoon</source><pubDate>${date}</pubDate></item></channel></rss>`);
     if(String(input).includes('news.google.com/articles/opaque'))return new Response('',{status:302,headers:{location:url}});
-    return new Response('<script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline:'Q3',articleBody:'Synthetic real article body for identity testing only. '.repeat(4)})+'</script>',{headers:{'content-type':'text/html'}});
+    return new Response('<script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline:'Q3',datePublished:new Date(date).toISOString(),articleBody:'Synthetic real article body for identity testing only. '.repeat(4)})+'</script>',{headers:{'content-type':'text/html'}});
   }});
   const result=await news.getNews();assert.equal(result.items.length,1);assert.equal(result.items[0].verification.basis,'article');
   const db=memoryTransport();await db.service().ingest(result.items,{assessments:getAssessments(result)});

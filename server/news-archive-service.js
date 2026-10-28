@@ -4,7 +4,7 @@ const { createHash } = require('node:crypto');
 const { allowedNewsUrl } = require('../lib/news-policy');
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
-const { reviewNewsItem } = require('../lib/news-quality');
+const { reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
 const { withNewsRulesSummary } = require('../lib/news-summary');
 const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash } = require('../lib/news-evidence');
 const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
@@ -62,7 +62,8 @@ function createNewsArchiveService({
   fetchImpl = globalThis.fetch,
   now = Date.now,
   scanChunkSize = ARCHIVE_SCAN_CHUNK_SIZE,
-  maxScanRows = MAX_ARCHIVE_SCAN_ROWS
+  maxScanRows = MAX_ARCHIVE_SCAN_ROWS,
+  quarantine = new Map()
 } = {}) {
   const secretKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY || '';
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -225,7 +226,13 @@ function createNewsArchiveService({
       analysisMode: ['ai', 'rules'].includes(row?.analysis_mode) && String(row?.analysis_summary || '').trim() ? row.analysis_mode : ''
     };
     const verification = reviewArchivedNewsRow(row);
-    return safeUrl && verification.status === 'VERIFIED' ? withNewsRulesSummary({ ...item, verification }) : null;
+    const restored = {...item,verification};
+    const display = evidenceMode ? reviewNewsForDisplay(restored,{now:Number(now())}) : verification;
+    if (display.status !== 'VERIFIED') {
+      if (evidenceMode) { quarantine.delete(newsFingerprint(item)); quarantine.set(newsFingerprint(item),{url:item.url,title:item.title,status:display.status,reason:display.reason}); while(quarantine.size>200)quarantine.delete(quarantine.keys().next().value); }
+      return null;
+    }
+    return safeUrl ? withNewsRulesSummary(restored) : null;
   }
 
   async function buildArchiveSnapshot() {
@@ -268,7 +275,7 @@ function createNewsArchiveService({
       items: displayable,
       rawTotal: rows.length,
       qualityFiltered: rows.length - accepted.length,
-      quarantined: review.quarantined,
+      quarantined: Math.max(review.quarantined, rows.length - accepted.length - review.rejected),
       rejected: review.rejected,
       deduplicated: accepted.length - displayable.length
     };
@@ -296,7 +303,7 @@ function createNewsArchiveService({
       const symbolMatch = !symbol || item.matchedSymbols.includes(symbol);
       const searchMatch = !normalizedQuery || [item.title, item.sourceName, item.snippet, item.analysisSummary]
         .some(value => String(value || '').toLocaleLowerCase('th').includes(normalizedQuery));
-      return sourceMatch && symbolMatch && searchMatch && !excluded.has(newsFingerprint(item));
+      return (!evidenceMode || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED' && !quarantine.has(newsFingerprint(item))) && sourceMatch && symbolMatch && searchMatch && !excluded.has(newsFingerprint(item));
     });
   }
 

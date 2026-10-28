@@ -4,7 +4,7 @@ const { allowedNewsUrl, resolveAllowedNewsRedirect } = require('../lib/news-poli
 const { BROKER_FIRMS, decorateBrokerAttribution, dedupeNewsItems, matchBrokerFirms, newsFingerprint } = require('../lib/broker-news');
 const { decodeXml, marketHtmlText, xmlTag } = require('../lib/settrade-parser');
 const { normalizeWatchlistNewsStocks } = require('../lib/validation');
-const { reviewNewsItem } = require('../lib/news-quality');
+const { reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
 const { inspectNewsArticle, articleIdentity } = require('../lib/news-article');
 const { newsAnalysisRequest, parseNewsAnalysis, safeAiDiagnostic } = require('../lib/news-analysis');
 const { createWatchlistNewsCacheKey } = require('./reliability');
@@ -85,13 +85,13 @@ async function readBoundedText(response, limit = MAX_RISKY_TARGET_BYTES) {
   return new TextDecoder().decode(bytes);
 }
 
-function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000 } = {}) {
+function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map() } = {}) {
   if (!Number.isInteger(analysisTimeoutMs) || analysisTimeoutMs < 1 || analysisTimeoutMs > 30000) throw Error('Invalid AI timeout');
   const analysisCache = new Map();
   let openAiCooldownUntil = 0;
   let openAiInFlight = null;
   let openAiQuotaBlocked = false;
-  const quarantine = new Map();
+  const hardGate = ['read','write'].includes(env.SETSCOPE_NEWS_EVIDENCE);
   const blockedArticleOrigins = new Set();
   const rssPending = new Map();
   const lastValidated = new Map();
@@ -161,9 +161,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const cached = lastValidated.get(key);
     if (!cached || Number(now()) - cached.storedAt > NEWS_STALE_FALLBACK_MS) return null;
     const errors = [...new Set([...(Array.isArray(cached.value.errors) ? cached.value.errors : []), error?.status ? `google-rss-${error.status}` : 'google-rss-unavailable'])];
-    return { ...cached.value, items: cached.value.items.filter(item => quarantine.get(newsFingerprint(item))?.status !== 'REJECTED'),
+    return { ...cached.value, items: cached.value.items.filter(item => !quarantine.has(newsFingerprint(item)) && (!hardGate || reviewNewsForDisplay(item, {now:Number(now())}).status === 'VERIFIED')),
       errors, stale: true, partial: true, dataState: 'stale' };
   }
+
+  const articleCacheKey = item => hardGate ? JSON.stringify([item.url,item.title,item.pubDate,item.sourceName,item.matchedSymbols,item.matchedBrokerFirms]) : String(item.url || '');
 
   function cacheRiskyTarget(key, value, ttlMs) {
     riskyTargetCache.delete(key);
@@ -178,10 +180,10 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
       return { status, reason, ...(resolvedUrl ? { resolvedUrl } : {}), verification: issueEvidence(resolvedUrl ? { ...item, url: resolvedUrl } : item,
         { status, reason, basis: 'article' }, { checkedAt: Number(now()), originalUrl: item.url, pathway: 'google-rss/article' }) };
     };
-    const key = String(item.url || '');
+    const key = articleCacheKey(item);
     const cached = riskyTargetCache.get(key);
     if (cached && Number(now()) < cached.expiresAt) return cached.value;
-    let target = allowedNewsUrl(key);
+    let target = allowedNewsUrl(item.url);
     if (!target) return { accepted: false, status: 'REJECTED', reason: 'INVALID_ARTICLE_URL' };
     try {
       let response;
@@ -205,18 +207,18 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         return cacheRiskyTarget(key, observed('REJECTED', 'ARTICLE_NOT_FOUND'), RISKY_TARGET_CACHE_MS);
       }
       if ([401,403].includes(response.status)) blockedArticleOrigins.add(target.origin);
-      if (!response.ok || !/(?:^|\.)thunhoon\.com$/i.test(target.hostname)
+      if (!response.ok || (!hardGate && !/(?:^|\.)thunhoon\.com$/i.test(target.hostname))
         || !/text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type') || '')) {
         return cacheRiskyTarget(key, observed('UNVERIFIED', 'ARTICLE_NOT_VERIFIED'), RISKY_TARGET_UNVERIFIED_CACHE_MS);
       }
       const html = await abortable(readBoundedText(response),signal);
       if (response.url && articleIdentity(response.url) !== articleIdentity(target.href)) return { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_RESPONSE_URL_MISMATCH' };
-      const inspected = inspectNewsArticle(html, { url: target.href, title: item.title });
+      const inspected = inspectNewsArticle(html, { url: target.href, title: item.title, strict:hardGate });
       const verification = inspected.status === 'VERIFIED'
-        ? issueEvidence({ ...item, url: inspected.resolvedUrl }, { status: 'VERIFIED', reason: inspected.reason, basis: 'article' },
+        ? issueEvidence({ ...item, url: inspected.resolvedUrl, ...(inspected.publishedAt ? {pubDate:inspected.publishedAt} : {}) }, { status: 'VERIFIED', reason: inspected.reason, basis: 'article' },
           { inspection: inspected, originalUrl: item.url, checkedAt: Number(now()), pathway: 'google-rss/article' })
         : issueEvidence(item, { status: inspected.status, reason: inspected.reason, basis: 'article' }, { checkedAt: Number(now()), pathway: 'google-rss/article' });
-      return cacheRiskyTarget(key, { status: inspected.status, resolvedUrl: inspected.resolvedUrl, verification },
+      return cacheRiskyTarget(key, { status: inspected.status, resolvedUrl: inspected.resolvedUrl, publishedAt:inspected.publishedAt, articleText:inspected.text, verification },
         inspected.status === 'UNVERIFIED' ? RISKY_TARGET_UNVERIFIED_CACHE_MS : RISKY_TARGET_CACHE_MS);
     } catch (_) {
       return cacheRiskyTarget(key, observed('UNVERIFIED', 'ARTICLE_NOT_VERIFIED'), RISKY_TARGET_UNVERIFIED_CACHE_MS);
@@ -230,24 +232,37 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     while (quarantine.size > 200) quarantine.delete(quarantine.keys().next().value);
   }
 
-  async function keepQualityItems(items, budget = { remaining: MAX_RISKY_TARGET_CHECKS }) {
+  async function keepQualityItems(items, budget = { remaining: MAX_RISKY_TARGET_CHECKS }, stock = null) {
     const kept = [];
     kept.unverifiedCount = 0;
     kept.assessments = [];
+    kept.withheldUrls = [];
     for (const original of items) {
       let item = original;
       let evidence = reviewNewsItem(item);
-      const risky = evidence.status === 'UNVERIFIED'
-        && (item.source === 'thunhoon' || /ทันหุ้น|thunhoon/i.test(item.sourceName || ''));
-      const cached = riskyTargetCache.get(String(item.url || ''));
+      const preliminary = reviewNewsForDisplay(item, {now:Number(now())});
+      const risky = hardGate ? preliminary.status !== 'VERIFIED'
+        && ['ARTICLE_PROOF_REQUIRED','ARTICLE_URL_REQUIRED'].includes(preliminary.reason)
+        : evidence.status === 'UNVERIFIED' && (item.source === 'thunhoon' || /ทันหุ้น|thunhoon/i.test(item.sourceName || ''));
+      const cached = riskyTargetCache.get(articleCacheKey(item));
       const cachedEvidence = cached && Number(now()) < cached.expiresAt;
       if (risky && !budget.signal?.aborted && (cachedEvidence || budget.remaining > 0)) {
         if (!cachedEvidence) budget.remaining -= 1;
         const validation = await validateRiskyTarget(item,budget.signal);
-        if (validation.resolvedUrl) item = { ...item, url: validation.resolvedUrl };
+        if (validation.resolvedUrl) item = { ...item, url: validation.resolvedUrl, ...(validation.publishedAt ? {pubDate:validation.publishedAt} : {}) };
         evidence = reviewNewsItem(item, validation.verification || validation);
+        if (hardGate && stock && validation.status === 'VERIFIED'
+          && !matchesWatchlistStock(stock, item.title+' '+(validation.articleText || ''))) {
+          const key=newsFingerprint(item)+'|symbol:'+stock.symbol;
+          quarantine.delete(key);quarantine.set(key,{url:item.url,title:item.title,status:'UNVERIFIED',reason:'STOCK_IDENTITY_UNVERIFIED'});
+          while(quarantine.size>200)quarantine.delete(quarantine.keys().next().value);
+          kept.withheldUrls.push(item.url);kept.unverifiedCount++;continue;
+        }
       }
+      const display = hardGate ? reviewNewsForDisplay(item, {now:Number(now()), verification:evidence}) : evidence;
+      // Display uncertainty must not overwrite a committed G1 positive decision.
       kept.assessments.push({ item, verification: evidence });
+      if (display.status !== 'VERIFIED') { if (display.status === 'UNVERIFIED') kept.unverifiedCount++; quarantineItem(item, display); kept.withheldUrls.push(item.url); continue; }
       if (evidence.status !== 'VERIFIED') { if (evidence.status === 'UNVERIFIED') kept.unverifiedCount++; quarantineItem(item, evidence); continue; }
       quarantine.delete(newsFingerprint(original));
       quarantine.delete(newsFingerprint(item));
@@ -467,15 +482,29 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         matchedSymbols:matchesWatchlistStock(stock,title+' '+snippet)?[stock.symbol]:[]});
     }).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
       &&Date.parse(item.pubDate)>=Number(now())-30*86400000&&Date.parse(item.pubDate)<=Number(now())+600000&&item.matchedSymbols.length);
-    const quality=await keepQualityItems(parsed,budget);
+    const quality=await keepQualityItems(parsed,budget,stock);
     return {items:quality.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:quality.unverifiedCount,
-      matchedCandidates:parsed.length,qualityExcluded:parsed.length-quality.length,limited:blocks.length>100,
+      matchedCandidates:parsed.length,qualityExcluded:parsed.length-quality.length,limited:blocks.length>100,withheldUrls:quality.withheldUrls,
       rejectedKeys:parsed.filter(item=>reviewNewsItem(item).status==='REJECTED'||quarantine.get(newsFingerprint(item))?.status==='REJECTED').map(newsFingerprint)};
   }
   const getWatchlistNews=createWatchlistNews({fetchStock:fetchWatchlistStock,registrySearch,now,deadlineMs:watchlistDeadlineMs,
-    isRejected:item=>quarantine.get(newsFingerprint(item))?.status==='REJECTED'});
+    isRejected:item=>hardGate ? quarantine.has(newsFingerprint(item)) : quarantine.get(newsFingerprint(item))?.status==='REJECTED',
+    canDisplay:item=>!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED'});
 
-  return { analyse, getNews, getWatchlistNews, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
+  function filterForDisplay(payload) {
+    const candidates=Array.isArray(payload?.items)?payload.items:[];
+    const kept = candidates.filter(item => {
+      const proof = reviewNewsForDisplay(item,{now:Number(now())});
+      if (proof.status !== 'VERIFIED') { if(item?.url)quarantineItem(item,proof); return false; }
+      return !quarantine.has(newsFingerprint(item));
+    });
+    // Only retract URLs already present in this response/owner scope; never export
+    // the shared quarantine registry or another account's stock discoveries.
+    const withheldUrls=[...new Set([...(Array.isArray(payload.withheldUrls)?payload.withheldUrls:[]),
+      ...candidates.filter(item=>!kept.includes(item)).map(item=>item?.url)])].filter(url=>allowedNewsUrl(url)).slice(0,200);
+    return { ...payload, ...(withheldUrls.length ? {withheldUrls} : {}), items:kept, ...(!payload.page && typeof payload.total==='number' ? {total:kept.length} : {}), ...(kept.length < candidates.length ? {partial:true,dataState:kept.length?'partial':'unavailable'} : {}) };
+  }
+  return { analyse, getNews, getWatchlistNews, filterForDisplay, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
 }
 
 module.exports = { FEEDS, OUTLET_SOURCE, createNewsService, fallbackNewsSummary, parseRetryAfter, sourceFromOutlet };

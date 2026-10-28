@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+process.env.SETSCOPE_NEWS_EVIDENCE = 'write';
 process.env.SUPABASE_URL = 'https://project.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test-publishable-key';
 delete process.env.SUPABASE_SECRET_KEY;
@@ -53,6 +54,8 @@ globalThis.fetch = async (input, init = {}) => {
       symbol: 'PTT.BK', quoteType: 'EQUITY', longname: 'PTT Public Company Limited', exchange: 'SET'
     }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
+  if(url==='https://news.google.com/articles/1')return new NativeResponse('',{status:302,headers:{location:'https://thunhoon.com/article-123456'}});
+  if(url==='https://thunhoon.com/article-123456')return new NativeResponse('<script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline:'PTT update',datePublished:new Date().toISOString(),articleBody:('PTT disclosed operating results and its investment timetable. ').repeat(5)})+'</script>',{headers:{'content-type':'text/html'}});
   if (url.startsWith('https://news.google.com/rss/search')) {
     if (decodeURIComponent(url).includes('site:kaohoon.com')) return new NativeResponse('unavailable', { status: 503 });
     const now = new Date().toUTCString();

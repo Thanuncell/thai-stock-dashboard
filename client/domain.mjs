@@ -329,12 +329,25 @@ export function watchlistNewsViewState(data) {
   return data.items.length ? 'fresh' : 'empty';
 }
 
+
+// Defense at every render/retention boundary, including previously cached responses.
+export function canDisplayNews(item, timestamp = Date.now()) {
+  const proof=item?.verification, published=Date.parse(item?.pubDate);
+  if(proof?.status!=='VERIFIED'||proof.basis!=='article'||proof.reason!=='ARTICLE_IDENTITY_VERIFIED'||proof.displayPolicy!=='news-display-1'
+    ||!Number.isFinite(published)||published>timestamp+600000||!String(item?.title||'').trim())return false;
+  const title=String(item.title).trim();
+  if(/\.(?:pdf|docx?|xlsx?|pptx?)(?:\s*[-–—].*)?$/i.test(title)||/^[a-z0-9]+(?:[-_][a-z0-9]+){2,}$/i.test(title))return false;
+  try {const url=new URL(item.url);return url.protocol==='https:'&&!url.username&&!url.password
+    &&/(?:^|\.)(?:thunhoon\.com|kaohoon\.com|settrade\.com|set\.or\.th|bot\.or\.th|efinancethai\.com)$/.test(url.hostname)&&!/\.(?:pdf|docx?|xlsx?|pptx?)(?:$|[/?#])/i.test(url.pathname+url.search);}
+  catch{return false;}
+}
+
 export function retainWatchlistNews(items,stocks,timestamp=Date.now()) {
   const symbols=new Set(stocks.map(stock=>stock.symbol)),unique=new Map();
   for(const item of items){
     const published=Date.parse(item.pubDate);
     if(!Number.isFinite(published)||published<timestamp-30*86400000||published>timestamp+600000
-      ||item.verification?.status!=='VERIFIED')continue;
+      ||!canDisplayNews(item,timestamp))continue;
     const matchedSymbols=(item.matchedSymbols||[]).filter(symbol=>symbols.has(symbol));if(!matchedSymbols.length)continue;
     const key=newsKey(item),old=unique.get(key);
     unique.set(key,{...(old||item),matchedSymbols:[...new Set([...(old?.matchedSymbols||[]),...matchedSymbols])]});
@@ -390,7 +403,7 @@ export function selectNewsForDisplay(items = [], {
   const normalizedQuery = String(query || '').trim().toLocaleLowerCase('th');
   const filtered = items.filter(item => {
     const sourceMatch = source === 'all' || (source === 'broker' ? Boolean(item.brokerCategory) : item.source === source);
-    return sourceMatch && matchesNewsQuery(item, normalizedQuery, item.analysisSummary || '');
+    return canDisplayNews(item,Number(now)) && sourceMatch && matchesNewsQuery(item, normalizedQuery, item.analysisSummary || '');
   }).sort((left, right) => Date.parse(right.pubDate) - Date.parse(left.pubDate));
   const cutoff = Number(now) - 7 * 24 * 60 * 60 * 1000;
   const featured = filtered.filter(item => Number.isFinite(Date.parse(item.pubDate)) && Date.parse(item.pubDate) >= cutoff)

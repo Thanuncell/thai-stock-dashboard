@@ -24,7 +24,7 @@ function mergeStockNews(items,stocks,now){
  }
  return [...unique.values()].sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate));
 }
-function createWatchlistNews({fetchStock,registrySearch=async()=>[],isRejected=()=>false,now=Date.now,deadlineMs=30000}){
+function createWatchlistNews({fetchStock,registrySearch=async()=>[],isRejected=()=>false,canDisplay=()=>true,now=Date.now,deadlineMs=30000}){
  const cache=new Map(),pending=new Map(),budgets=new Map();
  const prune=map=>{while(map.size>200)map.delete(map.keys().next().value);};
  function usable(entry){return entry&&Number(now())-entry.storedAt<=LKG?entry:null;}
@@ -38,10 +38,11 @@ function createWatchlistNews({fetchStock,registrySearch=async()=>[],isRejected=(
     const rejected=new Set(result.rejectedKeys||[]);
     const items=mergeStockNews([...(old?.items||[]).filter(item=>!rejected.has(newsFingerprint(item))&&!isRejected(item)),...result.items],[stock],Number(now()));
     const limited=items.length>PER_STOCK||result.limited;
-    const entry={...result,items:items.slice(0,PER_STOCK),limited,storedAt:Number(now()),retryAt:0};
+    const withheldUrls=[...new Set([...(result.withheldUrls||[]),...(old?.items||[]).filter(isRejected).map(item=>item.url)])];
+    const entry={...result,withheldUrls,items:items.slice(0,PER_STOCK),limited,storedAt:Number(now()),retryAt:0};
     // Unknown checks cannot renew the age of last-known-good evidence.
     if(result.unverifiedCount>0&&!result.items.length){
-     if(old){old.retryAt=Number(now())+30000;old.failure=true;return {...old,state:'stale',reason:'ARTICLE_UNVERIFIED'};}
+     if(old){old.retryAt=Number(now())+30000;old.failure=true;return {...old,withheldUrls,state:'stale',reason:'ARTICLE_UNVERIFIED'};}
      return {...entry,items:[],state:'unavailable',reason:'ARTICLE_UNVERIFIED'};
     }
     cache.delete(key);cache.set(key,entry);prune(cache);
@@ -78,13 +79,14 @@ function createWatchlistNews({fetchStock,registrySearch=async()=>[],isRejected=(
     else{requests++;recent.push(Number(now()));entry=await load(stock,key,budget,controller.signal);}
     records.push({stock,...entry});
    }
-   const items=mergeStockNews(records.flatMap(record=>record.items).filter(item=>!isRejected(item)),stocks,Number(now()));
+   const items=mergeStockNews(records.flatMap(record=>record.items).filter(item=>!isRejected(item)&&canDisplay(item)),stocks,Number(now()));
    const abnormal=records.some(record=>record.state!=='fresh'||record.limited),allStale=items.length&&records.filter(record=>record.items.length).every(record=>record.state==='stale');
    const dataState=allStale?'stale':abnormal?(items.length?'partial':'unavailable'):'fresh';
    const fetchedAt=new Date(records.length?Math.min(...records.map(record=>record.storedAt||Number(now()))):Number(now())).toISOString();
-   return {items,fetchedAt,asOf:items[0]?.pubDate||null,source:'Google News',stale:Boolean(allStale),partial:abnormal,dataState,maxAgeDays:30,
+   const withheldUrls=[...new Set(records.flatMap(record=>[...(record.withheldUrls||[]),...record.items.filter(item=>isRejected(item)||!canDisplay(item)).map(item=>item.url)]))].slice(0,200);
+   return {...(withheldUrls.length?{withheldUrls}:{}),items,fetchedAt,asOf:items[0]?.pubDate||null,source:'Google News',stale:Boolean(allStale),partial:abnormal,dataState,maxAgeDays:30,
     matchedCandidates:records.reduce((n,r)=>n+(r.matchedCandidates||0),0),qualityExcluded:records.reduce((n,r)=>n+(r.qualityExcluded||0),0),
-    limited:records.some(record=>record.limited),stockStatus:records.map(record=>({symbol:record.stock.symbol,dataState:record.state,reason:record.reason||null,retained:mergeStockNews(record.items.filter(item=>!isRejected(item)),[record.stock],Number(now())).length,limited:Boolean(record.limited)})),total:items.length};
+    limited:records.some(record=>record.limited),stockStatus:records.map(record=>({symbol:record.stock.symbol,dataState:record.state,reason:record.reason||null,retained:mergeStockNews(record.items.filter(item=>!isRejected(item)&&canDisplay(item)),[record.stock],Number(now())).length,limited:Boolean(record.limited)})),total:items.length};
   }finally{clearTimeout(timer);}
  };
 }

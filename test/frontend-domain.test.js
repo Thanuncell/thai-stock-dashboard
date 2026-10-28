@@ -7,13 +7,13 @@ let domain;
 test.before(async () => { domain = await import('../client/domain.mjs'); });
 
 test('retained Watchlist items intersect current stocks, merge identities and drop expired/negative news',()=>{
- const time=Date.now(),item={title:'public',url:'https://www.kaohoon.com/news/shared',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED'}};
+ const time=Date.now(),item={title:'public',url:'https://www.kaohoon.com/news/shared',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}};
  const items=domain.retainWatchlistNews([item,{...item,url:item.url+'?utm_source=rss',matchedSymbols:['KBANK']},{...item,url:item.url+'expired',pubDate:new Date(time-31*86400000).toISOString()},{...item,url:item.url+'bad',verification:{status:'REJECTED'}}],[{symbol:'PTT'},{symbol:'KBANK'}],time);
  assert.equal(items.length,1);assert.deepEqual(new Set(items[0].matchedSymbols),new Set(['PTT','KBANK']));
 });
 
 test('Watchlist retention fails closed for missing/unknown verification and preserves only current verified associations',()=>{
- const time=Date.now(),good={title:'Verified public news',url:'https://www.kaohoon.com/news/strict',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED'}};
+ const time=Date.now(),good={title:'Verified public news',url:'https://www.kaohoon.com/news/strict',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}};
  const bad=[undefined,{}, {status:'UNKNOWN'},{status:'UNVERIFIED'},{status:'REJECTED'}].map((verification,i)=>({...good,url:good.url+'/'+i,verification}));
  const expired={...good,url:good.url+'/expired',pubDate:new Date(time-31*86400000).toISOString()};
  const added=domain.retainWatchlistNews([good,...bad,expired],[{symbol:'PTT'},{symbol:'OR'},{symbol:'KBANK'}],time);
@@ -25,7 +25,7 @@ test('Watchlist retention fails closed for missing/unknown verification and pres
 });
 
 test('display rules never block actual AI and negative verification cannot inherit analysis',()=>{
- const item={title:'PTT',analysisMode:'rules',analysisSummary:'Read-time rules',verification:{status:'VERIFIED'}};
+ const item={title:'PTT',analysisMode:'rules',analysisSummary:'Read-time rules',verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}};
  assert.equal(domain.newsDisplayAnalysis(item).mode,'rules');
  assert.equal(domain.newsDisplayAnalysis(item,{mode:'ai',summary:'Real AI result'}).mode,'ai');
  assert.equal(domain.newsDisplayAnalysis(item,{mode:'unavailable',summary:''}).mode,'rules');
@@ -52,7 +52,7 @@ test('verified stored AI survives cached unavailable while legacy and negative e
   assert.equal(domain.newsDisplayAnalysis({...stored,verification:{status}},unavailable),null);
   assert.equal(domain.newsDisplayAnalysis({...stored,verification:{status}},{mode:'ai',summary:'Cached AI'}),null);
  }
- assert.equal(domain.newsDisplayAnalysis({...stored,analysisMode:'unknown',verification:{status:'VERIFIED'}},unavailable),null);
+ assert.equal(domain.newsDisplayAnalysis({...stored,analysisMode:'unknown',verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}},unavailable),null);
 });
 
 test('Search display formats reviewed SEC names without modifying source records or symbols', () => {
@@ -199,7 +199,7 @@ test('featured news is source-aware and excluded from the latest list', () => {
     { source: 'infoquest', title: 'IQ older', pubDate: '2026-10-01T00:00:00.000Z' },
     { source: 'efinance', title: 'EF recent', pubDate: '2026-10-16T00:00:00.000Z' }
   ];
-  const selected = domain.selectNewsForDisplay(items, { source: 'infoquest', now });
+  const selected = domain.selectNewsForDisplay(items.map((item,index)=>({...item,url:item.url || 'https://www.kaohoon.com/news/fixture-'+index,verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}})), { source: 'infoquest', now });
   assert.deepEqual(selected.featured.map(item => item.title), ['IQ recent']);
   assert.deepEqual(selected.latest.map(item => item.title), ['IQ older']);
 });
@@ -334,7 +334,8 @@ test('one news URL keeps the same identity across Live Featured and Archive Late
   const article = { source: 'kaohoon', title: 'PTT รายงานผลประกอบการ', url: 'https://www.kaohoon.com/news/abc?utm_source=rss', pubDate: date };
   const archived = { ...article, url: 'https://www.kaohoon.com/news/abc', fingerprint: 'sha256-archive-fingerprint' };
   const official = { source: 'official', title: 'BOT ประกาศแนวทางใหม่', url: 'https://www.bot.or.th/news/official', pubDate: date };
-  const options = { now: Date.parse(date) + 1000, featuredCount: 1, sourceTier: { official: 4, kaohoon: 2 } };
+  article.verification = official.verification = {status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'};
+    const options = { now: Date.parse(date) + 1000, featuredCount: 1, sourceTier: { official: 4, kaohoon: 2 } };
   const category = domain.selectNewsForDisplay([article, official], { ...options, source: 'kaohoon' });
   const all = domain.selectNewsForDisplay([article, official], { ...options, source: 'all' });
   assert.equal(category.featured[0].url, article.url);
