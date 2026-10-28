@@ -5,7 +5,7 @@ const { allowedNewsUrl, p1DisplayGateEnabled, isSlugNewsTitle } = require('../li
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { annotateNewsContent, reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
-const { isNewsDocumentForDisplay } = require('../lib/news-content');
+const { isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols } = require('../lib/news-content');
 const { withNewsRulesSummary } = require('../lib/news-summary');
 const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash } = require('../lib/news-evidence');
 const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
@@ -68,7 +68,9 @@ function createNewsArchiveService({
   now = Date.now,
   scanChunkSize = ARCHIVE_SCAN_CHUNK_SIZE,
   maxScanRows = MAX_ARCHIVE_SCAN_ROWS,
-  quarantine = new Map()
+  quarantine = new Map(),
+  displayReview = async items=>items,
+  displayProject = item=>item
 } = {}) {
   const secretKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY || '';
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -279,7 +281,7 @@ function createNewsArchiveService({
       throw Error('News archive bounded scan ended before the complete dataset');
     }
     const accepted = rows.map(fromRow).filter(Boolean);
-    const displayable = dedupeNewsItems(accepted);
+    const displayable = dedupeNewsItems(await displayReview(accepted));
     const review = planNewsArchiveCleanup(rows);
     return {
       items: displayable,
@@ -308,10 +310,12 @@ function createNewsArchiveService({
     const normalizedQuery = String(query || '').trim().slice(0, 80).toLocaleLowerCase('th');
     const excluded = new Set((Array.isArray(excludeUrls) ? excludeUrls : []).slice(0, 10)
       .map(url => allowedNewsUrl(url)).filter(Boolean).map(url => newsFingerprint({ url: url.href })));
-    return items.filter(item => {
+    return items.map(displayProject).filter(item => {
+      if(newsDisplayBlocked(item))return false;
       const sourceMatch = source === 'all' || (source === 'broker' ? item.brokerCategory : item.source === source);
-      const symbolMatch = !symbol || item.matchedSymbols.includes(symbol);
-      const searchMatch = !normalizedQuery || [item.title, item.sourceName, item.snippet, item.analysisSummary]
+      const identified=newsSecuritySymbols(item);
+      const symbolMatch = !symbol || newsAssociationSymbols(item).includes(symbol);
+      const searchMatch = !normalizedQuery || [item.title, item.sourceName, item.snippet, item.analysisSummary, ...(identified||[])]
         .some(value => String(value || '').toLocaleLowerCase('th').includes(normalizedQuery));
       return (!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED' && !quarantine.has(newsFingerprint(item))) && sourceMatch && symbolMatch && searchMatch && !excluded.has(newsFingerprint(item));
     });

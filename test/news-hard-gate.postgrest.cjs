@@ -133,6 +133,30 @@ test('P1: discovery to actual PostgREST HTTP to PostgreSQL 17 to restarted reade
    const after=(await pool.query('select * from news_archive where url=$1',[document.url])).rows[0];
    assert.deepEqual(after,before);
   });
+  await t.test('link/SET issuer projection through HTTP preserves every durable field and G1 trust level',async()=>{
+   const {createNewsLinkReview}=require('../server/news-link-review');
+   const source='https://www.set.or.th/th/market/news-and-alert/newsdetails?id=isolated-issuer';
+   const official={title:'ReadOnlyIssuer สรุปผลการดำเนินงาน (F45)',url:source,source:'settrade',sourceName:'SET',pubDate:date,snippet:'',matchedSymbols:[],matchedBrokerFirms:[]};
+   const document={...official,title:'ReadOnlyIssuer เอกสารปลายทาง',url:'https://www.set.or.th/th/market/news-and-alert/newsdetails?id=isolated-document'};
+   const about=[{'@type':'Corporation',tickerSymbol:'PTT'},{'@type':'Corporation',tickerSymbol:'PTTEP'}];
+   const articleHtml='<script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url:source,headline:official.title,datePublished:date,articleBody:'Synthetic issuer report and operational details for isolated testing. '.repeat(5),about})+'</script>';
+   const offEnv={...env,SETSCOPE_P1_DISPLAY_GATE:'off'},off=createNewsArchiveService({env:offEnv,fetchImpl:transport});
+   await off.ingest([official,document]);
+   await pool.query("update news_archive set analysis_summary='Synthetic preserved issuer AI',analysis_mode='ai' where title like 'ReadOnlyIssuer%'");
+   const before=(await pool.query("select md5(jsonb_agg(to_jsonb(a) order by id)::text) digest from news_archive a")).rows[0].digest;
+   const review=createNewsLinkReview({transport:async u=>String(u)===source?new Response(articleHtml,{headers:{'content-type':'text/html'}}):new Response('%PDF-x',{headers:{'content-type':'application/pdf'}}),registrySearch:async()=>['PTT','PTTEP'].map(symbol=>({symbol,provider_symbol:symbol+'.BK',provider:'Yahoo Finance',active:true,status:'verified'}))});
+   const read=()=>createNewsArchiveService({env:offEnv,fetchImpl:transport,displayReview:review.review,displayProject:review.project});
+   const listed=await read().list({query:'ReadOnlyIssuer',pageSize:1});assert.equal(listed.total,1);
+   const shown=listed.items[0];assert.deepEqual(shown.securityIdentification.symbols,['PTT','PTTEP']);assert.equal(shown.linkVerification.status,'VERIFIED');
+   assert.equal(shown.verification.basis,'metadata');assert.equal(shown.analysisSummary,'Synthetic preserved issuer AI');assert.deepEqual(shown.matchedSymbols,[]);
+   assert.equal((await read().list({query:'ReadOnlyIssuer',symbol:'PTTEP'})).total,1);
+   assert.equal((await read().list({query:'ReadOnlyIssuer',featuredCount:1})).featured.length,1);
+   assert.equal((await read().list({query:'ReadOnlyIssuer',page:2,pageSize:1})).items.length,0);
+   const hard=createNewsArchiveService({env,fetchImpl:transport,displayReview:review.review,displayProject:review.project});
+   assert.equal((await hard.list({query:'ReadOnlyIssuer'})).total,0,'link and ticker facts cannot upgrade G1 metadata');
+   const after=(await pool.query("select md5(jsonb_agg(to_jsonb(a) order by id)::text) digest from news_archive a")).rows[0].digest;
+   assert.equal(after,before);
+  });
   await t.test('anon/authenticated HTTP roles cannot read or invoke evidence RPC; RLS remains forced',async()=>{
    for(const role of ['anon','authenticated']){
     const headers={Authorization:'Bearer '+jwt(role),'content-type':'application/json'};
