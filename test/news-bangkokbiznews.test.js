@@ -97,10 +97,8 @@ test('News/Archive/Featured/Latest and Watchlist preserve G1 article evidence an
  assert.equal((await f.service.getWatchlistNews('OR',{ownerId:'owner-b'})).items.length,0);assert.equal((await f.service.getWatchlistNews('PTT',{ownerId:'owner-a'})).items.length,1);
  assert.equal(newsClickUrl({...news,displayUrl:item().url,linkVerification:{status:'VERIFIED',kind:'ARTICLE'}}),item().url);
 });
-test('valid article mentioning PDF is not a document; disabled source cannot enter via Google metadata',async()=>{
+test('valid article mentioning PDF is not a document',async()=>{
  const f=fixture({items:[item(1234567,{title:'PTT เปิดคู่มือ PDF ประกอบบทความข่าว'})]});assert.equal((await f.service.getNews()).items.length,1);
- const rss='<rss><channel><item><title>'+item().title+'</title><link>'+item().url+'</link><source>กรุงเทพธุรกิจ</source><pubDate>'+date+'</pubDate><description>source metadata only</description></item></channel></rss>';
- let calls=0;const news=createNewsService({env:{},articleFetch:async()=>{calls++;throw Error('disabled');},fetchImpl:async()=>response(rss,'text/xml')});assert.equal((await news.getNews()).items.length,0);assert.equal(calls,0);
 });
 
 test('confirmed PDF refresh cannot retain an older canonical/www article snapshot',async()=>{
@@ -144,4 +142,29 @@ test('default transport blocks all new-publisher IO before DNS, including legacy
  const transport=createNewsTransport({allowBangkok:false,lookup:async()=>{lookups++;throw Error('no hidden DNS');}});
  for(const url of [SITEMAP,item().url])await assert.rejects(transport(url),/NEWS_OPTIONAL_SOURCE_DISABLED/);
  const loader=createNewsArticleLoader({transport});assert.equal((await loader(item().url)).reason,'ARTICLE_SOURCE_DISABLED');assert.equal(lookups,0);
+});
+
+for(const flag of [undefined,'off','on'])for(const view of ['general','watchlist'])test('compatibility '+view+' Google RSS with source flag '+(flag??'unset'),async()=>{
+ const enabled=flag==='on',newsItem=item(),wrapper='https://news.google.com/rss/articles/compat-bangkok',otherUrl='https://news.google.com/rss/articles/compat-infoquest';
+ const outlet=view==='general'?'กรุงเทพธุรกิจ':'Bangkokbiznews';
+ const entry=(url,name,title)=>'<item><title>'+esc(title)+'</title><link>'+url+'</link><source>'+name+'</source><pubDate>'+date+'</pubDate><description>PTT รายงานรายละเอียดผลประกอบการจากข้อมูลสำนักข่าวต้นทาง</description></item>';
+ const rss='<rss><channel>'+entry(wrapper,outlet,newsItem.title)+entry(otherUrl,'InfoQuest','PTT ข่าวจากสำนักข่าวเดิมที่ต้องรักษาไว้')+'</channel></rss>';
+ const adapter=fixture();let articleCalls=0,lookups=0;
+ const {createNewsTransport}=require('../lib/news-fetch');
+ const disabledTransport=createNewsTransport({allowBangkok:false,lookup:async()=>{lookups++;throw Error('disabled source must not resolve DNS');}});
+ const service=createNewsService({env:{...(flag===undefined?{}:{SETSCOPE_NEWS_BANGKOKBIZNEWS:flag}),SETSCOPE_NEWS_EVIDENCE:'write',SETSCOPE_P1_DISPLAY_GATE:'off',SETSCOPE_GOOGLE_NEWS_RPC:'off'},
+  fetchImpl:async()=>response(rss,'text/xml'),articleFetch:async(...args)=>{articleCalls++;return enabled?adapter.transport(...args):disabledTransport(...args);}});
+ const read=()=>view==='general'?service.getNews():service.getWatchlistNews('PTT',{ownerId:'compat-owner'});
+ for(let pass=0;pass<2;pass++){
+  const result=await read(),bangkok=result.items.filter(x=>/^(?:กรุงเทพธุรกิจ|Bangkokbiznews)$/.test(x.sourceName));
+  assert.equal(result.items.length,2,'both publishers remain present without duplicates');assert.equal(bangkok.length,1);
+  assert.equal(bangkok[0].verification.status,'VERIFIED');assert.equal(bangkok[0].verification.basis,enabled?'article':'metadata');
+  assert.equal(bangkok[0].url,enabled?'https://bangkokbiznews.com/finance/stock/1234567':wrapper);
+  assert.equal(reviewNewsForDisplay(bangkok[0]).status,enabled?'VERIFIED':'UNVERIFIED','metadata never becomes article proof');
+  assert.equal(result.items.find(x=>x.sourceName==='InfoQuest').url,otherUrl);
+  if(view==='watchlist')assert.deepEqual(bangkok[0].matchedSymbols,['PTT']);
+ }
+ assert.equal(lookups,0);
+ if(enabled){assert.equal(articleCalls,2,'one sitemap plus one article, reused on the second read');assert.equal(adapter.calls.filter(x=>x.url===SITEMAP).length,1);assert.ok(adapter.calls.every(x=>!x.url.includes('news.google.com')));}
+ else{assert.equal(articleCalls,0,'legacy Google RSS does not activate the source adapter or article transport');assert.equal(adapter.calls.length,0);}
 });

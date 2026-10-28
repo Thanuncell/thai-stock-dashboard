@@ -272,7 +272,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
         }).filter(item => {
           const published = Date.parse(item.pubDate);
           return item.title && allowedNewsUrl(item.url)
-            && Number.isFinite(published) && published >= cutoff && !isBangkokOutlet(item.sourceName);
+            && Number.isFinite(published) && published >= cutoff && (!bangkokEnabled || !isBangkokOutlet(item.sourceName));
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
         const reviewed = await keepQualityItems(parsed, articleBudget);
         settled.push({ status: 'fulfilled', value: reviewed.slice(0, 8), uncertain: reviewed.unverifiedCount, assessments: reviewed.assessments });
@@ -457,7 +457,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       return decorateBrokerAttribution({title,url,pubDate,snippet,source:sourceFromOutlet(outlet),sourceName:outlet||'ข่าวหุ้นไทย',
         matchedSymbols:matchesWatchlistStock(stock,title+' '+snippet)?[stock.symbol]:[]});
     }).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
-      &&!isBangkokOutlet(item.sourceName)
+      &&(!bangkokEnabled || !isBangkokOutlet(item.sourceName))
       &&Date.parse(item.pubDate)>=Number(now())-30*86400000&&Date.parse(item.pubDate)<=Number(now())+600000&&item.matchedSymbols.length);
     const quality=await keepQualityItems(parsed,budget,stock);
     return {items:quality.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:quality.unverifiedCount,
