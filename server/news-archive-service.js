@@ -4,7 +4,7 @@ const { createHash } = require('node:crypto');
 const { allowedNewsUrl, p1DisplayGateEnabled, isSlugNewsTitle } = require('../lib/news-policy');
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
-const { reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
+const { annotateNewsContent, reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
 const { withNewsRulesSummary } = require('../lib/news-summary');
 const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash } = require('../lib/news-evidence');
 const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
@@ -239,7 +239,7 @@ function createNewsArchiveService({
       if (hardGate) { quarantine.delete(newsFingerprint(item)); quarantine.set(newsFingerprint(item),{url:item.url,title:item.title,status:display.status,reason:display.reason}); while(quarantine.size>200)quarantine.delete(quarantine.keys().next().value); }
       return null;
     }
-    return safeUrl ? withNewsRulesSummary(restored) : null;
+    return safeUrl ? annotateNewsContent(withNewsRulesSummary(restored),{now:Number(now())}) : null;
   }
 
   async function buildArchiveSnapshot() {

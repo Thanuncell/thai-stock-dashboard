@@ -120,6 +120,20 @@ test('P1: discovery to actual PostgREST HTTP to PostgreSQL 17 to restarted reade
    assert.ok((await off.list()).items.some(x=>x.url===fresh.url));
    assert.equal((await archive('read').list()).items.some(x=>x.url===fresh.url),false);
   });
+  await t.test('official document persists as G1 metadata; OFF read preserves AI and ON read never promotes it',async()=>{
+   const off=createNewsArchiveService({env:{...env,SETSCOPE_P1_DISPLAY_GATE:'off'},fetchImpl:transport});
+   const document={title:'0528NWS271020261715395120T.pdf - SET - SET',url:'https://news.google.com/rss/articles/synthetic-official-document',source:'settrade',sourceName:'SET',pubDate:date,snippet:'Synthetic document metadata; contents have not been verified'};
+   assert.equal((await off.ingest([document])).ingested,1);
+   await pool.query("update news_archive set analysis_summary='Synthetic stored document AI',analysis_mode='ai' where url=$1",[document.url]);
+   const before=(await pool.query('select * from news_archive where url=$1',[document.url])).rows[0];
+   const shown=(await off.list()).items.find(x=>x.url===document.url);
+   assert.equal(shown.contentType,'OFFICIAL_DOCUMENT');assert.equal(shown.articleVerified,false);
+   assert.equal(shown.documentVerification.status,'UNVERIFIED');assert.equal(shown.verification.basis,'metadata');
+   assert.equal(shown.analysisSummary,'Synthetic stored document AI');
+   assert.equal((await archive('read').list()).items.some(x=>x.url===document.url),false);
+   const after=(await pool.query('select * from news_archive where url=$1',[document.url])).rows[0];
+   assert.deepEqual(after,before);
+  });
   await t.test('anon/authenticated HTTP roles cannot read or invoke evidence RPC; RLS remains forced',async()=>{
    for(const role of ['anon','authenticated']){
     const headers={Authorization:'Bearer '+jwt(role),'content-type':'application/json'};
@@ -148,6 +162,25 @@ test('P1: discovery to actual PostgREST HTTP to PostgreSQL 17 to restarted reade
    assert.equal((await archive().ingest([historical])).ingested,1);
    const stored=(await archive('read').list()).items.find(x=>x.url===articleUrl);assert.ok(stored);assert.equal(reviewNewsForDisplay(stored).status,'VERIFIED');
    console.log('REAL_PUBLIC_ARTICLE HTTP 200; article VERIFIED; isolated HTTP persist/read PASS; Production writes 0');
+  });
+  await t.test('bounded real publisher article uses pinned transport and survives actual HTTP persist/read',{
+   skip:process.env.SETSCOPE_DOCUMENT_LIVE!=='1'
+  },async()=>{
+   const {createNewsTransport}=require('../lib/news-fetch');
+   const articleUrl='https://www.kaohoon.com/pr/875388';
+   const response=await createNewsTransport()(articleUrl,{signal:AbortSignal.timeout(15000),maxBytes:1000000});
+   assert.equal(response.status,200);
+   const actualHtml=await response.text();
+   const meta=[...actualHtml.matchAll(/<meta\b[^>]*>/gi)].map(x=>x[0]).find(x=>/\bproperty=["']og:title["']/i.test(x));
+   const headline=decodeXml(meta?.match(/\bcontent=["']([^"']*)["']/i)?.[1]||'');
+   const inspected=inspectNewsArticle(actualHtml,{url:articleUrl,title:headline,strict:true});assert.equal(inspected.status,'VERIFIED');
+   const verified={title:headline,url:articleUrl,pubDate:inspected.publishedAt,source:'kaohoon',sourceName:'ข่าวหุ้น',snippet:'',matchedSymbols:[],matchedBrokerFirms:[]};
+   verified.verification=issueEvidence(verified,{status:'VERIFIED',reason:'ARTICLE_IDENTITY_VERIFIED',basis:'article'},{inspection:inspected,pathway:'manual-isolated-review'});
+   assert.equal((await archive().ingest([verified])).ingested,1);
+   const stored=(await archive('read').list()).items.find(x=>x.url===articleUrl);
+   assert.ok(stored);assert.equal(stored.articleVerified,true);assert.equal(stored.contentType,'ARTICLE_NEWS');
+   assert.equal(reviewNewsForDisplay(stored).status,'VERIFIED');
+   console.log('REAL_ARTICLE pinned HTTP 200; actual isolated PostgREST persist/read PASS; Production writes 0');
   });
   await t.test('database transport failure fails closed and preserves all persisted rows',async()=>{
    const before=(await pool.query("select md5(jsonb_agg(to_jsonb(a) order by id)::text) digest from news_archive a")).rows[0].digest;

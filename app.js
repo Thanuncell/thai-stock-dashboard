@@ -1537,6 +1537,12 @@ function renderNewsItem(item, options = {}) {
   impact.title = 'คำสำคัญจากพาดหัว ไม่ใช่การประเมิน Sentiment โดย AI';
   impact.textContent = mood;
   tags.append(source, impact);
+  if (['OFFICIAL_DOCUMENT','OTHER_DOCUMENT'].includes(item.contentType)) {
+    const kind = document.createElement('span');
+    kind.className = 'source-tag news-document-tag';
+    kind.textContent = item.contentType === 'OFFICIAL_DOCUMENT' ? 'เอกสารทางการ · รอการยืนยัน' : 'เอกสาร · รอการยืนยัน';
+    tags.append(kind);
+  }
   if (item.brokerCategory || item.source === 'broker') {
     const promo = document.createElement('span');
     promo.className = 'promo-tag';
