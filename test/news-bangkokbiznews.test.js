@@ -39,7 +39,7 @@ test('publisher identity checks host and label; remaining roadmap publishers sta
  assert.equal(publisherMatches(good),true);assert.equal(publisherMatches({...good,sourceName:'Other'}),false);
  assert.equal(publisherMatches({...good,url:'https://api.bangkokbiznews.com/finance/1'}),false);
  assert.equal(allowedNewsUrl('https://bangkokbiznews.com.evil.example/finance/1'),null);
- assert.deepEqual(ROADMAP_NEWS_PUBLISHERS.map(x=>x.host),['prachachat.net','investing.com']);
+ assert.equal(ROADMAP_NEWS_PUBLISHERS.some(x=>x.host==='investing.com'),false);assert.equal(allowedNewsUrl('https://www.investing.com/news/123'),null);
 });
 test('JSON-LD identity/date plus source paragraphs verify; cards, metadata and paid content do not',()=>{
  const news=item(),inspect=html=>inspectNewsArticle(html,{url:news.url,title:news.title,strict:true});
