@@ -98,7 +98,7 @@ test('P1 resolver: resolved article refresh retains the original archive fingerp
  assert.equal(after.analysis_summary,'Legacy AI');assert.equal(after.first_seen_at,first);
  const reread=(await db.service().list()).items[0];assert.equal(archiveFingerprint(reread),original);
 });
-test('P1 sources: InfoQuest mapping is explicit; three roadmap sources remain disabled at both gates',async()=>{
+test('P1 sources: InfoQuest mapping is explicit; remaining roadmap sources stay disabled at both gates',async()=>{
  const domain=await import('../client/domain.mjs');
  assert.equal(publisherMatches({url:publisher,source:'infoquest',sourceName:'สำนักข่าวอินโฟเควสท์'}),true);
  assert.equal(domain.canDisplayNews({url:publisher,title,pubDate:date,verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}}),true);

@@ -36,6 +36,7 @@ const OUTLET_SOURCE = Object.freeze([
   [/efinance|อีไฟแนนซ์/i, 'efinance']
 ]);
 
+const isBangkokOutlet = name => /^(?:กรุงเทพธุรกิจ|bangkokbiznews)$/i.test(String(name || '').trim());
 const GOOGLE_RSS_PREFIX = 'https://news.google.com/rss/search?q=';
 const GOOGLE_RSS_BACKOFF_BASE_MS = 30_000;
 const GOOGLE_RSS_BACKOFF_MAX_MS = 15 * 60 * 1000;
@@ -62,9 +63,10 @@ function parseRetryAfter(value, timestamp) {
   return Math.min(date - timestamp, GOOGLE_RSS_RETRY_AFTER_MAX_MS);
 }
 
+const { createBangkokBizNewsSource } = require('./news-bangkokbiznews');
 const { readBoundedText } = require('../lib/news-response');
 
-function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport(), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map(), displayProject = item=>item, articleLoader } = {}) {
+function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport({allowBangkok:env.SETSCOPE_NEWS_BANGKOKBIZNEWS==='on'}), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map(), displayProject = item=>item, articleLoader } = {}) {
   if (!Number.isInteger(analysisTimeoutMs) || analysisTimeoutMs < 1 || analysisTimeoutMs > 30000) throw Error('Invalid AI timeout');
   const analysisCache = new Map();
   let openAiCooldownUntil = 0;
@@ -74,6 +76,8 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
   const blockedArticleOrigins = new Set();
   const loadArticle = articleLoader || createNewsArticleLoader({transport:articleFetch,now,allowGoogleRpc:env.SETSCOPE_GOOGLE_NEWS_RPC==='on'});
   const articleTransport = articleFetch;
+  const bangkokEnabled = env.SETSCOPE_NEWS_BANGKOKBIZNEWS === 'on';
+  const bangkok = createBangkokBizNewsSource({enabled:bangkokEnabled,transport:articleFetch,articleLoader:loadArticle,now});
   const rssPending = new Map();
   const lastValidated = new Map();
   const riskyTargetCache = new Map();
@@ -268,7 +272,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
         }).filter(item => {
           const published = Date.parse(item.pubDate);
           return item.title && allowedNewsUrl(item.url)
-            && Number.isFinite(published) && published >= cutoff;
+            && Number.isFinite(published) && published >= cutoff && (!bangkokEnabled || !isBangkokOutlet(item.sourceName));
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
         const reviewed = await keepQualityItems(parsed, articleBudget);
         settled.push({ status: 'fulfilled', value: reviewed.slice(0, 8), uncertain: reviewed.unverifiedCount, assessments: reviewed.assessments });
@@ -276,15 +280,16 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
         settled.push({ status: 'rejected', reason });
       }
     }
-    const items = dedupeNewsItems(settled.flatMap(result => result.status === 'fulfilled' ? result.value : []))
+    const extra = await bangkok.getNews();
+    const items = dedupeNewsItems([...extra.items,...settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])])
       .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).map(withNewsRulesSummary).filter(Boolean);
-    const errors = settled.map((result, index) => result.status === 'rejected' ? FEEDS[index][0] : null).filter(Boolean);
+    const errors = [...settled.map((result, index) => result.status === 'rejected' ? FEEDS[index][0] : null).filter(Boolean),...(extra.errors.length?['bangkokbiznews']:[])];
     const cooldownError = settled.find(result => result.status === 'rejected' && result.reason?.providerCooldown)?.reason;
-    if (cooldownError) {
+    if (cooldownError && !extra.items.length) {
       const fallback = staleFallback('news', cooldownError);
       if (fallback) return rememberAssessments(fallback, settled.flatMap(entry => entry.assessments || []));
     }
-    const uncertain = settled.some(result => result.uncertain > 0);
+    const uncertain = extra.unverifiedCount > 0 || settled.some(result => result.uncertain > 0);
     if (!items.length && uncertain) {
       const fallback = staleFallback('news', Error('ARTICLE_UNVERIFIED'));
       if (fallback) return rememberAssessments(fallback, settled.flatMap(entry => entry.assessments || []));
@@ -292,13 +297,13 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     const fetchedAt = new Date(Number(now())).toISOString();
     const asOfMs = items.map(item => Date.parse(item.pubDate)).filter(Number.isFinite)
       .reduce((latest, value) => Math.max(latest, value), 0);
-    const unavailable = !items.length && (errors.length === FEEDS.length || uncertain);
+    const unavailable = !items.length && (errors.length === FEEDS.length + (bangkokEnabled?1:0) || uncertain);
     const result = {
       items,
       errors,
       fetchedAt,
       asOf: asOfMs ? new Date(asOfMs).toISOString() : null,
-      source: 'Google News',
+      source: bangkokEnabled ? 'Google News / กรุงเทพธุรกิจ' : 'Google News',
       stale: false,
       partial: (errors.length > 0 || uncertain) && !unavailable,
       dataState: unavailable ? 'unavailable' : errors.length || uncertain ? 'partial' : 'fresh',
@@ -433,7 +438,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     return {items:result,mode:modes.size===1?[...modes][0]:modes.size?'mixed':'unavailable',aiConfigured:Boolean(env.OPENAI_API_KEY)};
   }
 
-  async function fetchWatchlistStock(stock,budget,parentSignal) {
+  async function fetchGoogleWatchlistStock(stock,budget,parentSignal) {
     const controller=new AbortController(),relay=()=>controller.abort();
     parentSignal.addEventListener('abort',relay,{once:true});
     const timer=setTimeout(()=>controller.abort(),5000);
@@ -452,15 +457,32 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       return decorateBrokerAttribution({title,url,pubDate,snippet,source:sourceFromOutlet(outlet),sourceName:outlet||'ข่าวหุ้นไทย',
         matchedSymbols:matchesWatchlistStock(stock,title+' '+snippet)?[stock.symbol]:[]});
     }).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
+      &&(!bangkokEnabled || !isBangkokOutlet(item.sourceName))
       &&Date.parse(item.pubDate)>=Number(now())-30*86400000&&Date.parse(item.pubDate)<=Number(now())+600000&&item.matchedSymbols.length);
     const quality=await keepQualityItems(parsed,budget,stock);
     return {items:quality.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:quality.unverifiedCount,
       matchedCandidates:parsed.length,qualityExcluded:parsed.length-quality.length,limited:blocks.length>100,withheldUrls:quality.withheldUrls,
       rejectedKeys:parsed.filter(item=>reviewNewsItem(item).status==='REJECTED'||quarantine.get(newsFingerprint(item))?.status==='REJECTED').map(newsFingerprint)};
   }
-  const getWatchlistNews=createWatchlistNews({fetchStock:fetchWatchlistStock,registrySearch,now,deadlineMs:watchlistDeadlineMs,
+  async function fetchWatchlistStock(stock,budget,signal) {
+    const extra=await bangkok.getNews({stock,signal});
+    try {
+      const google=await fetchGoogleWatchlistStock(stock,budget,signal);
+      return {...google,items:dedupeNewsItems([...google.items,...extra.items]).map(withNewsRulesSummary).filter(Boolean),
+        matchedCandidates:google.matchedCandidates+extra.items.length,unverifiedCount:google.unverifiedCount+extra.unverifiedCount+extra.errors.length};
+    } catch(error) {
+      if(!extra.items.length)throw error;
+      return {items:extra.items.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:1,matchedCandidates:extra.items.length,qualityExcluded:0,limited:false};
+    }
+  }
+  const getWatchlistNewsCore=createWatchlistNews({fetchStock:fetchWatchlistStock,registrySearch,now,deadlineMs:watchlistDeadlineMs,
     isRejected:item=>hardGate ? quarantine.has(newsFingerprint(item)) : quarantine.get(newsFingerprint(item))?.status==='REJECTED',
     canDisplay:item=>!isNewsDocumentForDisplay(item) && (!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED')});
+
+  async function getWatchlistNews(...args) {
+    const result=await getWatchlistNewsCore(...args);
+    return bangkokEnabled?{...result,source:'Google News / กรุงเทพธุรกิจ'}:result;
+  }
 
   function filterForDisplay(payload) {
     payload={...payload,items:(Array.isArray(payload?.items)?payload.items:[]).map(displayProject)};
