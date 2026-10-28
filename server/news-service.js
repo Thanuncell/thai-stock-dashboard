@@ -4,12 +4,13 @@ const { allowedNewsUrl, isGoogleNewsUrl, publisherMatches, p1DisplayGateEnabled,
 const { BROKER_FIRMS, decorateBrokerAttribution, dedupeNewsItems, matchBrokerFirms, newsFingerprint } = require('../lib/broker-news');
 const { decodeXml, marketHtmlText, xmlTag } = require('../lib/settrade-parser');
 const { normalizeWatchlistNewsStocks } = require('../lib/validation');
-const { reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
+const { annotateNewsContent, reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
 const { inspectNewsArticle, articleIdentity } = require('../lib/news-article');
 const { createNewsArticleLoader } = require('../lib/news-resolver');
 const { createNewsTransport } = require('../lib/news-fetch');
 const { newsAnalysisRequest, parseNewsAnalysis, safeAiDiagnostic } = require('../lib/news-analysis');
 const { createWatchlistNewsCacheKey } = require('./reliability');
+const { isNewsDocument } = require('../lib/news-content');
 const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
 const { createWatchlistNews, abortable } = require('./watchlist-news');
 const { matchesWatchlistStock, watchlistStockQuery } = require('../lib/watchlist-news-identity');
@@ -397,7 +398,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     }));
     const cacheKey = item => newsFingerprint(item) + '|' + item.title + '|' + item.snippet;
     for (const [key, entry] of analysisCache) if (entry.expiresAt <= Number(now())) analysisCache.delete(key);
-    const clean = prepared.filter(item => reviewNewsItem(item).status === 'VERIFIED');
+    const clean = prepared.filter(item => !isNewsDocument(item) && reviewNewsItem(item).status === 'VERIFIED');
     // Concurrent requests share the completed result rather than caching a competing fallback.
     if (openAiInFlight) await openAiInFlight;
     const fresh = [...new Map(clean.filter(item => !analysisCache.has(cacheKey(item))).map(item => [cacheKey(item), item])).values()];
@@ -445,7 +446,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       } finally { clearTimeout(timer); openAiInFlight = null; release(); }
     }
     const result=prepared.map(item=>{
-      if(reviewNewsItem(item).status!=='VERIFIED')return {summary:'',mode:'unavailable',basis:'headline'};
+      if(isNewsDocument(item)||reviewNewsItem(item).status!=='VERIFIED')return {summary:'',mode:'unavailable',basis:'headline'};
       let cached=analysisCache.get(cacheKey(item));
       if(!cached){const summary=withNewsRulesSummary(item)?.analysisSummary || '';cached=summary?{summary,mode:'rules',basis:'snippet',expiresAt:Number(now())+5*60*1000}
         :{summary:'',mode:'unavailable',basis:'headline',expiresAt:Number(now())+5*60*1000};analysisCache.set(cacheKey(item),cached);}
@@ -486,7 +487,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     canDisplay:item=>!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED'});
 
   function filterForDisplay(payload) {
-    if(!hardGate)return {...payload,p1DisplayGate:false,items:(payload.items||[]).filter(item=>!(item?.source==='thunhoon'&&isSlugNewsTitle(item.title)))};
+    if(!hardGate)return {...payload,p1DisplayGate:false,items:(payload.items||[]).filter(item=>!(item?.source==='thunhoon'&&isSlugNewsTitle(item.title))).map(item=>annotateNewsContent(item,{now:Number(now())}))};
     const candidates=Array.isArray(payload?.items)?payload.items:[];
     const kept = candidates.filter(item => {
       const proof = reviewNewsForDisplay(item,{now:Number(now())});
@@ -497,7 +498,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     // the shared quarantine registry or another account's stock discoveries.
     const withheldUrls=[...new Set([...(Array.isArray(payload.withheldUrls)?payload.withheldUrls:[]),
       ...candidates.filter(item=>!kept.includes(item)).map(item=>item?.url)])].filter(url=>allowedNewsUrl(url)).slice(0,200);
-    return { ...payload, p1DisplayGate:true, ...(withheldUrls.length ? {withheldUrls} : {}), items:kept, ...(!payload.page && typeof payload.total==='number' ? {total:kept.length} : {}), ...(kept.length < candidates.length ? {partial:true,dataState:kept.length?'partial':'unavailable'} : {}) };
+    return { ...payload, p1DisplayGate:true, ...(withheldUrls.length ? {withheldUrls} : {}), items:kept.map(item=>annotateNewsContent(item,{now:Number(now())})), ...(!payload.page && typeof payload.total==='number' ? {total:kept.length} : {}), ...(kept.length < candidates.length ? {partial:true,dataState:kept.length?'partial':'unavailable'} : {}) };
   }
   return { analyse, getNews, getWatchlistNews, filterForDisplay, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
 }
