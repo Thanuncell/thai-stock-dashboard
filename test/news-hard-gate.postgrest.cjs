@@ -120,16 +120,15 @@ test('P1: discovery to actual PostgREST HTTP to PostgreSQL 17 to restarted reade
    assert.ok((await off.list()).items.some(x=>x.url===fresh.url));
    assert.equal((await archive('read').list()).items.some(x=>x.url===fresh.url),false);
   });
-  await t.test('official document persists as G1 metadata; OFF read preserves AI and ON read never promotes it',async()=>{
+  await t.test('official document stays durable G1 metadata and is hidden under both display modes',async()=>{
    const off=createNewsArchiveService({env:{...env,SETSCOPE_P1_DISPLAY_GATE:'off'},fetchImpl:transport});
    const document={title:'0528NWS271020261715395120T.pdf - SET - SET',url:'https://news.google.com/rss/articles/synthetic-official-document',source:'settrade',sourceName:'SET',pubDate:date,snippet:'Synthetic document metadata; contents have not been verified'};
    assert.equal((await off.ingest([document])).ingested,1);
    await pool.query("update news_archive set analysis_summary='Synthetic stored document AI',analysis_mode='ai' where url=$1",[document.url]);
    const before=(await pool.query('select * from news_archive where url=$1',[document.url])).rows[0];
-   const shown=(await off.list()).items.find(x=>x.url===document.url);
-   assert.equal(shown.contentType,'OFFICIAL_DOCUMENT');assert.equal(shown.articleVerified,false);
-   assert.equal(shown.documentVerification.status,'UNVERIFIED');assert.equal(shown.verification.basis,'metadata');
-   assert.equal(shown.analysisSummary,'Synthetic stored document AI');
+   assert.equal((await off.list()).items.some(x=>x.url===document.url),false);
+   assert.equal(before.verification_status,'VERIFIED');assert.equal(before.verification_basis,'metadata');
+   assert.equal(before.analysis_summary,'Synthetic stored document AI');
    assert.equal((await archive('read').list()).items.some(x=>x.url===document.url),false);
    const after=(await pool.query('select * from news_archive where url=$1',[document.url])).rows[0];
    assert.deepEqual(after,before);

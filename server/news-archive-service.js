@@ -5,6 +5,7 @@ const { allowedNewsUrl, p1DisplayGateEnabled, isSlugNewsTitle } = require('../li
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { annotateNewsContent, reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
+const { isNewsDocumentForDisplay } = require('../lib/news-content');
 const { withNewsRulesSummary } = require('../lib/news-summary');
 const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash } = require('../lib/news-evidence');
 const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
@@ -232,6 +233,8 @@ function createNewsArchiveService({
       analysisSummary: ['ai', 'rules'].includes(row?.analysis_mode) ? String(row?.analysis_summary || '').trim().slice(0, 450) : '',
       analysisMode: ['ai', 'rules'].includes(row?.analysis_mode) && String(row?.analysis_summary || '').trim() ? row.analysis_mode : ''
     };
+    // Display-only exclusion, before snapshot count/dedup/pagination; never mutate a row.
+    if (isNewsDocumentForDisplay(item)) return null;
     const verification = reviewArchivedNewsRow(row);
     const restored = {...item,verification};
     const display = hardGate || restored.source==='thunhoon'&&isSlugNewsTitle(restored.title) ? reviewNewsForDisplay(restored,{now:Number(now())}) : verification;

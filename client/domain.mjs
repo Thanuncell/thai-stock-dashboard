@@ -1,4 +1,6 @@
 'use strict';
+import * as newsContent from '../lib/news-content.js';
+const { isNewsDocumentForDisplay } = newsContent.default || globalThis.SETscopeNewsContent;
 
 export const DEFAULT_WATCHLIST = [
   { symbol: 'PTT', name: 'ปตท.' },
@@ -332,6 +334,7 @@ export function watchlistNewsViewState(data) {
 
 // Defense at every render/retention boundary, including previously cached responses.
 export function canDisplayNews(item, timestamp = Date.now(), { hardGate = false } = {}) {
+  if (isNewsDocumentForDisplay(item)) return false;
   if(item?.source==='thunhoon'&&(/^[a-z0-9]+(?:[-_][a-z0-9]+){2,}$/i.test(String(item.title||'').replace(/\s+-\s+[^-]+$/,''))||/^[a-z0-9]+(?:[-_][\p{L}\p{M}\p{N}]+){2,}$/u.test(String(item.title||'').replace(/\s+-\s+[^-]+$/,''))))return false;
   if(!hardGate){try{const url=new URL(item?.url);return url.protocol==='https:'&&!url.username&&!url.password&&!['UNVERIFIED','REJECTED'].includes(item?.verification?.status);}catch{return false;}}
   const proof=item?.verification, published=Date.parse(item?.pubDate);

@@ -10,7 +10,7 @@ const { createNewsArticleLoader } = require('../lib/news-resolver');
 const { createNewsTransport } = require('../lib/news-fetch');
 const { newsAnalysisRequest, parseNewsAnalysis, safeAiDiagnostic } = require('../lib/news-analysis');
 const { createWatchlistNewsCacheKey } = require('./reliability');
-const { isNewsDocument } = require('../lib/news-content');
+const { isNewsDocument, isNewsDocumentForDisplay } = require('../lib/news-content');
 const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
 const { createWatchlistNews, abortable } = require('./watchlist-news');
 const { matchesWatchlistStock, watchlistStockQuery } = require('../lib/watchlist-news-identity');
@@ -484,12 +484,16 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
   }
   const getWatchlistNews=createWatchlistNews({fetchStock:fetchWatchlistStock,registrySearch,now,deadlineMs:watchlistDeadlineMs,
     isRejected:item=>hardGate ? quarantine.has(newsFingerprint(item)) : quarantine.get(newsFingerprint(item))?.status==='REJECTED',
-    canDisplay:item=>!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED'});
+    canDisplay:item=>!isNewsDocumentForDisplay(item) && (!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED')});
 
   function filterForDisplay(payload) {
-    if(!hardGate)return {...payload,p1DisplayGate:false,items:(payload.items||[]).filter(item=>!(item?.source==='thunhoon'&&isSlugNewsTitle(item.title))).map(item=>annotateNewsContent(item,{now:Number(now())}))};
+    if(!hardGate){
+      const items=(payload.items||[]).filter(item=>!isNewsDocumentForDisplay(item) && !(item?.source==='thunhoon'&&isSlugNewsTitle(item.title))).map(item=>annotateNewsContent(item,{now:Number(now())}));
+      return {...payload,p1DisplayGate:false,items,...(!payload.page && typeof payload.total==='number'?{total:items.length}:{})};
+    }
     const candidates=Array.isArray(payload?.items)?payload.items:[];
     const kept = candidates.filter(item => {
+      if (isNewsDocumentForDisplay(item)) return false;
       const proof = reviewNewsForDisplay(item,{now:Number(now())});
       if (proof.status !== 'VERIFIED') { if(item?.url)quarantineItem(item,proof); return false; }
       return !quarantine.has(newsFingerprint(item));
