@@ -1,4 +1,5 @@
 'use strict';
+const {createHash}=require('node:crypto');
 const {createNewsArticleLoader}=require('../lib/news-resolver');
 const {inspectNewsArticle,articleIdentity}=require('../lib/news-article');
 const {classifyNewsItem}=require('../lib/news-quality');
@@ -8,20 +9,24 @@ const {readBoundedText}=require('../lib/news-response');
 const {publisherMatches}=require('../lib/news-policy');
 // Read-time facts only: never issue G1 evidence, edit associations or write an archive row.
 function createNewsLinkReview({transport,loadArticle=createNewsArticleLoader({transport,allowGoogleRpc:false}),registrySearch=async()=>[],now=Date.now}={}){
- const cache=new Map(),pending=new Map(),observations=new WeakMap();let revision=0;
+ const cache=new Map(),pending=new Map(),observations=new WeakMap(),turns=new Map();let revision=0,turn=0;
  const key=item=>JSON.stringify([item.url,item.title,item.pubDate,item.source,item.sourceName]);
  const unknown=reason=>({status:'UNVERIFIED',kind:'UNKNOWN',reason});
- const put=(id,value)=>{const old=cache.get(id)?.value;if(['DOCUMENT','NON_ARTICLE'].includes(old?.link?.kind)&&value.link.kind==='UNKNOWN')value=old;cache.delete(id);cache.set(id,{value,expiresAt:Number(now())+(value.link.status==='VERIFIED'?21600000:300000)});while(cache.size>200)cache.delete(cache.keys().next().value);revision++;return value;};
+ const negative=value=>['DOCUMENT','NON_ARTICLE'].includes(value?.link?.kind);
+ function retained(item,id){
+  const seen=observations.get(item);if(seen?.key===id)return seen.facts;
+  return ['DOCUMENT','NON_ARTICLE'].includes(item?.linkVerification?.kind)?{link:item.linkVerification}:null;
+ }
+ const put=(id,value,item)=>{const cached=cache.get(id)?.value,old=negative(cached)?cached:retained(item,id);if(negative(old)&&value.link.kind==='UNKNOWN')value=old;cache.delete(id);cache.set(id,{value,expiresAt:Number(now())+(value.link.status==='VERIFIED'?21600000:300000)});while(cache.size>200)cache.delete(cache.keys().next().value);revision++;return value;};
  function project(item){
-  const id=key(item),entry=cache.get(id),seen=observations.get(item);
-  const prior=seen?.key===id?seen:undefined;
-  const facts=entry&&entry.expiresAt>Number(now())?entry.value:prior?.facts;
-  const previousBlocked=!prior&&['DOCUMENT','NON_ARTICLE'].includes(item?.linkVerification?.kind)?item.linkVerification:null;
-  const result={...item,linkVerification:facts?.link||previousBlocked||unknown('LINK_NOT_CHECKED_BUDGET')};
+  const id=key(item),entry=cache.get(id),previous=retained(item,id);
+  const cached=entry&&(entry.expiresAt>Number(now())||negative(entry.value))?entry.value:null;
+  const facts=negative(previous)&&(!cached||cached.link.kind==='UNKNOWN')?previous:cached||previous;
+  const result={...item,linkVerification:facts?.link||unknown('LINK_NOT_CHECKED_BUDGET')};
   delete result.displayUrl;delete result.securityIdentification;
   if(facts?.displayUrl)result.displayUrl=facts.displayUrl;
   if(isSetNewsCandidate(item))result.securityIdentification=facts?.security||{status:'UNVERIFIED',symbols:[],reason:'SET_PUBLISHER_UNVERIFIED'};
-  const record={key:id,facts:['DOCUMENT','NON_ARTICLE'].includes(facts?.link?.kind)?facts:null};
+  const record={key:id,facts:negative(facts)?facts:null};
   observations.set(item,record);observations.set(result,record);
   return result;
  }
@@ -31,10 +36,14 @@ function createNewsLinkReview({transport,loadArticle=createNewsArticleLoader({tr
   if(budget.remaining<=0||signal.aborted)return {link:unknown(signal.aborted?'LINK_REVIEW_TIMEOUT':'LINK_NOT_CHECKED_BUDGET')};
   budget.remaining--;
   const task=(async()=>{
-   const finish=(link,extra={})=>put(id,{link:{...link,checkedAt:new Date(Number(now())).toISOString()},...extra});
+   const finish=(link,extra={})=>put(id,{link:{...link,checkedAt:new Date(Number(now())).toISOString()},...extra},item);
    if(isNewsDocumentForDisplay(item))return finish({status:'UNVERIFIED',kind:'DOCUMENT',reason:'DOCUMENT_NOT_ARTICLE'});
    const loaded=await loadArticle(item.url,{budget,signal,maxBytes:1000000});
-   if(!loaded.response)return finish(unknown(loaded.reason));
+   if(!loaded.response){
+    // A partial request budget is not a source verdict; retry it fairly next round.
+    if(loaded.reason==='ARTICLE_REQUEST_BUDGET')return {link:unknown(loaded.reason)};
+    return finish(unknown(loaded.reason));
+   }
    const {response,target}=loaded,url=target.href;
    if([404,410].includes(response.status))return finish({status:'UNVERIFIED',kind:'NON_ARTICLE',reason:'LINK_HTTP_'+response.status});
    if(!response.ok)return finish(unknown('LINK_HTTP_'+response.status));
@@ -60,14 +69,29 @@ function createNewsLinkReview({transport,loadArticle=createNewsArticleLoader({tr
    const verified=inspection.status==='VERIFIED'&&publisher&&dateValid;
    const reason=inspection.status==='VERIFIED'?(!publisher?'PUBLISHER_IDENTITY_UNVERIFIED':'PUBLICATION_DATE_INVALID'):inspection.status==='REJECTED'?'LINK_CANONICAL_IDENTITY_UNVERIFIED':inspection.reason;
    return finish(verified?{status:'VERIFIED',kind:'ARTICLE',reason:'ARTICLE_IDENTITY_VERIFIED'}:unknown(reason||'ARTICLE_NOT_VERIFIED'),{...(security?{security}:{}),...(verified?{displayUrl:url}:{})});
-  })().catch(()=>put(id,{link:unknown('LINK_NETWORK_UNVERIFIED')})).finally(()=>pending.delete(id));
+  })().catch(()=>put(id,{link:unknown('LINK_NETWORK_UNVERIFIED')},item)).finally(()=>pending.delete(id));
   pending.set(id,task);return task;
  }
  async function review(items){
   const budget={remaining:3,httpRemaining:12},signal=AbortSignal.timeout(7000);
-  // Prefer official issuer candidates; never sweep the archive or drain on a timer.
-  const candidates=[...items.filter(isSetNewsCandidate),...items.filter(x=>!isSetNewsCandidate(x))];
-  for(const item of candidates.slice(0,3)){if(budget.remaining<=0||signal.aborted)break;await inspect(item,budget,signal);}
+  // Keep waiting order across reordering/new arrivals; official sources win only initial ties.
+  const candidates=new Map();
+  for(const item of [...items.filter(isSetNewsCandidate),...items.filter(x=>!isSetNewsCandidate(x))]){
+   const id=key(item);if(candidates.has(id))continue;
+   const token=createHash('sha256').update(id).digest('hex');
+   const ticket=turns.get(token)??++turn;turns.delete(token);turns.set(token,ticket);
+   // Bound bookkeeping to the existing maximum archive scan; retain no owner data.
+   while(turns.size>100000)turns.delete(turns.keys().next().value);
+   candidates.set(id,{item,id,token,ticket});
+  }
+  const waiting=[...candidates.values()].filter(({id})=>{const hit=cache.get(id);return !hit||hit.expiresAt<=Number(now());}).sort((a,b)=>a.ticket-b.ticket);
+  for(const candidate of waiting.slice(0,3)){
+   if(budget.remaining<=0||budget.httpRemaining<=0||signal.aborted)break;
+   const result=await inspect(candidate.item,budget,signal);
+   if(result.link.reason==='ARTICLE_REQUEST_BUDGET')break;
+   // Unattempted work keeps its ticket when the shared deadline/budget ends a round.
+   turns.delete(candidate.token);turns.set(candidate.token,++turn);
+  }
   return items.map(project);
  }
  return {review,project,inspect:(item,{budget={remaining:1,httpRemaining:6},signal=AbortSignal.timeout(7000)}={})=>inspect(item,budget,signal),get revision(){return revision;}};

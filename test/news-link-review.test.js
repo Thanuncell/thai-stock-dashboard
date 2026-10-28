@@ -76,7 +76,7 @@ test('bounded candidate window, cache, denial and timeout never drain or retry a
  const news=Array.from({length:20},(_,i)=>item({url:url+'&n='+i}));
  await review.review(news);await review.review(news);assert.equal(calls,1);
  let more=0;const bounded=reviewer(async()=>{more++;return response(html(item()));});
- await bounded.review(news);await bounded.review(news);assert.equal(more,3);
+ await bounded.review(news);await bounded.review(news);assert.equal(more,6);
  const controller=new AbortController();let seenSignal,aborted=false;
  const timeout=reviewer(async(_u,{signal})=>{
   seenSignal=signal;
@@ -180,4 +180,63 @@ test('coalesced public source facts do not share owner associations, stored AI o
  const [[ra],[rb]]=await Promise.all([review.review([a]),review.review([b])]);assert.equal(calls,1);
  assert.deepEqual(ra.matchedSymbols,['PTT']);assert.deepEqual(rb.matchedSymbols,['OR']);assert.equal(ra.analysisSummary,a.analysisSummary);assert.equal(rb.analysisSummary,b.analysisSummary);
  assert.equal(ra.firstSeenAt,a.firstSeenAt);assert.equal(rb.firstSeenAt,b.firstSeenAt);assert.deepEqual(ra.securityIdentification.symbols,['PTT']);assert.deepEqual(rb.securityIdentification.symbols,['PTT']);
+});
+
+
+test('review advances beyond the first three and reuses fresh facts without more HTTP',async()=>{
+ const news=Array.from({length:9},(_,i)=>item({title:'ข่าวบริษัทลำดับ '+i,url:url+'&rotation='+i})),seen=[];
+ const review=reviewer(async u=>{seen.push(String(u));const current=news.find(x=>x.url===String(u));return response(html(current));});
+ for(let round=0;round<3;round++){const before=seen.length;await review.review(news);assert.equal(seen.length-before,3);}
+ assert.equal(new Set(seen).size,9);
+ const before=seen.length,shown=await review.review(news);assert.equal(seen.length,before);assert.ok(shown.every(x=>x.linkVerification.status==='VERIFIED'));
+});
+test('older waiting candidates survive reordered input and newly arriving official items',async()=>{
+ const news=Array.from({length:8},(_,i)=>i<4?item({title:'ข่าว SET ลำดับ '+i,url:url+'&fair='+i}):item({title:'ข่าวตลาดลำดับ '+i,url:'https://www.kaohoon.com/news/fair-'+i,source:'kaohoon',sourceName:'ข่าวหุ้น'}));
+ const byUrl=new Map(news.map(x=>[x.url,x])),seen=[];
+ const review=reviewer(async u=>{seen.push(String(u));return response(html(byUrl.get(String(u))));});
+ await review.review(news);
+ for(let round=0;round<3;round++){
+  const added=Array.from({length:3},(_,i)=>item({title:'ข่าวใหม่ '+round+' '+i,url:url+'&arrival='+round+'-'+i}));for(const x of added)byUrl.set(x.url,x);
+  const before=seen.length;await review.review([...added,...news.slice().reverse()]);assert.ok(seen.length-before<=3);
+ }
+ for(const x of news)assert.ok(seen.includes(x.url),'waiting news must be reviewed: '+x.url);
+});
+test('redirect-heavy rounds keep 12 HTTP requests and retry partially budgeted work fairly',async()=>{
+ const news=Array.from({length:5},(_,i)=>item({title:'ข่าวบริษัท HTTP '+i,url:url+'&story='+i+'&hop=0'}));let calls=[];
+ const review=reviewer(async u=>{
+  const target=new URL(u),index=Number(target.searchParams.get('story')),hop=Number(target.searchParams.get('hop'));calls.push(index);
+  if(hop<4){target.searchParams.set('hop',String(hop+1));return new Response('',{status:302,headers:{location:target.href}});}
+  return response(html({...news[index],url:target.href}));
+ });
+ for(let round=0;round<3;round++){calls=[];await review.review(news);assert.ok(calls.length<=12);assert.ok(new Set(calls).size<=3);}
+ assert.ok(news.map(review.project).every(x=>x.linkVerification.status==='VERIFIED'));
+});
+test('an aborted round leaves unattempted candidates waiting for the next round',async t=>{
+ let active,attempted=[],now=Date.now();
+ t.mock.method(AbortSignal,'timeout',ms=>{assert.equal(ms,7000);active=new AbortController();return active.signal;});
+ const news=Array.from({length:7},(_,i)=>item({url:url+'&deadline-fair='+i}));
+ const review=createNewsLinkReview({now:()=>now,loadArticle:async(u,{budget})=>{attempted.push(u);budget.httpRemaining--;active.abort();return {status:'UNVERIFIED',reason:'ARTICLE_REQUEST_TIMEOUT'};}});
+ for(let round=0;round<news.length;round++){await review.review(news);now+=300001;}
+ assert.equal(attempted.length,7);assert.equal(new Set(attempted).size,7);
+});
+test('confirmed non-article remains hidden after LRU eviction, expiry and network refresh failure',async()=>{
+ let now=Date.now(),offline=false;
+ const review=reviewer(async()=>{if(offline)throw Error('network unavailable');return response('%PDF-x','application/pdf');},{now:()=>now});
+ const original=item(),blocked=(await review.review([original]))[0];assert.equal(newsDisplayBlocked(blocked),true);
+ now+=300001;assert.equal(newsDisplayBlocked(review.project({...original})),true);
+ for(let i=0;i<201;i++)await review.inspect(item({url:url+'&negative-evict='+i}));
+ now+=300001;offline=true;const refreshed=(await review.review([original]))[0];assert.equal(newsDisplayBlocked(refreshed),true);
+ const fresh=reviewer(async()=>{throw Error('no network');});const copy=JSON.parse(JSON.stringify(blocked));
+ assert.equal(newsDisplayBlocked(fresh.project(fresh.project(copy))),true);
+ assert.equal(original.verification,undefined);
+});
+test('rotation deduplicates candidates and does not blanket-hide uncertain G1 metadata with gate OFF',async()=>{
+ const news=Array.from({length:7},(_,i)=>item({title:'ข่าวบทความกล่าวถึง PDF ลำดับ '+i,url:url+'&unknown-fair='+i}));
+ for(const x of news)x.verification=reviewNewsItem(x);const before=JSON.stringify(news);let calls=0;
+ const review=reviewer(async()=>{calls++;throw Error('network unavailable');});
+ for(let round=0;round<3;round++){const old=calls;await review.review([...news,...news]);assert.ok(calls-old<=3);}
+ assert.equal(calls,7);
+ const service=createNewsService({env:{SETSCOPE_NEWS_EVIDENCE:'write'},displayProject:review.project});
+ const shown=service.filterForDisplay({items:news});assert.equal(shown.items.length,7);assert.ok(shown.items.every(x=>x.verification.basis==='metadata'&&x.linkVerification.status==='UNVERIFIED'));
+ assert.equal(JSON.stringify(news),before);
 });
