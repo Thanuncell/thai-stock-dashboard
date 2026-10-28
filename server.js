@@ -147,8 +147,11 @@ class NewsQuarantine extends Map {
   delete(key) { const removed=super.delete(key); if(removed)this.revision++; return removed; }
 }
 const newsQuarantine = new NewsQuarantine();
-const newsService = createNewsService({ fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
-const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch, quarantine:newsQuarantine });
+const articleLoader = require('./lib/news-resolver').createNewsArticleLoader({transport:articleFetch,allowGoogleRpc:process.env.SETSCOPE_GOOGLE_NEWS_RPC==='on'});
+const {newsAssociationSymbols}=require('./lib/news-content');
+const newsLinkReview = require('./server/news-link-review').createNewsLinkReview({loadArticle:articleLoader,registrySearch:searchRegistry});
+const newsService = createNewsService({ articleLoader, displayProject:newsLinkReview.project, fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
+const newsArchiveService = createNewsArchiveService({ displayReview:newsLinkReview.review, displayProject:newsLinkReview.project, fetchImpl: providerFetch, quarantine:newsQuarantine });
 const settradeProvider = createSettradeProvider({ fetchImpl: providerFetch });
 const marketOverviewService = createMarketOverviewService({ provider: settradeProvider });
 const watchlistService = createWatchlistService({ fetchImpl: providerFetch });
@@ -164,7 +167,7 @@ async function loadNewsAndArchive() {
   const data = await newsService.getNews();
   try { await newsArchiveService.ingest(data.items, { assessments: getAssessments(data) }); }
   catch (error) { console.warn('News archive write unavailable:', error.message); }
-  return data;
+  return {...data,items:await newsLinkReview.review(data.items)};
 }
 
 async function handleWatchlists(req, res, user) {
@@ -351,7 +354,7 @@ async function handle(req, res) {
       const featuredCount = url.searchParams.get('featuredCount') || '0';
       const excludeUrls = url.searchParams.getAll('exclude').slice(0, 10);
       const exclusionKey = createHash('sha256').update(JSON.stringify(excludeUrls)).digest('base64url').slice(0, 16);
-      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}|${newsQuarantine.revision}`;
+      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}|${newsQuarantine.revision}|${newsLinkReview.revision}`;
       const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({
         page, pageSize, source, symbol, query, excludeUrls, featuredCount
       }));
@@ -371,7 +374,11 @@ async function handle(req, res) {
       const cacheKey = createWatchlistNewsCacheKey(stocks, user.id);
       const force = url.searchParams.get('refresh') === '1' && !limited(`watch-news-refresh:${user.id}`, 3);
       const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks, {ownerId:user.id,refresh:force}), {force});
-      return send(res, 200, newsService.filterForDisplay(data));
+      const scoped=new Set(stocks.map(stock=>stock.symbol));
+      const reviewed={...data,items:(await newsLinkReview.review(data.items)).filter(item=>newsAssociationSymbols(item).some(symbol=>scoped.has(symbol)))};
+      const safe=newsService.filterForDisplay(reviewed);
+      if(Array.isArray(data.stockStatus))safe.stockStatus=data.stockStatus.map(status=>({...status,retained:safe.items.filter(item=>newsAssociationSymbols(item).includes(status.symbol)).length}));
+      return send(res, 200, safe);
     } catch (error) {
       return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ', detail: error.message });
     }

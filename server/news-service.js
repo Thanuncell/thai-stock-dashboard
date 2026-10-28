@@ -10,7 +10,7 @@ const { createNewsArticleLoader } = require('../lib/news-resolver');
 const { createNewsTransport } = require('../lib/news-fetch');
 const { newsAnalysisRequest, parseNewsAnalysis, safeAiDiagnostic } = require('../lib/news-analysis');
 const { createWatchlistNewsCacheKey } = require('./reliability');
-const { isNewsDocument, isNewsDocumentForDisplay } = require('../lib/news-content');
+const { isNewsDocument, isNewsDocumentForDisplay, newsDisplayBlocked } = require('../lib/news-content');
 const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
 const { createWatchlistNews, abortable } = require('./watchlist-news');
 const { matchesWatchlistStock, watchlistStockQuery } = require('../lib/watchlist-news-identity');
@@ -62,33 +62,9 @@ function parseRetryAfter(value, timestamp) {
   return Math.min(date - timestamp, GOOGLE_RSS_RETRY_AFTER_MAX_MS);
 }
 
-async function readBoundedText(response, limit = MAX_RISKY_TARGET_BYTES) {
-  const reader = response.body?.getReader();
-  if (!reader) return String(await response.text()).slice(0, limit);
-  const chunks = [];
-  let size = 0;
-  while (size < limit) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const remaining = limit - size;
-    const chunk = value.byteLength > remaining ? value.slice(0, remaining) : value;
-    chunks.push(chunk);
-    size += chunk.byteLength;
-    if (size >= limit) {
-      reader.cancel().catch(() => {});
-      break;
-    }
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
-}
+const { readBoundedText } = require('../lib/news-response');
 
-function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport(), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map() } = {}) {
+function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport(), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map(), displayProject = item=>item, articleLoader } = {}) {
   if (!Number.isInteger(analysisTimeoutMs) || analysisTimeoutMs < 1 || analysisTimeoutMs > 30000) throw Error('Invalid AI timeout');
   const analysisCache = new Map();
   let openAiCooldownUntil = 0;
@@ -96,7 +72,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
   let openAiQuotaBlocked = false;
   const hardGate = p1DisplayGateEnabled(env);
   const blockedArticleOrigins = new Set();
-  const loadArticle = createNewsArticleLoader({transport:articleFetch,now,allowGoogleRpc:env.SETSCOPE_GOOGLE_NEWS_RPC==='on'});
+  const loadArticle = articleLoader || createNewsArticleLoader({transport:articleFetch,now,allowGoogleRpc:env.SETSCOPE_GOOGLE_NEWS_RPC==='on'});
   const articleTransport = articleFetch;
   const rssPending = new Map();
   const lastValidated = new Map();
@@ -487,13 +463,14 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     canDisplay:item=>!isNewsDocumentForDisplay(item) && (!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED')});
 
   function filterForDisplay(payload) {
+    payload={...payload,items:(Array.isArray(payload?.items)?payload.items:[]).map(displayProject)};
     if(!hardGate){
-      const items=(payload.items||[]).filter(item=>!isNewsDocumentForDisplay(item) && !(item?.source==='thunhoon'&&isSlugNewsTitle(item.title))).map(item=>annotateNewsContent(item,{now:Number(now())}));
+      const items=(payload.items||[]).filter(item=>!newsDisplayBlocked(item) && !(item?.source==='thunhoon'&&isSlugNewsTitle(item.title))).map(item=>annotateNewsContent(item,{now:Number(now())}));
       return {...payload,p1DisplayGate:false,items,...(!payload.page && typeof payload.total==='number'?{total:items.length}:{})};
     }
     const candidates=Array.isArray(payload?.items)?payload.items:[];
     const kept = candidates.filter(item => {
-      if (isNewsDocumentForDisplay(item)) return false;
+      if (newsDisplayBlocked(item)) return false;
       const proof = reviewNewsForDisplay(item,{now:Number(now())});
       if (proof.status !== 'VERIFIED') { if(item?.url)quarantineItem(item,proof); return false; }
       return !quarantine.has(newsFingerprint(item));

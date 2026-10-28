@@ -18,7 +18,7 @@ import {
   mergeWatchlists,
   marketOverviewStatus,
   navigationUrl,
-  newsKey,
+  newsKey, newsSecuritySymbols, newsClickUrl,
   normalizeLists,
   normalizeChartViewport,
   panChartViewport,
@@ -1507,7 +1507,8 @@ async function analyzeNewsBriefs(items) {
 }
 function renderNewsItem(item, options = {}) {
   if(!canDisplayNews(item))return document.createDocumentFragment();
-  const relatedSymbols = item.matchedSymbols || [];
+  const officialSymbols = newsSecuritySymbols(item);
+  const relatedSymbols = officialSymbols === null ? item.matchedSymbols || [] : officialSymbols;
   const analysis = newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)));
   const summary = analysis?.summary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้';
   const analysisMode = analysis?.mode || 'unavailable';
@@ -1523,7 +1524,7 @@ function renderNewsItem(item, options = {}) {
   const content = document.createElement('div');
   const title = document.createElement('a');
   title.className = 'news-title news-title-link';
-  title.href = /^https:\/\//i.test(String(item.url || '')) ? item.url : '#';
+  title.href = newsClickUrl(item);
   title.target = '_blank';
   title.rel = 'noopener noreferrer';
   title.textContent = item.title || 'ข่าว';
@@ -1548,6 +1549,12 @@ function renderNewsItem(item, options = {}) {
     promo.className = 'promo-tag';
     promo.textContent = 'จากผู้ให้บริการ อาจมีเนื้อหาส่งเสริมการขาย';
     tags.append(promo);
+  }
+  if (officialSymbols !== null && !relatedSymbols.length) {
+    const unknown = document.createElement('span');
+    unknown.className = 'news-relevance';
+    unknown.textContent = 'ยังไม่ระบุหลักทรัพย์';
+    tags.append(unknown);
   }
   if (relatedSymbols.length) {
     const symbols = document.createElement('span');
