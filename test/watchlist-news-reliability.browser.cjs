@@ -2,7 +2,7 @@
 const assert=require('node:assert/strict'),path=require('node:path'),{spawn}=require('node:child_process');
 const {chromium}=require(process.env.SETSCOPE_PLAYWRIGHT_MODULE||'playwright');
 const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation.browser.cjs');
-const {createNewsService}=require('../server/news-service');
+const {createNewsService}=require('./fixtures/news-service.cjs');
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 (async()=>{
  const port=await freePort(),base='http://127.0.0.1:'+port;

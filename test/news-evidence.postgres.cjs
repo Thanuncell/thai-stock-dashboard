@@ -155,6 +155,55 @@ test('AC-G1-09/10: native PostgreSQL evidence, concurrency and compatible rollba
       const row=(await pool.query('select a.*,news_archive_subject_hash(a) native_hash from news_archive a where url=$1',[item.url])).rows[0];
       assert.equal(row.native_hash,rowSubjectHash(row));assert.equal(reviewArchivedNewsRow(row).basis,'article');
     });
+    await t.test('P1 release: default-OFF G1 writes and recovered headline provenance survive native persistence',async()=>{
+      const off=createNewsArchiveService({env:{...env,SETSCOPE_P1_DISPLAY_GATE:'off'},fetchImpl});
+      const pubDate=new Date(Date.now()-60000).toISOString(),url='https://thunhoon.com/article-headline-native',slug='amata-profit-investment-update';
+      const old={title:slug,url,pubDate,source:'thunhoon',sourceName:'Thunhoon',snippet:'Accepted synthetic G1 metadata before original headline recovery'};
+      old.verification=reviewNewsItem(old);assert.equal((await off.ingest([old])).ingested,1);
+      const {archiveFingerprint}=require('../server/news-archive-service'),fp=archiveFingerprint(old);
+      await writer.query("update news_archive set analysis_summary='Headline recovery AI',analysis_mode='ai' where fingerprint=$1",[fp]);
+      const before=(await pool.query('select * from news_archive where fingerprint=$1',[fp])).rows[0];
+      const {createNewsService}=require('./fixtures/news-service.cjs'),headline='AMATA รายงานผลประกอบการและแผนลงทุนล่าสุด';
+      const news=createNewsService({env,fetchImpl:async input=>String(input).includes('/rss/search?')
+        ?new Response('<rss><channel><item><title>'+slug+'</title><link>'+url+'</link><pubDate>'+pubDate+'</pubDate><description>'+old.snippet+'</description><source>Thunhoon</source></item></channel></rss>')
+        :new Response('<link rel="canonical" href="'+url+'"><script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline,datePublished:pubDate,articleBody:'AMATA verified synthetic article content for native persistence. '.repeat(5)})+'</script>',{headers:{'content-type':'text/html'}})});
+      const accepted=await news.getNews();assert.equal(accepted.items.length,1);assert.equal(accepted.items[0].title,headline);
+      assert.equal((await service().ingest(accepted.items)).ingested,1);
+      const after=(await pool.query('select * from news_archive where fingerprint=$1',[fp])).rows[0];
+      assert.equal(after.fingerprint,before.fingerprint);assert.equal(after.analysis_summary,before.analysis_summary);assert.equal(+after.first_seen_at,+before.first_seen_at);
+      assert.equal(after.verification_provenance.originalTitle,slug);assert.equal(after.verification_provenance.headlineBasis,'article');assert.ok(validStoredEvidence(after));
+      assert.ok((await off.list()).items.some(x=>x.fingerprint===fp&&x.rssTitle===slug));
+      assert.ok((await service('read').list()).items.some(x=>x.fingerprint===fp&&x.rssTitle===slug));
+    });
+    await t.test('P1 wrapper: publisher resolution upgrades the existing row without losing fingerprint, first_seen or AI',async()=>{
+      const {createNewsService}=require('./fixtures/news-service.cjs'),{getAssessments}=require('../lib/news-evidence');
+      const wrapper='https://news.google.com/rss/articles/p1-native',url='https://thunhoon.com/article-native-wrapper',pubDate=new Date(Date.now()-60000).toISOString();
+      const original={title:'PTT ผลประกอบการและแผนลงทุนล่าสุด',url:wrapper,source:'thunhoon',sourceName:'Thunhoon',pubDate,snippet:'Synthetic accepted metadata for native wrapper regression'};
+      original.verification=reviewNewsItem(original);await service().ingest([original]);
+      const {archiveFingerprint}=require('../server/news-archive-service');const fp=archiveFingerprint(original);
+      await writer.query("update news_archive set analysis_summary='Original wrapper AI',analysis_mode='ai' where fingerprint=$1",[fp]);
+      const before=(await pool.query('select * from news_archive where fingerprint=$1',[fp])).rows[0];
+      const xml='<rss><channel><item><title>'+original.title+'</title><link>'+wrapper+'</link><pubDate>'+pubDate+'</pubDate><source>Thunhoon</source></item></channel></rss>';
+      let resolved=false;
+      const news=()=>createNewsService({env,fetchImpl:async input=>{
+        if(String(input).includes('/rss/search?'))return new Response(xml);
+        if(String(input)===wrapper)return resolved?new Response('',{status:302,headers:{location:url}}):new Response('<link rel="canonical" href="https://news.google.com/"><main>Google Wrapper</main>',{headers:{'content-type':'text/html'}});
+        return new Response('<script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline:original.title,datePublished:pubDate,articleBody:'PTT source article content for native regression. '.repeat(6)})+'</script>',{headers:{'content-type':'text/html'}});
+      }});
+      const pending=await news().getNews();assert.equal(pending.items.length,0);
+      assert.ok(getAssessments(pending).every(x=>x.verification.status==='UNVERIFIED'));
+      const kept=await service().ingest([],{assessments:getAssessments(pending)});assert.ok(kept.retained>0);
+      assert.deepEqual((await pool.query('select * from news_archive where fingerprint=$1',[fp])).rows[0],before);
+      resolved=true;const accepted=await news().getNews();assert.equal(accepted.items.length,1);
+      assert.equal(archiveFingerprint(accepted.items[0]),fp);assert.equal((await service().ingest(accepted.items)).ingested,1);
+      const after=(await pool.query('select * from news_archive where fingerprint=$1',[fp])).rows[0];
+      assert.equal(after.url,url);assert.equal(after.verification_basis,'article');assert.equal(after.analysis_summary,before.analysis_summary);
+      assert.equal(+after.first_seen_at,+before.first_seen_at);assert.ok(validStoredEvidence(after));
+      assert.equal((await pool.query('select count(*)::int n from news_archive where fingerprint=$1',[fp])).rows[0].n,1);
+      const read=(await service('read').list()).items.find(x=>x.fingerprint===fp);assert.ok(read);assert.equal(archiveFingerprint(read),fp);
+      assert.equal((await service().ingest([original])).retained,1);
+      assert.equal((await pool.query('select verification_basis from news_archive where fingerprint=$1',[fp])).rows[0].verification_basis,'article');
+    });
     await t.test('P1: equivalent T3 verification fences delayed T2 rejection and retries',async()=>{
       const time=Date.now(),pubDate=new Date(time-10000).toISOString(),url='https://thunhoon.com/article-951001';
       const first=article({url,pubDate,checkedAt:time-3000}),latest=article({url,pubDate,checkedAt:time-1000});

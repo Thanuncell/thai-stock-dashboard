@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createMarketService } = require('../server/market-service');
-const { createNewsService } = require('../server/news-service');
+const { createNewsService } = require('./fixtures/news-service.cjs');
 const { createMarketOverviewSafety } = require('../server/market-overview-safety');
 const { createSettradeService } = require('../server/settrade-service');
 

@@ -2,14 +2,14 @@
 const { inspectNewsArticle } = require('../../lib/news-article');
 const { issueEvidence } = require('../../lib/news-evidence');
 const { createNewsArchiveService } = require('../../server/news-archive-service');
-const env = { SUPABASE_URL: 'https://fixture.invalid', SUPABASE_SECRET_KEY: 'synthetic-fixture', SETSCOPE_NEWS_EVIDENCE: 'write' };
+const env = { SUPABASE_URL: 'https://fixture.invalid', SUPABASE_SECRET_KEY: 'synthetic-fixture', SETSCOPE_NEWS_EVIDENCE: 'write', SETSCOPE_P1_DISPLAY_GATE: 'on', SETSCOPE_GOOGLE_NEWS_RPC: 'on' };
 
 function article(overrides = {}) {
   const item = { title: 'Q3', url: 'https://thunhoon.com/article-123456', source: 'thunhoon', sourceName: 'Thunhoon',
     snippet: '', pubDate: new Date(Date.now()-1000).toISOString(), ...overrides };
   const inspection = inspectNewsArticle('<script type="application/ld+json">'+JSON.stringify({
-    '@type':'NewsArticle',url:item.url,headline:item.title,articleBody:'Synthetic article identity and content fixture. '.repeat(5)
-  })+'</script>', { url:item.url,title:item.title });
+    '@type':'NewsArticle',url:item.url,headline:item.title,datePublished:item.pubDate,articleBody:'Synthetic article identity and content fixture. '.repeat(5)
+  })+'</script>', { url:item.url,title:item.title,strict:true });
   item.verification = issueEvidence(item, { status:'VERIFIED',reason:'ARTICLE_IDENTITY_VERIFIED',basis:'article' },
     { inspection, checkedAt: overrides.checkedAt || Date.now(), pathway:'fixture/article',originalUrl:item.url });
   return item;

@@ -27,7 +27,7 @@ import {
   quoteChange,
   resolveMarketBannerFields,
   resolveActiveWatchlistId,
-  selectNewsForDisplay,
+  selectNewsForDisplay as selectNewsByPolicy, canDisplayNews as canDisplayByPolicy,
   sentimentHeadline,
   stamp,
   summarizeBreadth,
@@ -36,9 +36,15 @@ import {
   watchlistNewsViewState,
   newsDisplayAnalysis,
   canRequestNewsAnalysis,
-  retainWatchlistNews
+  retainWatchlistNews as retainWatchlistByPolicy
 } from './client/domain.mjs';
 
+// Gate activation is server-owned. Once observed ON, stale OFF responses cannot lower it;
+ // an intentional switch back to OFF takes effect after a page reload.
+let p1NewsDisplayGate = false;
+const canDisplayNews = item => canDisplayByPolicy(item,Date.now(),{hardGate:p1NewsDisplayGate});
+const selectNewsForDisplay = (items,options={}) => selectNewsByPolicy(items,{...options,hardGate:p1NewsDisplayGate});
+const retainWatchlistNews = (items,stocks) => retainWatchlistByPolicy(items,stocks,Date.now(),{hardGate:p1NewsDisplayGate});
 const $ = selector => document.querySelector(selector);
 const apiFetch = (url, options) => window.setscopeAuth.authorizedFetch(url, options);
 const decimalNumberFormatter = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1308,7 +1314,9 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
     const response = await apiFetch('/api/news'); const data = await response.json();
     if (!isCurrentPrivateIdentity(identity)) return;
     if (!response.ok) throw new Error(data.error);
-    latestNews = data.items || [];
+    p1NewsDisplayGate ||= data.p1DisplayGate===true;
+    const keep=applyNewsWithheldUrls(data.withheldUrls);
+    latestNews = (data.items || []).filter(keep);
     await getArchiveNews({ page: newsPage, reason });
     renderNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
@@ -1340,10 +1348,12 @@ async function getArchiveNews({ page = newsPage } = {}) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดคลังข่าวไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
+    p1NewsDisplayGate ||= data.p1DisplayGate===true;
+    const keep=applyNewsWithheldUrls(data.withheldUrls);
     archiveConfigured = Boolean(data.configured);
     archiveLoaded = archiveConfigured;
-    archiveFeaturedNews = data.dataState === 'fresh' && !data.stale && Array.isArray(data.featured) ? data.featured : [];
-    archiveNews = Array.isArray(data.items) ? data.items : [];
+    archiveFeaturedNews = data.dataState === 'fresh' && !data.stale && Array.isArray(data.featured) ? data.featured.filter(keep) : [];
+    archiveNews = Array.isArray(data.items) ? data.items.filter(keep) : [];
     // Use one accepted stored summary across live and archived representations.
     for (const item of [...archiveFeaturedNews, ...archiveNews]) {
       if (['UNVERIFIED', 'REJECTED'].includes(item.verification?.status)) continue;
@@ -1411,6 +1421,9 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId || scope!==currentWatchlistNewsScope()) return;
     if(!Array.isArray(data.items))throw Error('Invalid Watchlist News response');
+    p1NewsDisplayGate ||= data.p1DisplayGate===true;
+    const keep=applyNewsWithheldUrls(data.withheldUrls);
+    const verifiedItems=retainWatchlistNews(data.items.filter(keep),watchlist);
     watchlistNewsMatchInfo = {
       matchedCandidates: Number.isFinite(data.matchedCandidates) ? data.matchedCandidates : null,
       qualityExcluded: Number.isFinite(data.qualityExcluded) ? data.qualityExcluded : null,
@@ -1420,9 +1433,9 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
       && Date.now() - watchlistNewsFetchedAt <= 30 * 60000) {
       watchlistNewsState = 'stale';
     } else {
-      latestWatchlistNews = data.items;
+      latestWatchlistNews = verifiedItems;
       watchlistNewsFetchedAt=Number.isFinite(Date.parse(data.fetchedAt))?Math.min(Date.now(),Date.parse(data.fetchedAt)):Date.now();
-      watchlistNewsState=watchlistNewsViewState(data);
+      watchlistNewsState=verifiedItems.length<data.items.length?(verifiedItems.length?'partial':'unavailable'):watchlistNewsViewState({...data,items:verifiedItems});
     }
     renderWatchlistNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
@@ -1443,7 +1456,7 @@ async function analyzeNewsBriefs(items) {
   const timestamp = Date.now();
   if (!canRequestNewsAnalysis(timestamp, newsAnalysisCalls, newsAnalysisCooldownUntil)) return;
   const fresh = [...new Map(items.map(item => [newsKey(item), item])).values()]
-    .filter(item => !['UNVERIFIED', 'REJECTED'].includes(item.verification?.status)
+    .filter(item => canDisplayNews(item)
       && newsAnalyses.get(newsKey(item))?.mode !== 'ai'
       && (newsAnalysisAttempts.get(newsKey(item)) || 0) <= timestamp).slice(0, 8);
   if (!fresh.length) return;
@@ -1493,6 +1506,7 @@ async function analyzeNewsBriefs(items) {
   }
 }
 function renderNewsItem(item, options = {}) {
+  if(!canDisplayNews(item))return document.createDocumentFragment();
   const relatedSymbols = item.matchedSymbols || [];
   const analysis = newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)));
   const summary = analysis?.summary || 'ยังไม่มีบทสรุปสำหรับข่าวนี้';
@@ -1581,10 +1595,20 @@ function scrollToSection(selector) {
 function scrollToPageTop() {
   window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
 }
+function applyNewsWithheldUrls(urls = []) {
+  const keys=new Set((Array.isArray(urls)?urls:[]).slice(0,200).map(url=>newsKey({url})));
+  const keep=item=>!keys.has(newsKey(item));
+  latestNews=latestNews.filter(keep);archiveNews=archiveNews.filter(keep);
+  archiveFeaturedNews=archiveFeaturedNews.filter(keep);latestWatchlistNews=latestWatchlistNews.filter(keep);
+  if(keys.size)renderNews();
+  return keep;
+}
+
 function renderWatchlistNews() {
   if (!isCurrentPrivateIdentity()) return;
   const root = $('#watchlist-news-list');
   if (!root) return;
+  latestWatchlistNews=retainWatchlistNews(latestWatchlistNews,watchlist);
   const sameScope=watchlistNewsScope===currentWatchlistNewsScope();
   const state=sameScope?watchlistNewsState:watchlist.length?'loading':'empty';
   root.dataset.state=state;

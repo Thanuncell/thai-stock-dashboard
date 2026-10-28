@@ -124,6 +124,7 @@ setInterval(() => {
 const observability = createObservability();
 const responseCache = createMemoryCache({ maxEntries: 200 });
 const providerFetch = observability.observedFetch(globalThis.fetch);
+const articleFetch = observability.observedFetch(require('./lib/news-fetch').createNewsTransport());
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
@@ -140,8 +141,14 @@ const manualCoverageHandler = createManualCoverageHandler({
   controller: createControlledCoverage({ fetchImpl: providerFetch,
     onVerified: (symbol, verification) => invalidateVerifiedMarket(responseCache, symbol, verification) }), readJson, send
 });
-const newsService = createNewsService({ fetchImpl: providerFetch, registrySearch: searchRegistry });
-const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch });
+class NewsQuarantine extends Map {
+  revision = 0;
+  set(key,value) { const old=this.get(key); if(!old||old.status!==value.status||old.reason!==value.reason)this.revision++; return super.set(key,value); }
+  delete(key) { const removed=super.delete(key); if(removed)this.revision++; return removed; }
+}
+const newsQuarantine = new NewsQuarantine();
+const newsService = createNewsService({ fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
+const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch, quarantine:newsQuarantine });
 const settradeProvider = createSettradeProvider({ fetchImpl: providerFetch });
 const marketOverviewService = createMarketOverviewService({ provider: settradeProvider });
 const watchlistService = createWatchlistService({ fetchImpl: providerFetch });
@@ -331,7 +338,7 @@ async function handle(req, res) {
     }
   }
   if (url.pathname === '/api/news') {
-    try { return send(res, 200, await loadCached(res, 'news', PROVIDER_POLICIES.news, loadNewsAndArchive)); }
+    try { return send(res, 200, newsService.filterForDisplay(await loadCached(res, 'news', PROVIDER_POLICIES.news, loadNewsAndArchive))); }
     catch (error) { return send(res, 502, { error: error.message }); }
   }
   if (url.pathname === '/api/news-archive') {
@@ -344,11 +351,15 @@ async function handle(req, res) {
       const featuredCount = url.searchParams.get('featuredCount') || '0';
       const excludeUrls = url.searchParams.getAll('exclude').slice(0, 10);
       const exclusionKey = createHash('sha256').update(JSON.stringify(excludeUrls)).digest('base64url').slice(0, 16);
-      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}`;
+      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}|${newsQuarantine.revision}`;
       const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({
         page, pageSize, source, symbol, query, excludeUrls, featuredCount
       }));
-      return send(res, 200, { ...data, dataState: data.stale ? 'stale' : data.configured ? 'fresh' : 'unavailable' });
+      const safe = newsService.filterForDisplay(data);
+      const featuredResult = newsService.filterForDisplay({items:data.featured || []});
+      const featured = featuredResult.items;
+      const withheldUrls=[...new Set([...(safe.withheldUrls||[]),...(featuredResult.withheldUrls||[])])];
+      return send(res, 200, { ...safe, ...(withheldUrls.length?{withheldUrls}:{}), featured, dataState: data.stale ? 'stale' : safe.dataState || (data.configured ? 'fresh' : 'unavailable') });
     } catch (error) {
       return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable', detail: error.message });
     }
@@ -360,7 +371,7 @@ async function handle(req, res) {
       const cacheKey = createWatchlistNewsCacheKey(stocks, user.id);
       const force = url.searchParams.get('refresh') === '1' && !limited(`watch-news-refresh:${user.id}`, 3);
       const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks, {ownerId:user.id,refresh:force}), {force});
-      return send(res, 200, data);
+      return send(res, 200, newsService.filterForDisplay(data));
     } catch (error) {
       return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ', detail: error.message });
     }

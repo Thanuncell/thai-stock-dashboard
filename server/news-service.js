@@ -1,11 +1,13 @@
 'use strict';
 
-const { allowedNewsUrl, resolveAllowedNewsRedirect } = require('../lib/news-policy');
+const { allowedNewsUrl, isGoogleNewsUrl, publisherMatches, p1DisplayGateEnabled, isSlugNewsTitle, resolveAllowedNewsRedirect } = require('../lib/news-policy');
 const { BROKER_FIRMS, decorateBrokerAttribution, dedupeNewsItems, matchBrokerFirms, newsFingerprint } = require('../lib/broker-news');
 const { decodeXml, marketHtmlText, xmlTag } = require('../lib/settrade-parser');
 const { normalizeWatchlistNewsStocks } = require('../lib/validation');
-const { reviewNewsItem } = require('../lib/news-quality');
+const { reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
 const { inspectNewsArticle, articleIdentity } = require('../lib/news-article');
+const { createNewsArticleLoader } = require('../lib/news-resolver');
+const { createNewsTransport } = require('../lib/news-fetch');
 const { newsAnalysisRequest, parseNewsAnalysis, safeAiDiagnostic } = require('../lib/news-analysis');
 const { createWatchlistNewsCacheKey } = require('./reliability');
 const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
@@ -85,14 +87,16 @@ async function readBoundedText(response, limit = MAX_RISKY_TARGET_BYTES) {
   return new TextDecoder().decode(bytes);
 }
 
-function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000 } = {}) {
+function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport(), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map() } = {}) {
   if (!Number.isInteger(analysisTimeoutMs) || analysisTimeoutMs < 1 || analysisTimeoutMs > 30000) throw Error('Invalid AI timeout');
   const analysisCache = new Map();
   let openAiCooldownUntil = 0;
   let openAiInFlight = null;
   let openAiQuotaBlocked = false;
-  const quarantine = new Map();
+  const hardGate = p1DisplayGateEnabled(env);
   const blockedArticleOrigins = new Set();
+  const loadArticle = createNewsArticleLoader({transport:articleFetch,now,allowGoogleRpc:env.SETSCOPE_GOOGLE_NEWS_RPC==='on'});
+  const articleTransport = articleFetch;
   const rssPending = new Map();
   const lastValidated = new Map();
   const riskyTargetCache = new Map();
@@ -161,9 +165,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     const cached = lastValidated.get(key);
     if (!cached || Number(now()) - cached.storedAt > NEWS_STALE_FALLBACK_MS) return null;
     const errors = [...new Set([...(Array.isArray(cached.value.errors) ? cached.value.errors : []), error?.status ? `google-rss-${error.status}` : 'google-rss-unavailable'])];
-    return { ...cached.value, items: cached.value.items.filter(item => quarantine.get(newsFingerprint(item))?.status !== 'REJECTED'),
+    return { ...cached.value, items: cached.value.items.filter(item => !quarantine.has(newsFingerprint(item)) && (!hardGate || reviewNewsForDisplay(item, {now:Number(now())}).status === 'VERIFIED')),
       errors, stale: true, partial: true, dataState: 'stale' };
   }
+
+  const articleCacheKey = item => hardGate ? JSON.stringify([item.url,item.title,item.pubDate,item.sourceName,item.matchedSymbols,item.matchedBrokerFirms]) : String(item.url || '');
 
   function cacheRiskyTarget(key, value, ttlMs) {
     riskyTargetCache.delete(key);
@@ -172,55 +178,35 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     return value;
   }
 
-  async function validateRiskyTarget(item, signal) {
-    const observed = (status, reason) => {
-      const resolvedUrl = status === 'REJECTED' && target ? canonicalUrl(target.href) : null;
-      return { status, reason, ...(resolvedUrl ? { resolvedUrl } : {}), verification: issueEvidence(resolvedUrl ? { ...item, url: resolvedUrl } : item,
-        { status, reason, basis: 'article' }, { checkedAt: Number(now()), originalUrl: item.url, pathway: 'google-rss/article' }) };
-    };
-    const key = String(item.url || '');
+  async function validateRiskyTarget(item, signal, budget) {
+    const key = articleCacheKey(item);
     const cached = riskyTargetCache.get(key);
     if (cached && Number(now()) < cached.expiresAt) return cached.value;
-    let target = allowedNewsUrl(key);
-    if (!target) return { accepted: false, status: 'REJECTED', reason: 'INVALID_ARTICLE_URL' };
+    const observed = (status, reason, resolvedUrl = null) => {
+      const subject = resolvedUrl ? { ...item, url: resolvedUrl } : item;
+      const value = { status, reason, ...(resolvedUrl ? { resolvedUrl } : {}), verification: issueEvidence(subject,
+        { status, reason, basis: 'article' }, { checkedAt: Number(now()), originalUrl: item.url, pathway: 'google-rss/article' }) };
+      return cacheRiskyTarget(key, value, status === 'UNVERIFIED' ? RISKY_TARGET_UNVERIFIED_CACHE_MS : RISKY_TARGET_CACHE_MS);
+    };
+    const recoverHeadline = item.source==='thunhoon'&&isSlugNewsTitle(item.title);
+    const loaded = await loadArticle(item.url,{signal,budget,maxBytes:recoverHeadline?1000000:256000});
+    if (!loaded.response) return observed('UNVERIFIED',loaded.reason);
+    const {target,response}=loaded;
+    if (hardGate && !publisherMatches({...item,url:target.href})) return observed('UNVERIFIED','PUBLISHER_IDENTITY_UNVERIFIED');
+    if (response.status === 404 || response.status === 410) return observed('REJECTED','ARTICLE_NOT_FOUND',canonicalUrl(target.href));
+    if (!response.ok || (!hardGate && !/(?:^|\.)thunhoon\.com$/i.test(target.hostname))
+      || !/text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type') || '')) return observed('UNVERIFIED','ARTICLE_NOT_VERIFIED');
     try {
-      let response;
-      for (let redirect = 0; redirect < 4; redirect++) {
-        if(signal?.aborted)throw Error('WATCHLIST_DEADLINE');
-        if (blockedArticleOrigins.has(target.origin)) return observed('UNVERIFIED', 'ARTICLE_ACCESS_DENIED');
-        response = await abortable(fetchImpl(target, {
-          redirect: 'manual',
-          headers: {
-            'user-agent': 'Mozilla/5.0 (compatible; SETscope news verifier/1.0)',
-            accept: 'text/html,application/xhtml+xml'
-          },
-          signal: signal || AbortSignal.timeout(7000)
-        }),signal);
-        if (![301, 302, 303, 307, 308].includes(response.status)) break;
-        const next = resolveAllowedNewsRedirect(target, response.headers.get('location'));
-        if (!next) return cacheRiskyTarget(key, observed('UNVERIFIED', 'ARTICLE_NOT_VERIFIED'), RISKY_TARGET_UNVERIFIED_CACHE_MS);
-        target = next;
-      }
-      if (response.status === 404 || response.status === 410) {
-        return cacheRiskyTarget(key, observed('REJECTED', 'ARTICLE_NOT_FOUND'), RISKY_TARGET_CACHE_MS);
-      }
-      if ([401,403].includes(response.status)) blockedArticleOrigins.add(target.origin);
-      if (!response.ok || !/(?:^|\.)thunhoon\.com$/i.test(target.hostname)
-        || !/text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type') || '')) {
-        return cacheRiskyTarget(key, observed('UNVERIFIED', 'ARTICLE_NOT_VERIFIED'), RISKY_TARGET_UNVERIFIED_CACHE_MS);
-      }
-      const html = await abortable(readBoundedText(response),signal);
-      if (response.url && articleIdentity(response.url) !== articleIdentity(target.href)) return { accepted: false, status: 'UNVERIFIED', reason: 'ARTICLE_RESPONSE_URL_MISMATCH' };
-      const inspected = inspectNewsArticle(html, { url: target.href, title: item.title });
-      const verification = inspected.status === 'VERIFIED'
-        ? issueEvidence({ ...item, url: inspected.resolvedUrl }, { status: 'VERIFIED', reason: inspected.reason, basis: 'article' },
-          { inspection: inspected, originalUrl: item.url, checkedAt: Number(now()), pathway: 'google-rss/article' })
-        : issueEvidence(item, { status: inspected.status, reason: inspected.reason, basis: 'article' }, { checkedAt: Number(now()), pathway: 'google-rss/article' });
-      return cacheRiskyTarget(key, { status: inspected.status, resolvedUrl: inspected.resolvedUrl, verification },
-        inspected.status === 'UNVERIFIED' ? RISKY_TARGET_UNVERIFIED_CACHE_MS : RISKY_TARGET_CACHE_MS);
-    } catch (_) {
-      return cacheRiskyTarget(key, observed('UNVERIFIED', 'ARTICLE_NOT_VERIFIED'), RISKY_TARGET_UNVERIFIED_CACHE_MS);
-    }
+      const html=await abortable(readBoundedText(response,recoverHeadline?1000000:MAX_RISKY_TARGET_BYTES),signal);
+      if(response.url&&articleIdentity(response.url)!==articleIdentity(target.href))return observed('UNVERIFIED','ARTICLE_RESPONSE_URL_MISMATCH');
+      const inspected=inspectNewsArticle(html,{url:target.href,title:item.title,strict:hardGate||recoverHeadline,recoverHeadline});
+      if(inspected.reason==='ARTICLE_ACCESS_DENIED'){loadArticle.blockOrigin(target);blockedArticleOrigins.add(target.origin);}
+      const projected={...item,...(inspected.headline?{title:inspected.headline}:{}),url:inspected.resolvedUrl||target.href,...(inspected.publishedAt?{pubDate:inspected.publishedAt}:{})};
+      const verification=issueEvidence(projected,{status:inspected.status,reason:inspected.reason,basis:'article'},
+        {inspection:inspected,originalTitle:inspected.headline?item.title:null,originalUrl:item.url,checkedAt:Number(now()),pathway:'google-rss/article'});
+      return cacheRiskyTarget(key,{status:inspected.status,reason:inspected.reason,headline:inspected.headline,resolvedUrl:projected.url,publishedAt:inspected.publishedAt,articleText:inspected.text,verification},
+        inspected.status==='UNVERIFIED'?RISKY_TARGET_UNVERIFIED_CACHE_MS:RISKY_TARGET_CACHE_MS);
+    } catch { return observed('UNVERIFIED','ARTICLE_NOT_VERIFIED'); }
   }
 
   function quarantineItem(item, evidence) {
@@ -230,24 +216,44 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     while (quarantine.size > 200) quarantine.delete(quarantine.keys().next().value);
   }
 
-  async function keepQualityItems(items, budget = { remaining: MAX_RISKY_TARGET_CHECKS }) {
+  async function keepQualityItems(items, budget = { remaining: MAX_RISKY_TARGET_CHECKS }, stock = null) {
     const kept = [];
     kept.unverifiedCount = 0;
     kept.assessments = [];
+    kept.withheldUrls = [];
     for (const original of items) {
       let item = original;
       let evidence = reviewNewsItem(item);
-      const risky = evidence.status === 'UNVERIFIED'
-        && (item.source === 'thunhoon' || /ทันหุ้น|thunhoon/i.test(item.sourceName || ''));
-      const cached = riskyTargetCache.get(String(item.url || ''));
+      const preliminary = reviewNewsForDisplay(item, {now:Number(now())});
+      const recoveryCandidate = item.source==='thunhoon'&&isSlugNewsTitle(item.title);
+      const risky = recoveryCandidate || (hardGate ? preliminary.status !== 'VERIFIED'
+        && ['ARTICLE_PROOF_REQUIRED','ARTICLE_URL_REQUIRED'].includes(preliminary.reason)
+        : evidence.status === 'UNVERIFIED' && (item.source === 'thunhoon' || /ทันหุ้น|thunhoon/i.test(item.sourceName || '')));
+      const cached = riskyTargetCache.get(articleCacheKey(item));
       const cachedEvidence = cached && Number(now()) < cached.expiresAt;
       if (risky && !budget.signal?.aborted && (cachedEvidence || budget.remaining > 0)) {
         if (!cachedEvidence) budget.remaining -= 1;
-        const validation = await validateRiskyTarget(item,budget.signal);
-        if (validation.resolvedUrl) item = { ...item, url: validation.resolvedUrl };
+        const validation = await validateRiskyTarget(item,budget.signal,budget);
+        if (validation.resolvedUrl) item = { ...item, ...(validation.headline?{title:validation.headline,rssTitle:original.title}:{}), url: validation.resolvedUrl, ...(validation.publishedAt ? {pubDate:validation.publishedAt} : {}) };
         evidence = reviewNewsItem(item, validation.verification || validation);
+        if (hardGate && stock && validation.status === 'VERIFIED'
+          && !matchesWatchlistStock(stock, item.title+' '+(validation.articleText || ''))) {
+          const key=newsFingerprint(item)+'|symbol:'+stock.symbol;
+          quarantine.delete(key);quarantine.set(key,{url:item.url,title:item.title,status:'UNVERIFIED',reason:'STOCK_IDENTITY_UNVERIFIED'});
+          while(quarantine.size>200)quarantine.delete(quarantine.keys().next().value);
+          kept.withheldUrls.push(item.url);kept.unverifiedCount++;continue;
+        }
       }
+      if (recoveryCandidate&&isSlugNewsTitle(item.title)) evidence=issueEvidence(item,{status:'UNVERIFIED',reason:'ARTICLE_HEADLINE_UNVERIFIED',basis:'article'},
+        {checkedAt:Number(now()),originalUrl:original.url,pathway:'google-rss/headline'});
+      if (hardGate && isGoogleNewsUrl(item.url)) {
+        evidence = issueEvidence(item,{status:'UNVERIFIED',reason:evidence.status==='UNVERIFIED'?evidence.reason:'WRAPPER_UNRESOLVED',basis:'article'},
+          {checkedAt:Number(now()),originalUrl:original.url,pathway:'google-rss/wrapper'});
+      }
+      const display = hardGate ? reviewNewsForDisplay(item, {now:Number(now()), verification:evidence}) : evidence;
+      // Display uncertainty must not overwrite a committed G1 positive decision.
       kept.assessments.push({ item, verification: evidence });
+      if (display.status !== 'VERIFIED') { if (display.status === 'UNVERIFIED') kept.unverifiedCount++; quarantineItem(item, evidence.status === 'UNVERIFIED' ? {...display,reason:evidence.reason} : display); kept.withheldUrls.push(item.url); continue; }
       if (evidence.status !== 'VERIFIED') { if (evidence.status === 'UNVERIFIED') kept.unverifiedCount++; quarantineItem(item, evidence); continue; }
       quarantine.delete(newsFingerprint(original));
       quarantine.delete(newsFingerprint(item));
@@ -259,7 +265,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
   async function getNews() {
     const cutoff = Number(now()) - 30 * 24 * 60 * 60 * 1000;
     const settled = [];
-    const articleBudget = { remaining: MAX_RISKY_TARGET_CHECKS };
+    const articleBudget = { remaining: MAX_RISKY_TARGET_CHECKS, httpRemaining: 12 };
     for (const [source, sourceName, query] of FEEDS) {
       try {
         const url = GOOGLE_RSS_PREFIX + encodeURIComponent(`${query} when:30d`) + '&hl=th&gl=TH&ceid=TH:th';
@@ -331,8 +337,9 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
     try {
       let response;
       for (let redirect = 0; redirect < 5; redirect++) {
-        if (blockedArticleOrigins.has(target.origin)) return '';
-        response = await fetchImpl(target, {
+        if (blockedArticleOrigins.has(target.origin) || loadArticle.isBlocked(target)) return '';
+        response = await articleTransport(target, {
+          maxBytes: 1_500_000,
           redirect: 'manual',
           headers: {
             'user-agent': 'Mozilla/5.0 (compatible; SETscope news summarizer/1.0)',
@@ -346,7 +353,8 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         target = resolveAllowedNewsRedirect(target, location);
         if (!target) return '';
       }
-      if ([401,403].includes(response.status)) blockedArticleOrigins.add(target.origin);
+      if ([401,403].includes(response.status)) {blockedArticleOrigins.add(target.origin);loadArticle.blockOrigin(target);}
+      if(response.status===429)loadArticle.blockOrigin(target,300000);
       const finalUrl = allowedNewsUrl(response.url || target.href);
       if (!response.ok || !finalUrl || !/text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type') || '')) return '';
       if (articleIdentity(finalUrl.href) !== articleIdentity(target.href)) return '';
@@ -372,6 +380,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
       }
       const html = new TextDecoder().decode(bytes);
       const inspection = inspectNewsArticle(html, { url: finalUrl.href, title: item.title });
+      if(inspection.reason==='ARTICLE_ACCESS_DENIED'){loadArticle.blockOrigin(target);blockedArticleOrigins.add(target.origin);}
       return inspection.status === 'VERIFIED' ? inspection.text : '';
     } catch (_) {
       return '';
@@ -467,15 +476,30 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, lo
         matchedSymbols:matchesWatchlistStock(stock,title+' '+snippet)?[stock.symbol]:[]});
     }).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
       &&Date.parse(item.pubDate)>=Number(now())-30*86400000&&Date.parse(item.pubDate)<=Number(now())+600000&&item.matchedSymbols.length);
-    const quality=await keepQualityItems(parsed,budget);
+    const quality=await keepQualityItems(parsed,budget,stock);
     return {items:quality.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:quality.unverifiedCount,
-      matchedCandidates:parsed.length,qualityExcluded:parsed.length-quality.length,limited:blocks.length>100,
+      matchedCandidates:parsed.length,qualityExcluded:parsed.length-quality.length,limited:blocks.length>100,withheldUrls:quality.withheldUrls,
       rejectedKeys:parsed.filter(item=>reviewNewsItem(item).status==='REJECTED'||quarantine.get(newsFingerprint(item))?.status==='REJECTED').map(newsFingerprint)};
   }
   const getWatchlistNews=createWatchlistNews({fetchStock:fetchWatchlistStock,registrySearch,now,deadlineMs:watchlistDeadlineMs,
-    isRejected:item=>quarantine.get(newsFingerprint(item))?.status==='REJECTED'});
+    isRejected:item=>hardGate ? quarantine.has(newsFingerprint(item)) : quarantine.get(newsFingerprint(item))?.status==='REJECTED',
+    canDisplay:item=>!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED'});
 
-  return { analyse, getNews, getWatchlistNews, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
+  function filterForDisplay(payload) {
+    if(!hardGate)return {...payload,p1DisplayGate:false,items:(payload.items||[]).filter(item=>!(item?.source==='thunhoon'&&isSlugNewsTitle(item.title)))};
+    const candidates=Array.isArray(payload?.items)?payload.items:[];
+    const kept = candidates.filter(item => {
+      const proof = reviewNewsForDisplay(item,{now:Number(now())});
+      if (proof.status !== 'VERIFIED') { if(item?.url)quarantineItem(item,proof); return false; }
+      return !quarantine.has(newsFingerprint(item));
+    });
+    // Only retract URLs already present in this response/owner scope; never export
+    // the shared quarantine registry or another account's stock discoveries.
+    const withheldUrls=[...new Set([...(Array.isArray(payload.withheldUrls)?payload.withheldUrls:[]),
+      ...candidates.filter(item=>!kept.includes(item)).map(item=>item?.url)])].filter(url=>allowedNewsUrl(url)).slice(0,200);
+    return { ...payload, p1DisplayGate:true, ...(withheldUrls.length ? {withheldUrls} : {}), items:kept, ...(!payload.page && typeof payload.total==='number' ? {total:kept.length} : {}), ...(kept.length < candidates.length ? {partial:true,dataState:kept.length?'partial':'unavailable'} : {}) };
+  }
+  return { analyse, getNews, getWatchlistNews, filterForDisplay, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
 }
 
 module.exports = { FEEDS, OUTLET_SOURCE, createNewsService, fallbackNewsSummary, parseRetryAfter, sourceFromOutlet };

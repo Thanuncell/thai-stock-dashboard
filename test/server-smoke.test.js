@@ -6,6 +6,9 @@ const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+process.env.SETSCOPE_NEWS_EVIDENCE = 'write';
+delete process.env.SETSCOPE_P1_DISPLAY_GATE;
+delete process.env.SETSCOPE_GOOGLE_NEWS_RPC;
 process.env.SUPABASE_URL = 'https://project.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test-publishable-key';
 delete process.env.SUPABASE_SECRET_KEY;
@@ -53,6 +56,8 @@ globalThis.fetch = async (input, init = {}) => {
       symbol: 'PTT.BK', quoteType: 'EQUITY', longname: 'PTT Public Company Limited', exchange: 'SET'
     }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
+  if(url==='https://news.google.com/articles/1')return new NativeResponse('',{status:302,headers:{location:'https://thunhoon.com/article-123456'}});
+  if(url==='https://thunhoon.com/article-123456')return new NativeResponse('<script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline:'PTT update',datePublished:new Date().toISOString(),articleBody:('PTT disclosed operating results and its investment timetable. ').repeat(5)})+'</script>',{headers:{'content-type':'text/html'}});
   if (url.startsWith('https://news.google.com/rss/search')) {
     if (decodeURIComponent(url).includes('site:kaohoon.com')) return new NativeResponse('unavailable', { status: 503 });
     const now = new Date().toUTCString();
@@ -64,6 +69,8 @@ globalThis.fetch = async (input, init = {}) => {
   throw new Error(`Unexpected upstream request: ${url}`);
 };
 
+const restoreNewsHttps=require('./fixtures/news-https.cjs').installNewsHttpsFixture(globalThis.fetch);
+test.after(restoreNewsHttps);
 const { server } = require('../server');
 
 function request(base, pathname, options = {}) {
@@ -206,13 +213,13 @@ test('backend API response contracts remain stable before service extraction', a
   assert.equal(archive.maxAgeDays, 365);
 
   const watchlistNews = JSON.parse((await request(base, '/api/watchlist-news?stocks=%5B%7B%22symbol%22%3A%22PTT%22%7D%5D', { headers })).body);
-  assert.deepEqual(Object.keys(watchlistNews).sort(), ['asOf', 'dataState', 'fetchedAt', 'items', 'limited', 'matchedCandidates', 'maxAgeDays', 'partial', 'qualityExcluded', 'source', 'stale', 'stockStatus', 'total']);
+  assert.deepEqual(Object.keys(watchlistNews).sort(), ['asOf', 'dataState', 'fetchedAt', 'items', 'limited', 'matchedCandidates', 'maxAgeDays', 'p1DisplayGate', 'partial', 'qualityExcluded', 'source', 'stale', 'stockStatus', 'total']);
   assert.equal(Number.isInteger(watchlistNews.matchedCandidates), true);
   assert.equal(Number.isInteger(watchlistNews.qualityExcluded), true);
   assert.ok(watchlistNews.qualityExcluded <= watchlistNews.matchedCandidates);
 
   const news = JSON.parse((await request(base, '/api/news', { headers })).body);
-  assert.deepEqual(Object.keys(news).sort(), ['asOf', 'dataState', 'errors', 'fetchedAt', 'items', 'maxAgeDays', 'partial', 'source', 'stale']);
+  assert.deepEqual(Object.keys(news).sort(), ['asOf', 'dataState', 'errors', 'fetchedAt', 'items', 'maxAgeDays', 'p1DisplayGate', 'partial', 'source', 'stale']);
 
   const analysis = JSON.parse((await request(base, '/api/news-analysis', {
     method: 'POST',
