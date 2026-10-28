@@ -26,6 +26,7 @@ const FEEDS = Object.freeze([
   ['efinance', 'efinance', 'site:efinancethai.com'],
   ['other', 'กรุงเทพธุรกิจ', 'site:bangkokbiznews.com'],
   ['other', 'ฐานเศรษฐกิจ', 'site:thansettakij.com'],
+  ['other', 'Investing.com', 'site:th.investing.com'],
   ['broker', 'โบรกเกอร์', BROKER_FIRMS.map(firm => `"${firm.companyName.replace(/^บริษัท/, '')}"`).join(' OR ')]
 ]);
 

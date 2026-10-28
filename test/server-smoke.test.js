@@ -263,7 +263,7 @@ test('partial provider outages degrade independently without fabricating zero va
   assert.equal(newsResponse.status, 200);
   const news = JSON.parse(newsResponse.body);
   assert.ok(news.items.length > 0);
-  assert.deepEqual(news.errors, ['kaohoon', 'settrade', 'settrade', 'official', 'infoquest', 'efinance', 'broker']);
+  assert.deepEqual(news.errors, require('../server/news-service').FEEDS.slice(1).map(([source]) => source));
   assert.equal(news.dataState, 'partial');
   assert.equal(news.partial, true);
 });
