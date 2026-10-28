@@ -6,6 +6,7 @@ const navigationPageFixtures = require('./fixtures/news-quality-navigation-pages
 
 const { BROKER_FIRMS, decorateBrokerAttribution, matchBrokerFirms } = require('../lib/broker-news');
 const { createNewsService } = require('./fixtures/news-service.cjs');
+const { FEEDS } = require('../server/news-service');
 const { NEWS_QUALITY_DECISION, classifyNewsItem } = require('../lib/news-quality');
 
 function rss(items) {
@@ -591,7 +592,7 @@ test('Google RSS requests carry a real q parameter for News and Watchlist News',
   await service.getNews();
   await service.getWatchlistNews([{ symbol: 'PTT', name: 'ปตท.' }]);
 
-  assert.equal(urls.length, 9, 'one request per configured feed plus one Watchlist request');
+  assert.equal(urls.length, FEEDS.length + 1, 'one request per configured feed plus one Watchlist request');
   assert.ok(urls.at(-1).searchParams.get('q').includes('PTT'));
 });
 
@@ -617,13 +618,13 @@ test('cold-start 404 remains unavailable without retries and a later valid respo
   const unavailable = await service.getNews();
   assert.equal(unavailable.dataState, 'unavailable');
   assert.equal(unavailable.items.length, 0);
-  assert.equal(calls, 8, '404 is not retried beyond the normal configured feeds');
+  assert.equal(calls, FEEDS.length, '404 is not retried beyond the normal configured feeds');
 
   mode = 'success';
   const recovered = await service.getNews();
   assert.equal(recovered.dataState, 'fresh');
   assert.equal(recovered.items.length, 1);
-  assert.equal(calls, 16, 'recovery performs exactly one normal pass over configured feeds');
+  assert.equal(calls, FEEDS.length * 2, 'recovery performs exactly one normal pass over configured feeds');
 });
 
 test('Google RSS timeout enters shared cooldown, serves validated stale data and recovers', async () => {
@@ -660,5 +661,5 @@ test('Google RSS timeout enters shared cooldown, serves validated stale data and
   mode = 'success';
   const recovered = await service.getNews();
   assert.equal(recovered.dataState, 'fresh');
-  assert.equal(calls - beforeFailure, 9, 'recovery performs one normal eight-feed pass');
+  assert.equal(calls - beforeFailure, FEEDS.length + 1, 'recovery performs one normal configured-feed pass');
 });
