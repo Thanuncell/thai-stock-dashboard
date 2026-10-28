@@ -37,7 +37,7 @@ const TYPES = {
   '.ico': 'image/x-icon'
 };
 const PUBLIC_FILES = new Set([
-  '/index.html', '/app.js', '/auth.js', '/theme-init.js', '/client/domain.mjs',
+  '/index.html', '/app.js', '/auth.js', '/theme-init.js', '/client/domain.mjs', '/lib/news-content.js',
   '/style.css', '/analysis.css', '/about.html', '/privacy.html', '/terms.html', '/disclaimer.html'
 ]);
 
