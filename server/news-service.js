@@ -24,6 +24,8 @@ const FEEDS = Object.freeze([
   ['official', 'ธนาคารแห่งประเทศไทย', 'site:bot.or.th'],
   ['infoquest', 'Infoquest', '"Infoquest"'],
   ['efinance', 'efinance', 'site:efinancethai.com'],
+  ['other', 'กรุงเทพธุรกิจ', 'site:bangkokbiznews.com'],
+  ['other', 'ฐานเศรษฐกิจ', 'site:thansettakij.com'],
   ['broker', 'โบรกเกอร์', BROKER_FIRMS.map(firm => `"${firm.companyName.replace(/^บริษัท/, '')}"`).join(' OR ')]
 ]);
 
@@ -36,11 +38,6 @@ const OUTLET_SOURCE = Object.freeze([
   [/efinance|อีไฟแนนซ์/i, 'efinance']
 ]);
 
-const isBangkokOutlet = name => /^(?:กรุงเทพธุรกิจ|bangkokbiznews)$/i.test(String(name || '').trim());
-const isThansettakijDiscovery = item => {
-  if(/^(?:ฐานเศรษฐกิจ|thansettakij(?:\.com)?)$/i.test(String(item.sourceName||'').trim()))return true;
-  try{return ['thansettakij.com','www.thansettakij.com'].includes(new URL(item.url).hostname);}catch{return false;}
-};
 const GOOGLE_RSS_PREFIX = 'https://news.google.com/rss/search?q=';
 const GOOGLE_RSS_BACKOFF_BASE_MS = 30_000;
 const GOOGLE_RSS_BACKOFF_MAX_MS = 15 * 60 * 1000;
@@ -280,8 +277,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
         }).filter(item => {
           const published = Date.parse(item.pubDate);
           return item.title && allowedNewsUrl(item.url)
-            && Number.isFinite(published) && published >= cutoff && (!bangkokEnabled || !isBangkokOutlet(item.sourceName))
-            && (!thansettakijEnabled || !isThansettakijDiscovery(item));
+            && Number.isFinite(published) && published >= cutoff;
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
         const reviewed = await keepQualityItems(parsed, articleBudget);
         settled.push({ status: 'fulfilled', value: reviewed.slice(0, 8), uncertain: reviewed.unverifiedCount, assessments: reviewed.assessments });
@@ -291,7 +287,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     }
     const extra = await bangkok.getNews();
     const thanResult = await thansettakij.getNews();
-    const items = dedupeNewsItems([...extra.items,...thanResult.items,...settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])])
+    const items = dedupeNewsItems([...settled.flatMap(result => result.status === 'fulfilled' ? result.value : []),...extra.items,...thanResult.items])
       .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).map(withNewsRulesSummary).filter(Boolean);
     const errors = [...settled.map((result, index) => result.status === 'rejected' ? FEEDS[index][0] : null).filter(Boolean),...(extra.errors.length?['bangkokbiznews']:[]),...(thanResult.errors.length?['thansettakij']:[])];
     const cooldownError = settled.find(result => result.status === 'rejected' && result.reason?.providerCooldown)?.reason;
@@ -467,8 +463,6 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       return decorateBrokerAttribution({title,url,pubDate,snippet,source:sourceFromOutlet(outlet),sourceName:outlet||'ข่าวหุ้นไทย',
         matchedSymbols:matchesWatchlistStock(stock,title+' '+snippet)?[stock.symbol]:[]});
     }).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
-      &&(!bangkokEnabled || !isBangkokOutlet(item.sourceName))
-      &&(!thansettakijEnabled || !isThansettakijDiscovery(item))
       &&Date.parse(item.pubDate)>=Number(now())-30*86400000&&Date.parse(item.pubDate)<=Number(now())+600000&&item.matchedSymbols.length);
     const quality=await keepQualityItems(parsed,budget,stock);
     return {items:quality.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:quality.unverifiedCount,
