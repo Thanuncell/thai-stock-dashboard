@@ -58,3 +58,10 @@ test('dedicated publisher queries supplement every existing Google RSS query wit
  const {FEEDS}=require('../server/news-service');const legacy=['site:thunhoon.com','site:kaohoon.com','site:settrade.com','site:set.or.th','site:bot.or.th','"Infoquest"','site:efinancethai.com'];for(const query of [...legacy,'site:bangkokbiznews.com','site:thansettakij.com'])assert.ok(FEEDS.some(x=>x[2]===query));assert.equal(FEEDS.filter(x=>x[0]==='broker').length,1);
  const queries=[];const service=createNewsService({env:{},fetchImpl:async value=>{queries.push(new URL(value).searchParams.get('q'));return new Response('<rss><channel></channel></rss>');},articleFetch:async()=>{throw Error('adapters OFF');}});await service.getNews();assert.equal(queries.length,FEEDS.length);assert.equal(new Set(queries).size,FEEDS.length);
 });
+
+test('watchlist RSS starts independently while both optional adapters are pending',async()=>{
+ let release;const held=new Promise(resolve=>{release=resolve;}),calls=[];let googleCalls=0;
+ const service=createNewsService({env:{SETSCOPE_NEWS_BANGKOKBIZNEWS:'on',SETSCOPE_NEWS_THANSETTAKIJ:'on'},fetchImpl:async()=>{googleCalls++;return new Response(rss);},articleFetch:async value=>{calls.push(String(value));await held;return new Response('unavailable',{status:503});}});
+ const pending=service.getWatchlistNews('PTT',{ownerId:'independent-owner'});try{await new Promise(resolve=>setImmediate(resolve));assert.equal(googleCalls,1,'Google RSS must not wait for an adapter response');assert.equal(calls.length,2,'optional discovery waits run concurrently');}finally{release();}
+ assert.equal((await pending).items.length,3);
+});

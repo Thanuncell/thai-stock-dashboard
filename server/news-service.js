@@ -286,8 +286,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
         settled.push({ status: 'rejected', reason });
       }
     }
-    const extra = await bangkok.getNews();
-    const thanResult = await thansettakij.getNews();
+    const [extra, thanResult] = await Promise.all([bangkok.getNews(), thansettakij.getNews()]);
     const items = dedupeNewsItems([...settled.flatMap(result => result.status === 'fulfilled' ? result.value : []),...extra.items,...thanResult.items])
       .sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate)).map(withNewsRulesSummary).filter(Boolean);
     const errors = [...settled.map((result, index) => result.status === 'rejected' ? FEEDS[index][0] : null).filter(Boolean),...(extra.errors.length?['bangkokbiznews']:[]),...(thanResult.errors.length?['thansettakij']:[])];
@@ -471,17 +470,21 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       rejectedKeys:parsed.filter(item=>reviewNewsItem(item).status==='REJECTED'||quarantine.get(newsFingerprint(item))?.status==='REJECTED').map(newsFingerprint)};
   }
   async function fetchWatchlistStock(stock,budget,signal) {
-    const extra=await bangkok.getNews({stock,signal});
-    const thanResult=await thansettakij.getNews({stock,signal});
-    try {
-      const google=await fetchGoogleWatchlistStock(stock,budget,signal);
-      return {...google,items:dedupeNewsItems([...google.items,...extra.items,...thanResult.items]).map(withNewsRulesSummary).filter(Boolean),
-        matchedCandidates:google.matchedCandidates+extra.items.length+thanResult.items.length,unverifiedCount:google.unverifiedCount+extra.unverifiedCount+extra.errors.length+thanResult.unverifiedCount+thanResult.errors.length};
-    } catch(error) {
-      if(!extra.items.length&&!thanResult.items.length)throw error;
+    // Start primary discovery immediately. Capture rejection while optional
+    // sources finish so their latency never delays the RSS request itself.
+    const googlePending=fetchGoogleWatchlistStock(stock,budget,signal)
+      .then(value=>({value}),error=>({error}));
+    const [extra,thanResult,googleResult]=await Promise.all([
+      bangkok.getNews({stock,signal}),thansettakij.getNews({stock,signal}),googlePending
+    ]);
+    if(googleResult.error) {
+      if(!extra.items.length&&!thanResult.items.length)throw googleResult.error;
       const retained=dedupeNewsItems([...extra.items,...thanResult.items]);
       return {items:retained.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:1,matchedCandidates:retained.length,qualityExcluded:0,limited:false};
     }
+    const google=googleResult.value;
+    return {...google,items:dedupeNewsItems([...google.items,...extra.items,...thanResult.items]).map(withNewsRulesSummary).filter(Boolean),
+      matchedCandidates:google.matchedCandidates+extra.items.length+thanResult.items.length,unverifiedCount:google.unverifiedCount+extra.unverifiedCount+extra.errors.length+thanResult.unverifiedCount+thanResult.errors.length};
   }
   const getWatchlistNewsCore=createWatchlistNews({fetchStock:fetchWatchlistStock,registrySearch,now,deadlineMs:watchlistDeadlineMs,
     isRejected:item=>hardGate ? quarantine.has(newsFingerprint(item)) : quarantine.get(newsFingerprint(item))?.status==='REJECTED',
