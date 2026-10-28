@@ -5,7 +5,7 @@ const { reviewNewsItem } = require('../lib/news-quality');
 const { createNewsArchiveService,reviewArchivedNewsRow } = require('../server/news-archive-service');
 const { issueEvidence,canonicalUrl,rowSubjectHash } = require('../lib/news-evidence');
 const { newsFingerprint } = require('../lib/broker-news');
-const { createNewsService } = require('../server/news-service');
+const { createNewsService } = require('./fixtures/news-service.cjs');
 const { getAssessments } = require('../lib/news-evidence');
 
 test('RSS discovery, article probe and archive retain private trusted evidence end to end',async()=>{

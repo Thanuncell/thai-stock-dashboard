@@ -1,7 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const { allowedNewsUrl } = require('../lib/news-policy');
+const { allowedNewsUrl, p1DisplayGateEnabled, isSlugNewsTitle } = require('../lib/news-policy');
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
@@ -72,6 +72,7 @@ function createNewsArchiveService({
   const secretKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY || '';
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/, '');
   const configured = Boolean(/^https:\/\//.test(baseUrl) && secretKey);
+  const hardGate = p1DisplayGateEnabled(env);
   const evidenceMode = ['read', 'write'].includes(env.SETSCOPE_NEWS_EVIDENCE) ? env.SETSCOPE_NEWS_EVIDENCE : '';
   const safeScanChunkSize = Math.max(1, Math.min(1000, Number.parseInt(scanChunkSize, 10) || ARCHIVE_SCAN_CHUNK_SIZE));
   const safeMaxScanRows = Math.max(safeScanChunkSize, Math.min(100_000, Number.parseInt(maxScanRows, 10) || MAX_ARCHIVE_SCAN_ROWS));
@@ -147,6 +148,7 @@ function createNewsArchiveService({
     if (evidenceMode === 'write') {
       for (const assessment of assessments.slice(0, 200)) {
         if (assessment.verification?.status === 'VERIFIED' || !trustedEvidence(assessment.item, assessment.verification)) continue;
+        if(assessment.verification.status==='UNVERIFIED'&&reviewNewsItem(assessment.item,assessment.verification).status==='REJECTED')continue;
         const row = toRow(assessment.item, assessment.verification, true);
         if (row) candidates.push(row);
       }
@@ -216,6 +218,7 @@ function createNewsArchiveService({
     const item = {
       fingerprint: row?.fingerprint,
       title: row?.title,
+      ...(row?.verification_provenance?.originalTitle?{rssTitle:row.verification_provenance.originalTitle}:{}),
       url: safeUrl?.href || '',
       source: row?.source,
       sourceName: row?.source_name,
@@ -231,9 +234,9 @@ function createNewsArchiveService({
     };
     const verification = reviewArchivedNewsRow(row);
     const restored = {...item,verification};
-    const display = evidenceMode ? reviewNewsForDisplay(restored,{now:Number(now())}) : verification;
+    const display = hardGate || restored.source==='thunhoon'&&isSlugNewsTitle(restored.title) ? reviewNewsForDisplay(restored,{now:Number(now())}) : verification;
     if (display.status !== 'VERIFIED') {
-      if (evidenceMode) { quarantine.delete(newsFingerprint(item)); quarantine.set(newsFingerprint(item),{url:item.url,title:item.title,status:display.status,reason:display.reason}); while(quarantine.size>200)quarantine.delete(quarantine.keys().next().value); }
+      if (hardGate) { quarantine.delete(newsFingerprint(item)); quarantine.set(newsFingerprint(item),{url:item.url,title:item.title,status:display.status,reason:display.reason}); while(quarantine.size>200)quarantine.delete(quarantine.keys().next().value); }
       return null;
     }
     return safeUrl ? withNewsRulesSummary(restored) : null;
@@ -307,7 +310,7 @@ function createNewsArchiveService({
       const symbolMatch = !symbol || item.matchedSymbols.includes(symbol);
       const searchMatch = !normalizedQuery || [item.title, item.sourceName, item.snippet, item.analysisSummary]
         .some(value => String(value || '').toLocaleLowerCase('th').includes(normalizedQuery));
-      return (!evidenceMode || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED' && !quarantine.has(newsFingerprint(item))) && sourceMatch && symbolMatch && searchMatch && !excluded.has(newsFingerprint(item));
+      return (!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED' && !quarantine.has(newsFingerprint(item))) && sourceMatch && symbolMatch && searchMatch && !excluded.has(newsFingerprint(item));
     });
   }
 

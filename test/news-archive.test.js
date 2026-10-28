@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const navigationPageFixtures = require('./fixtures/news-quality-navigation-pages.json');
 
 const { createNewsArchiveService } = require('../server/news-archive-service');
-const { createNewsService } = require('../server/news-service');
+const { createNewsService } = require('./fixtures/news-service.cjs');
 const { createHash } = require('node:crypto');
 const { newsFingerprint } = require('../lib/broker-news');
 

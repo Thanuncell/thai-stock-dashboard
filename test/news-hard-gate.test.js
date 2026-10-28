@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const quality=require('../lib/news-quality'),{inspectNewsArticle}=require('../lib/news-article');
 const {article,env,memoryTransport}=require('./fixtures/news-evidence.cjs');
-const {createNewsService}=require('../server/news-service');
+const {createNewsService}=require('./fixtures/news-service.cjs');
 const gate=(item,options)=>quality.reviewNewsForDisplay?quality.reviewNewsForDisplay(item,options):quality.reviewNewsItem(item);
 const title='PTT รายงานผลประกอบการและแผนลงทุนล่าสุด';
 const date=new Date(Date.now()-60000).toISOString();
@@ -31,7 +31,7 @@ test('P1: write-mode discovery verifies every publisher and quarantines PDFs wit
 });
 test('P1: browser selectors reject missing, metadata and negative claims before Featured/Latest',async()=>{
  const d=await import('../client/domain.mjs');const valid={title,url:'https://thunhoon.com/article-123456',pubDate:date,source:'thunhoon',sourceName:'Thunhoon',verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}};
- const selected=d.selectNewsForDisplay([valid,{...valid,url:valid.url+'a',verification:undefined},{...valid,url:valid.url+'b',verification:{status:'VERIFIED',basis:'metadata'}},{...valid,url:valid.url+'c',verification:{status:'REJECTED'}}]);
+ const selected=d.selectNewsForDisplay([valid,{...valid,url:valid.url+'a',verification:undefined},{...valid,url:valid.url+'b',verification:{status:'VERIFIED',basis:'metadata'}},{...valid,url:valid.url+'c',verification:{status:'REJECTED'}}],{hardGate:true});
  assert.equal(selected.filtered.length,1);
 });
 
@@ -74,7 +74,7 @@ test('P1: a serialized positive cannot cross the shared server response gate',()
 test('P1: negative and unknown cached article claims cannot reach browser retention',async()=>{
  const d=await import('../client/domain.mjs');const valid={title,url:'https://thunhoon.com/article-123456',pubDate:date,matchedSymbols:['PTT'],verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}};
  assert.equal(d.retainWatchlistNews([valid,{...valid,url:valid.url+'x',verification:{status:'UNVERIFIED'}}],[{symbol:'PTT'}]).length,1);
- assert.equal(d.canDisplayNews({...valid,url:'https://untrusted.example/news/1'}),false);
+ assert.equal(d.canDisplayNews({...valid,url:'https://untrusted.example/news/1'},Date.now(),{hardGate:true}),false);
 });
 
 test('P1: legacy article proof without publication evidence remains stored VERIFIED but is held for review',async()=>{

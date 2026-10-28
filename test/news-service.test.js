@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const navigationPageFixtures = require('./fixtures/news-quality-navigation-pages.json');
 
 const { BROKER_FIRMS, decorateBrokerAttribution, matchBrokerFirms } = require('../lib/broker-news');
-const { createNewsService } = require('../server/news-service');
+const { createNewsService } = require('./fixtures/news-service.cjs');
 const { NEWS_QUALITY_DECISION, classifyNewsItem } = require('../lib/news-quality');
 
 function rss(items) {

@@ -3,7 +3,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),net=require('node:net');
 const {spawn,execFile}=require('node:child_process'),{promisify}=require('node:util'),{randomBytes,createHmac}=require('node:crypto');
 const {Pool}=require('pg'),{createNewsArchiveService,archiveFingerprint}=require('../server/news-archive-service');
-const {createNewsService}=require('../server/news-service'),{reviewNewsForDisplay}=require('../lib/news-quality'),{inspectNewsArticle}=require('../lib/news-article');
+const {createNewsService}=require('./fixtures/news-service.cjs'),{reviewNewsForDisplay}=require('../lib/news-quality'),{inspectNewsArticle}=require('../lib/news-article');
 const {decodeXml}=require('../lib/settrade-parser'),{mergeStockNews}=require('../server/watchlist-news');
 const {issueEvidence}=require('../lib/news-evidence');
 const run=promisify(execFile),repo=path.join(__dirname,'..');
@@ -19,7 +19,7 @@ test('P1: discovery to actual PostgREST HTTP to PostgreSQL 17 to restarted reade
  const pgPort=await port(),httpPort=await port(),base='http://127.0.0.1:'+httpPort;
  const config={host:'127.0.0.1',port:pgPort,user:'p1_admin',password,database:'postgres'};
  function jwt(role){const enc=x=>Buffer.from(JSON.stringify(x)).toString('base64url');const value=enc({alg:'HS256',typ:'JWT'})+'.'+enc({role,exp:Math.floor(Date.now()/1000)+900});return value+'.'+createHmac('sha256',secret).update(value).digest('base64url');}
- const env={SUPABASE_URL:'https://fixture.invalid',SUPABASE_SECRET_KEY:jwt('service_role'),SETSCOPE_NEWS_EVIDENCE:'write'};
+ const env={SUPABASE_URL:'https://fixture.invalid',SUPABASE_SECRET_KEY:jwt('service_role'),SETSCOPE_NEWS_EVIDENCE:'write',SETSCOPE_P1_DISPLAY_GATE:'on',SETSCOPE_GOOGLE_NEWS_RPC:'on'};
  const httpTrace=[];
  const transport=async(input,init={})=>{
   const u=new URL(input);assert.equal(u.origin,'https://fixture.invalid');assert.ok(u.pathname.startsWith('/rest/v1/'));
@@ -110,6 +110,15 @@ test('P1: discovery to actual PostgREST HTTP to PostgreSQL 17 to restarted reade
    const row=(await pool.query('select * from news_archive where url=$1',[fake.url])).rows[0];
    assert.equal(row.verification_basis,'metadata');assert.notEqual(row.verification_provenance.displayPolicy,'news-display-1');
    assert.equal((await archive('read').list()).items.some(x=>x.url===fake.url),false);
+  });
+  await t.test('independent display OFF preserves G1 write and metadata visibility through HTTP',async()=>{
+   const off=createNewsArchiveService({env:{...env,SETSCOPE_P1_DISPLAY_GATE:'off'},fetchImpl:transport});
+   const list=await off.list();assert.ok(list.items.some(x=>x.url==='https://thunhoon.com/article-http-spoof'));
+   const baseline=(await pool.query("select count(*)::int n from news_archive")).rows[0].n;
+   const fresh={title:'PTT metadata compatibility',url:'https://thunhoon.com/article-g1-off',source:'thunhoon',sourceName:'Thunhoon',pubDate:date,snippet:'Synthetic metadata for default-off G1 compatibility'};
+   assert.equal((await off.ingest([fresh])).ingested,1);assert.equal((await pool.query("select count(*)::int n from news_archive")).rows[0].n,baseline+1);
+   assert.ok((await off.list()).items.some(x=>x.url===fresh.url));
+   assert.equal((await archive('read').list()).items.some(x=>x.url===fresh.url),false);
   });
   await t.test('anon/authenticated HTTP roles cannot read or invoke evidence RPC; RLS remains forced',async()=>{
    for(const role of ['anon','authenticated']){

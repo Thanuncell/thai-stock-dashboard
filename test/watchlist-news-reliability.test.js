@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {createNewsService}=require('../server/news-service');
+const {createNewsService}=require('./fixtures/news-service.cjs');
 const {matchesWatchlistStock}=require('../lib/watchlist-news-identity');
 const {normalizeWatchlistNewsStocks}=require('../lib/validation');
 const NOW=Date.parse('2026-10-27T12:00:00Z');

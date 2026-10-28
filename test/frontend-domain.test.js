@@ -16,7 +16,7 @@ test('Watchlist retention fails closed for missing/unknown verification and pres
  const time=Date.now(),good={title:'Verified public news',url:'https://www.kaohoon.com/news/strict',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}};
  const bad=[undefined,{}, {status:'UNKNOWN'},{status:'UNVERIFIED'},{status:'REJECTED'}].map((verification,i)=>({...good,url:good.url+'/'+i,verification}));
  const expired={...good,url:good.url+'/expired',pubDate:new Date(time-31*86400000).toISOString()};
- const added=domain.retainWatchlistNews([good,...bad,expired],[{symbol:'PTT'},{symbol:'OR'},{symbol:'KBANK'}],time);
+ const added=domain.retainWatchlistNews([good,...bad,expired],[{symbol:'PTT'},{symbol:'OR'},{symbol:'KBANK'}],time,{hardGate:true});
  assert.equal(added.length,1);assert.deepEqual(added[0].matchedSymbols,['PTT','OR']);
  const removed=domain.retainWatchlistNews(added,[{symbol:'PTT'}],time);assert.equal(removed.length,1);assert.deepEqual(removed[0].matchedSymbols,['PTT']);
  assert.deepEqual(domain.retainWatchlistNews(added,[{symbol:'KBANK'}],time),[]);

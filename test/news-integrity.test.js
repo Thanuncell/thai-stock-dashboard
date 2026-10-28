@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {inspectNewsArticle}=require('../lib/news-article');
 const {reviewNewsItem,classifyNewsItem}=require('../lib/news-quality');
-const {createNewsService}=require('../server/news-service');
+const {createNewsService}=require('./fixtures/news-service.cjs');
 const {createNewsArchiveService,planNewsArchiveCleanup}=require('../server/news-archive-service');
 const {withNewsRulesSummary,fallbackNewsSummary}=require('../lib/news-summary');
 const url='https://www.kaohoon.com/news/123',title='Company earnings announcement';

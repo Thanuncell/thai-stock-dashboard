@@ -124,6 +124,7 @@ setInterval(() => {
 const observability = createObservability();
 const responseCache = createMemoryCache({ maxEntries: 200 });
 const providerFetch = observability.observedFetch(globalThis.fetch);
+const articleFetch = observability.observedFetch(require('./lib/news-fetch').createNewsTransport());
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
@@ -146,7 +147,7 @@ class NewsQuarantine extends Map {
   delete(key) { const removed=super.delete(key); if(removed)this.revision++; return removed; }
 }
 const newsQuarantine = new NewsQuarantine();
-const newsService = createNewsService({ fetchImpl: providerFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
+const newsService = createNewsService({ fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
 const newsArchiveService = createNewsArchiveService({ fetchImpl: providerFetch, quarantine:newsQuarantine });
 const settradeProvider = createSettradeProvider({ fetchImpl: providerFetch });
 const marketOverviewService = createMarketOverviewService({ provider: settradeProvider });

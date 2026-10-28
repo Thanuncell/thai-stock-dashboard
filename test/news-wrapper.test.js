@@ -1,18 +1,18 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
-const {createNewsService}=require('../server/news-service');
+const {createNewsService}=require('./fixtures/news-service.cjs');
 const {getAssessments}=require('../lib/news-evidence');
 const date=new Date(Date.now()-60000).toISOString(),title='PTT รายงานผลประกอบการและแผนลงทุนล่าสุด';
 const wrapper='https://news.google.com/rss/articles/CBMiFixture',publisher='https://www.infoquest.co.th/2026/123456';
 const rss=(source='Thunhoon')=>'<rss><channel><item><title>'+title+'</title><link>'+wrapper+'</link><pubDate>'+date+'</pubDate><description>หุ้น OR ข่าวบริษัท PTT และแผนการลงทุน</description><source>'+source+'</source></item></channel></rss>';
 const article=(url=publisher)=>'<script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline:title,datePublished:date,articleBody:'บริษัท PTT เปิดเผยรายละเอียดผลประกอบการและแผนลงทุนที่ตรวจสอบได้ '.repeat(6)})+'</script>';
 for(const status of [200,404,410])test('P1 resolver: unresolved Google '+status+' never creates trusted REJECTED',async()=>{
- const service=createNewsService({env:{SETSCOPE_NEWS_EVIDENCE:'write'},fetchImpl:async input=>String(input).includes('/rss/search?')?new Response(rss()):new Response('<link rel="canonical" href="https://news.google.com/articles/other"><main>Google wrapper</main>',{status,headers:{'content-type':'text/html'}})});
+ const service=createNewsService({env:{SETSCOPE_NEWS_EVIDENCE:'write',SETSCOPE_P1_DISPLAY_GATE:'on',SETSCOPE_GOOGLE_NEWS_RPC:'on'},fetchImpl:async input=>String(input).includes('/rss/search?')?new Response(rss()):new Response('<link rel="canonical" href="https://news.google.com/articles/other"><main>Google wrapper</main>',{status,headers:{'content-type':'text/html'}})});
  const result=await service.getNews();assert.equal(result.items.length,0);
  assert.ok(getAssessments(result).length);assert.ok(getAssessments(result).every(x=>x.verification?.status!=='REJECTED'));
 });
 test('P1 resolver: public wrapper resolution precedes strict InfoQuest article/date proof',async()=>{
- const calls=[];const service=createNewsService({env:{SETSCOPE_NEWS_EVIDENCE:'write'},fetchImpl:async(input,init={})=>{
+ const calls=[];const service=createNewsService({env:{SETSCOPE_NEWS_EVIDENCE:'write',SETSCOPE_P1_DISPLAY_GATE:'on',SETSCOPE_GOOGLE_NEWS_RPC:'on'},fetchImpl:async(input,init={})=>{
   const url=String(input);if(url.includes('/rss/search?'))return new Response(rss('สำนักข่าวอินโฟเควสท์'));
   calls.push({url,method:init.method||'GET'});
   if(url===wrapper)return new Response('<div data-n-a-id="CBMiFixture" data-n-a-ts="1793100000" data-n-a-sg="synthetic-public-param"></div>',{headers:{'content-type':'text/html'}});
@@ -39,13 +39,13 @@ test('P1 resolver security: private, local, mapped and special IPs are denied',a
  const answers=[{address:'8.8.8.8',family:4}];assert.deepEqual(await publicNewsLookup('thunhoon.com',async()=>answers),answers);
 });
 test('P1 resolver security: unsafe ports, credentials, deceptive hosts and protocols fail before fetch',async()=>{
- let calls=0;const loader=createNewsArticleLoader({fetchImpl:async()=>{calls++;throw Error('must not fetch');}});
+ let calls=0;const loader=createNewsArticleLoader({transport:async()=>{calls++;throw Error('must not fetch');}});
  for(const url of ['https://thunhoon.com:8443/a','https://news.google.com:5432/a','http://thunhoon.com/a','https://user:pass@thunhoon.com/a','https://thunhoon.com.evil.invalid/a','https://127.0.0.1/a']){
   assert.equal(allowedNewsUrl(url),null);assert.equal((await loader(url)).status,'UNVERIFIED');
  }assert.equal(calls,0);
 });
 test('P1 resolver: explicit redirect is resolved and revalidated on every hop',async()=>{
- const calls=[];const loader=createNewsArticleLoader({fetchImpl:async u=>{calls.push(String(u));return new Response('',{status:302,headers:{location:'https://169.254.169.254/latest/meta-data'}});}});
+ const calls=[];const loader=createNewsArticleLoader({transport:async u=>{calls.push(String(u));return new Response('',{status:302,headers:{location:'https://169.254.169.254/latest/meta-data'}});}});
  assert.equal((await loader(wrapper)).status,'UNVERIFIED');assert.equal(calls.length,1);
 });
 test('P1 resolver: RPC cannot authorize arbitrary URLs, multiple identities or a different wrapper id',()=>{
@@ -61,16 +61,16 @@ test('P1 resolver: legacy embedded URL decoding uses bounded framing and still r
  const bytes=Buffer.from(publisher),length=[];let n=bytes.length;do{let b=n&127;n=Math.floor(n/128);length.push(n?b|128:b);}while(n);
  const encoded=Buffer.concat([Buffer.from([8,19,34,...length]),bytes,Buffer.from([210,1,0])]).toString('base64url');
  const input='https://news.google.com/rss/articles/'+encoded;assert.equal(decodedLegacyUrl(input).href,publisher);
- const calls=[];const loader=createNewsArticleLoader({fetchImpl:async u=>{calls.push(String(u));return new Response(article(),{headers:{'content-type':'text/html'}});}});
+ const calls=[];const loader=createNewsArticleLoader({transport:async u=>{calls.push(String(u));return new Response(article(),{headers:{'content-type':'text/html'}});}});
  const result=await loader(input);assert.equal(result.target.href,publisher);assert.deepEqual(calls,[publisher]);
 });
 for(const status of [401,403,429])test('P1 resolver: '+status+' stops only the affected origin without retry/rotation',async()=>{
- let now=Date.now(),calls=0;const loader=createNewsArticleLoader({now:()=>now,fetchImpl:async()=>{calls++;return new Response('',{status});}});
+ let now=Date.now(),calls=0;const loader=createNewsArticleLoader({now:()=>now,transport:async()=>{calls++;return new Response('',{status});}});
  await loader(wrapper);await loader(wrapper+'other');assert.equal(calls,1);
  if(status===429){now+=300001;await loader(wrapper);assert.equal(calls,2);}
 });
 test('P1 resolver: HTTP budget bounds loops and pending resolution',async()=>{
- let calls=0;const loader=createNewsArticleLoader({fetchImpl:async()=>{calls++;return new Response('',{status:302,headers:{location:'/articles/next'}});}});
+ let calls=0;const loader=createNewsArticleLoader({transport:async()=>{calls++;return new Response('',{status:302,headers:{location:'/articles/next'}});}});
  const budget={httpRemaining:2};assert.equal((await loader(wrapper,{budget})).status,'UNVERIFIED');assert.equal(calls,2);assert.equal(budget.httpRemaining,0);
 });
 test('P1 resolver: unresolved refresh preserves persisted VERIFIED metadata, fingerprint and stored AI',async()=>{
@@ -104,7 +104,7 @@ test('P1 sources: InfoQuest mapping is explicit; three roadmap sources remain di
  assert.equal(domain.canDisplayNews({url:publisher,title,pubDate:date,verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}}),true);
  assert.equal(publisherMatches({url:publisher,source:'thunhoon',sourceName:'Thunhoon'}),false);
  for(const x of ROADMAP_NEWS_PUBLISHERS){assert.equal(x.enabled,false);assert.equal(allowedNewsUrl('https://'+x.host+'/news/123'),null);
- assert.equal(domain.canDisplayNews({url:'https://'+x.host+'/news/123',title,pubDate:date,verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}}),false);}
+ assert.equal(domain.canDisplayNews({url:'https://'+x.host+'/news/123',title,pubDate:date,verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}},Date.now(),{hardGate:true}),false);}
 });
 
 test('P1 InfoQuest adapter: same-article JSON-LD identity/date plus explicit content container, never related cards',()=>{

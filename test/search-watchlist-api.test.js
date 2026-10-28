@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),http=require('node:http');
 process.env.SUPABASE_URL='https://fixture.supabase.co';process.env.SUPABASE_ANON_KEY='synthetic-public';process.env.SUPABASE_SECRET_KEY='synthetic-fixture';delete process.env.OPENAI_API_KEY;
-process.env.SETSCOPE_NEWS_EVIDENCE='write';
+process.env.SETSCOPE_NEWS_EVIDENCE='write';process.env.SETSCOPE_P1_DISPLAY_GATE='on';
 let feeds=0,registryReads=0,searchCalls=0,broken=false;
 globalThis.fetch=async(input,init={})=>{
  const url=new URL(String(input));
@@ -18,6 +18,8 @@ globalThis.fetch=async(input,init={})=>{
  }
  throw Error('Unexpected fixture upstream');
 };
+const restoreNewsHttps=require('./fixtures/news-https.cjs').installNewsHttpsFixture(globalThis.fetch);
+test.after(restoreNewsHttps);
 const {server}=require('../server');
 function request(path,token='token-a'){
  return new Promise((resolve,reject)=>{
@@ -34,7 +36,7 @@ test('Search API returns both prefix identities and caches the shared registry s
 });
 test('Watchlist News API isolates account caches, refreshes explicitly and retains malformed-feed fallback for the same owner only',async()=>{
  const path='/api/watchlist-news?stocks='+encodeURIComponent(JSON.stringify([{symbol:'THAI',name:'THAI'}]));
- const a=await request(path);assert.equal(a.status,200);const initialFeeds=feeds;
+ const a=await request(path);assert.equal(a.status,200);assert.ok(restoreNewsHttps.stats.lookups>0);assert.ok(restoreNewsHttps.stats.sockets>0);const initialFeeds=feeds;
  assert.equal((await request(path)).body.items[0].title,a.body.items[0].title);assert.equal(feeds,initialFeeds);
  const b=await request(path,'token-b');assert.equal(b.status,200);assert.notEqual(b.body.items[0].title,a.body.items[0].title);
  const refreshed=await request(path+'&refresh=1');assert.equal(refreshed.status,200);assert.equal(refreshed.body.items.length,2);assert.ok(refreshed.body.items.some(item=>item.title!==a.body.items[0].title));

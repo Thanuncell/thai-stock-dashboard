@@ -331,7 +331,9 @@ export function watchlistNewsViewState(data) {
 
 
 // Defense at every render/retention boundary, including previously cached responses.
-export function canDisplayNews(item, timestamp = Date.now()) {
+export function canDisplayNews(item, timestamp = Date.now(), { hardGate = false } = {}) {
+  if(item?.source==='thunhoon'&&(/^[a-z0-9]+(?:[-_][a-z0-9]+){2,}$/i.test(String(item.title||'').replace(/\s+-\s+[^-]+$/,''))||/^[a-z0-9]+(?:[-_][\p{L}\p{M}\p{N}]+){2,}$/u.test(String(item.title||'').replace(/\s+-\s+[^-]+$/,''))))return false;
+  if(!hardGate){try{const url=new URL(item?.url);return url.protocol==='https:'&&!url.username&&!url.password&&!['UNVERIFIED','REJECTED'].includes(item?.verification?.status);}catch{return false;}}
   const proof=item?.verification, published=Date.parse(item?.pubDate);
   if(proof?.status!=='VERIFIED'||proof.basis!=='article'||proof.reason!=='ARTICLE_IDENTITY_VERIFIED'||proof.displayPolicy!=='news-display-1'
     ||!Number.isFinite(published)||published>timestamp+600000||!String(item?.title||'').trim())return false;
@@ -342,12 +344,12 @@ export function canDisplayNews(item, timestamp = Date.now()) {
   catch{return false;}
 }
 
-export function retainWatchlistNews(items,stocks,timestamp=Date.now()) {
+export function retainWatchlistNews(items,stocks,timestamp=Date.now(), {hardGate=false}={}) {
   const symbols=new Set(stocks.map(stock=>stock.symbol)),unique=new Map();
   for(const item of items){
     const published=Date.parse(item.pubDate);
     if(!Number.isFinite(published)||published<timestamp-30*86400000||published>timestamp+600000
-      ||!canDisplayNews(item,timestamp))continue;
+      ||!canDisplayNews(item,timestamp,{hardGate}))continue;
     const matchedSymbols=(item.matchedSymbols||[]).filter(symbol=>symbols.has(symbol));if(!matchedSymbols.length)continue;
     const key=newsKey(item),old=unique.get(key);
     unique.set(key,{...(old||item),matchedSymbols:[...new Set([...(old?.matchedSymbols||[]),...matchedSymbols])]});
@@ -398,12 +400,12 @@ export function selectNewsForDisplay(items = [], {
   query = '',
   now = Date.now(),
   featuredCount = 5,
-  sourceTier = {}
+  sourceTier = {}, hardGate = false
 } = {}) {
   const normalizedQuery = String(query || '').trim().toLocaleLowerCase('th');
   const filtered = items.filter(item => {
     const sourceMatch = source === 'all' || (source === 'broker' ? Boolean(item.brokerCategory) : item.source === source);
-    return canDisplayNews(item,Number(now)) && sourceMatch && matchesNewsQuery(item, normalizedQuery, item.analysisSummary || '');
+    return canDisplayNews(item,Number(now),{hardGate}) && sourceMatch && matchesNewsQuery(item, normalizedQuery, item.analysisSummary || '');
   }).sort((left, right) => Date.parse(right.pubDate) - Date.parse(left.pubDate));
   const cutoff = Number(now) - 7 * 24 * 60 * 60 * 1000;
   const featured = filtered.filter(item => Number.isFinite(Date.parse(item.pubDate)) && Date.parse(item.pubDate) >= cutoff)

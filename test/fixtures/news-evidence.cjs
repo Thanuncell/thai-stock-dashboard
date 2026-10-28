@@ -2,7 +2,7 @@
 const { inspectNewsArticle } = require('../../lib/news-article');
 const { issueEvidence } = require('../../lib/news-evidence');
 const { createNewsArchiveService } = require('../../server/news-archive-service');
-const env = { SUPABASE_URL: 'https://fixture.invalid', SUPABASE_SECRET_KEY: 'synthetic-fixture', SETSCOPE_NEWS_EVIDENCE: 'write' };
+const env = { SUPABASE_URL: 'https://fixture.invalid', SUPABASE_SECRET_KEY: 'synthetic-fixture', SETSCOPE_NEWS_EVIDENCE: 'write', SETSCOPE_P1_DISPLAY_GATE: 'on', SETSCOPE_GOOGLE_NEWS_RPC: 'on' };
 
 function article(overrides = {}) {
   const item = { title: 'Q3', url: 'https://thunhoon.com/article-123456', source: 'thunhoon', sourceName: 'Thunhoon',

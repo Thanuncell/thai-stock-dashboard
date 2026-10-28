@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {createStockSearchService,rankStockSearchResults}=require('../server/search-service');
 const {createMarketService}=require('../server/market-service');
-const {createNewsService}=require('../server/news-service');
+const {createNewsService}=require('./fixtures/news-service.cjs');
 const {createWatchlistNewsCacheKey,createMemoryCache,PROVIDER_POLICIES}=require('../server/reliability');
 const rows=['THAI','THANI'].map(symbol=>({symbol,provider_symbol:symbol+'.BK',provider:'Yahoo Finance',active:true,status:'verified'}));
 test('prefix search merges registry identities with partial provider results, ranks exact first and deduplicates',async()=>{

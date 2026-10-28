@@ -155,8 +155,28 @@ test('AC-G1-09/10: native PostgreSQL evidence, concurrency and compatible rollba
       const row=(await pool.query('select a.*,news_archive_subject_hash(a) native_hash from news_archive a where url=$1',[item.url])).rows[0];
       assert.equal(row.native_hash,rowSubjectHash(row));assert.equal(reviewArchivedNewsRow(row).basis,'article');
     });
+    await t.test('P1 release: default-OFF G1 writes and recovered headline provenance survive native persistence',async()=>{
+      const off=createNewsArchiveService({env:{...env,SETSCOPE_P1_DISPLAY_GATE:'off'},fetchImpl});
+      const pubDate=new Date(Date.now()-60000).toISOString(),url='https://thunhoon.com/article-headline-native',slug='amata-profit-investment-update';
+      const old={title:slug,url,pubDate,source:'thunhoon',sourceName:'Thunhoon',snippet:'Accepted synthetic G1 metadata before original headline recovery'};
+      old.verification=reviewNewsItem(old);assert.equal((await off.ingest([old])).ingested,1);
+      const {archiveFingerprint}=require('../server/news-archive-service'),fp=archiveFingerprint(old);
+      await writer.query("update news_archive set analysis_summary='Headline recovery AI',analysis_mode='ai' where fingerprint=$1",[fp]);
+      const before=(await pool.query('select * from news_archive where fingerprint=$1',[fp])).rows[0];
+      const {createNewsService}=require('./fixtures/news-service.cjs'),headline='AMATA รายงานผลประกอบการและแผนลงทุนล่าสุด';
+      const news=createNewsService({env,fetchImpl:async input=>String(input).includes('/rss/search?')
+        ?new Response('<rss><channel><item><title>'+slug+'</title><link>'+url+'</link><pubDate>'+pubDate+'</pubDate><description>'+old.snippet+'</description><source>Thunhoon</source></item></channel></rss>')
+        :new Response('<link rel="canonical" href="'+url+'"><script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline,datePublished:pubDate,articleBody:'AMATA verified synthetic article content for native persistence. '.repeat(5)})+'</script>',{headers:{'content-type':'text/html'}})});
+      const accepted=await news.getNews();assert.equal(accepted.items.length,1);assert.equal(accepted.items[0].title,headline);
+      assert.equal((await service().ingest(accepted.items)).ingested,1);
+      const after=(await pool.query('select * from news_archive where fingerprint=$1',[fp])).rows[0];
+      assert.equal(after.fingerprint,before.fingerprint);assert.equal(after.analysis_summary,before.analysis_summary);assert.equal(+after.first_seen_at,+before.first_seen_at);
+      assert.equal(after.verification_provenance.originalTitle,slug);assert.equal(after.verification_provenance.headlineBasis,'article');assert.ok(validStoredEvidence(after));
+      assert.ok((await off.list()).items.some(x=>x.fingerprint===fp&&x.rssTitle===slug));
+      assert.ok((await service('read').list()).items.some(x=>x.fingerprint===fp&&x.rssTitle===slug));
+    });
     await t.test('P1 wrapper: publisher resolution upgrades the existing row without losing fingerprint, first_seen or AI',async()=>{
-      const {createNewsService}=require('../server/news-service'),{getAssessments}=require('../lib/news-evidence');
+      const {createNewsService}=require('./fixtures/news-service.cjs'),{getAssessments}=require('../lib/news-evidence');
       const wrapper='https://news.google.com/rss/articles/p1-native',url='https://thunhoon.com/article-native-wrapper',pubDate=new Date(Date.now()-60000).toISOString();
       const original={title:'PTT ผลประกอบการและแผนลงทุนล่าสุด',url:wrapper,source:'thunhoon',sourceName:'Thunhoon',pubDate,snippet:'Synthetic accepted metadata for native wrapper regression'};
       original.verification=reviewNewsItem(original);await service().ingest([original]);

@@ -27,7 +27,7 @@ import {
   quoteChange,
   resolveMarketBannerFields,
   resolveActiveWatchlistId,
-  selectNewsForDisplay, canDisplayNews,
+  selectNewsForDisplay as selectNewsByPolicy, canDisplayNews as canDisplayByPolicy,
   sentimentHeadline,
   stamp,
   summarizeBreadth,
@@ -36,9 +36,15 @@ import {
   watchlistNewsViewState,
   newsDisplayAnalysis,
   canRequestNewsAnalysis,
-  retainWatchlistNews
+  retainWatchlistNews as retainWatchlistByPolicy
 } from './client/domain.mjs';
 
+// Gate activation is server-owned. Once observed ON, stale OFF responses cannot lower it;
+ // an intentional switch back to OFF takes effect after a page reload.
+let p1NewsDisplayGate = false;
+const canDisplayNews = item => canDisplayByPolicy(item,Date.now(),{hardGate:p1NewsDisplayGate});
+const selectNewsForDisplay = (items,options={}) => selectNewsByPolicy(items,{...options,hardGate:p1NewsDisplayGate});
+const retainWatchlistNews = (items,stocks) => retainWatchlistByPolicy(items,stocks,Date.now(),{hardGate:p1NewsDisplayGate});
 const $ = selector => document.querySelector(selector);
 const apiFetch = (url, options) => window.setscopeAuth.authorizedFetch(url, options);
 const decimalNumberFormatter = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1308,6 +1314,7 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
     const response = await apiFetch('/api/news'); const data = await response.json();
     if (!isCurrentPrivateIdentity(identity)) return;
     if (!response.ok) throw new Error(data.error);
+    p1NewsDisplayGate ||= data.p1DisplayGate===true;
     const keep=applyNewsWithheldUrls(data.withheldUrls);
     latestNews = (data.items || []).filter(keep);
     await getArchiveNews({ page: newsPage, reason });
@@ -1341,6 +1348,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดคลังข่าวไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
+    p1NewsDisplayGate ||= data.p1DisplayGate===true;
     const keep=applyNewsWithheldUrls(data.withheldUrls);
     archiveConfigured = Boolean(data.configured);
     archiveLoaded = archiveConfigured;
@@ -1413,6 +1421,7 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId || scope!==currentWatchlistNewsScope()) return;
     if(!Array.isArray(data.items))throw Error('Invalid Watchlist News response');
+    p1NewsDisplayGate ||= data.p1DisplayGate===true;
     const keep=applyNewsWithheldUrls(data.withheldUrls);
     const verifiedItems=retainWatchlistNews(data.items.filter(keep),watchlist);
     watchlistNewsMatchInfo = {
