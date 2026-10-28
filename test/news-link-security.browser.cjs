@@ -14,15 +14,16 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   const other=make('OTHER_PUBLISHER',{source:'infoquest',sourceName:'InfoQuest',url:'https://www.infoquest.co.th/2026/browser-other',displayUrl:'https://www.infoquest.co.th/2026/browser-other',matchedSymbols:['OR']});
   const pdfWord=make('PDF ข่าวจริงรายงานคู่มือสำหรับนักลงทุน',{source:'thunhoon',sourceName:'Thunhoon',url:'https://thunhoon.com/browser-article',displayUrl:'https://thunhoon.com/browser-article',matchedSymbols:['PTT']});
   const resolved=make('SET_RESOLVED',{url:'https://news.google.com/rss/articles/browser-resolved',verification:{status:'VERIFIED',basis:'metadata'}});
+  const bangkok=make('BANGKOK_ARTICLE',{source:'other',sourceName:'กรุงเทพธุรกิจ',url:'https://bangkokbiznews.com/finance/stock/1234567',displayUrl:'https://bangkokbiznews.com/finance/stock/1234567',matchedSymbols:['PTT']});
   const bad=[make('BLOCKED_PDF',{linkVerification:{status:'UNVERIFIED',kind:'DOCUMENT',reason:'DOCUMENT_RESPONSE'}}),make('BLOCKED_LISTING',{linkVerification:{status:'UNVERIFIED',kind:'NON_ARTICLE',reason:'ARCHIVE_LISTING_PATH'}})];
   await context.route('**/*',async route=>{const req=route.request(),url=new URL(req.url()),json=o=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({p1DisplayGate:hardGate,...o})});
    if(url.origin!==base&&url.origin!=='https://isolation-test.supabase.co')return route.abort();
-   if(url.origin===base&&url.pathname==='/api/news')return json({items:[multi,unknown,other,pdfWord,resolved,...bad],dataState:'fresh'});
+   if(url.origin===base&&url.pathname==='/api/news')return json({items:[multi,unknown,other,pdfWord,resolved,bangkok,...bad],dataState:'fresh'});
    if(url.origin===base&&url.pathname==='/api/news-archive'){
-    const all=[latest,...bad],query=(url.searchParams.get('query')||'').toUpperCase(),items=query?all.filter(x=>(x.securityIdentification?.symbols||[]).includes(query)||x.title.toUpperCase().includes(query)):all;
+    const all=[latest,bangkok,...bad],query=(url.searchParams.get('query')||'').toUpperCase(),items=query?all.filter(x=>(x.securityIdentification?.symbols||[]).includes(query)||x.title.toUpperCase().includes(query)):all;
     return json({configured:true,items,featured:[],total:1,page:1,pageSize:10,dataState:'fresh'});
    }
-   if(url.origin===base&&url.pathname==='/api/watchlist-news')return json({items:[multi,unknown,pdfWord,...bad],total:3,dataState:'fresh'});
+   if(url.origin===base&&url.pathname==='/api/watchlist-news')return json({items:[multi,unknown,pdfWord,bangkok,...bad],total:3,dataState:'fresh'});
    if(url.origin===base&&url.pathname==='/api/news-analysis')return json({items:(req.postDataJSON().items||[]).map(()=>({summary:'',mode:'unavailable'}))});
    return mockRequest(route,base,state);
   });
@@ -34,6 +35,8 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   assert.equal(await page.locator('#featured-news .news-item').filter({hasText:'OTHER_PUBLISHER'}).locator('.news-relevance').textContent(),'OR');
   assert.doesNotMatch(await page.locator('#news-section').textContent(),/BLOCKED_PDF|BLOCKED_LISTING/);
   assert.match(await page.locator('#news-section').textContent(),/PDF ข่าวจริง/);
+  assert.match(await page.locator('#news-section').textContent(),/BANGKOK_ARTICLE/);
+  assert.equal(await page.locator('#news-section .news-item').filter({hasText:'BANGKOK_ARTICLE'}).locator('.news-title').first().getAttribute('href'),bangkok.url);
   if(hardGate)assert.doesNotMatch(await page.locator('#news-section').textContent(),/SET_RESOLVED/);
   else{const link=page.locator('#news-section .news-item').filter({hasText:'SET_RESOLVED'}).locator('.news-title');assert.equal(await link.getAttribute('href'),resolved.displayUrl);}
   assert.equal(await page.locator('#news-section .news-document-tag').count(),0);
@@ -45,8 +48,9 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   assert.equal(await page.locator('#watchlist-news-list .news-item').filter({hasText:'SET_MULTI'}).locator('.news-relevance').textContent(),'PTT, PTTEP');
   assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/BLOCKED_PDF|BLOCKED_LISTING/);
   await page.locator('#refresh-watchlist-news').click();assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/BLOCKED_PDF|BLOCKED_LISTING/);
+  assert.match(await page.locator('#watchlist-news-list').textContent(),/BANGKOK_ARTICLE/);
   await page.screenshot({path:path.join(process.env.TEMP,'setscope-link-security-'+label+'.png'),fullPage:true});
-  console.log(JSON.stringify({viewport:label,checks:12,status:'PASS',issuerScope:true,multiSymbol:true,unknownLabel:true,articlePdfWord:true,linkFilter:true,search:true,archive:true,watchlist:true,cachedResponses:true}));await context.close();
+  console.log(JSON.stringify({viewport:label,checks:15,status:'PASS',issuerScope:true,multiSymbol:true,unknownLabel:true,articlePdfWord:true,linkFilter:true,search:true,archive:true,watchlist:true,cachedResponses:true}));await context.close();
  }
  }finally{await browser?.close().catch(()=>{});server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
