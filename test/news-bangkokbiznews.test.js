@@ -157,12 +157,14 @@ for(const flag of [undefined,'off','on'])for(const view of ['general','watchlist
  const read=()=>view==='general'?service.getNews():service.getWatchlistNews('PTT',{ownerId:'compat-owner'});
  for(let pass=0;pass<2;pass++){
   const result=await read(),bangkok=result.items.filter(x=>/^(?:กรุงเทพธุรกิจ|Bangkokbiznews)$/.test(x.sourceName));
-  assert.equal(result.items.length,2,'both publishers remain present without duplicates');assert.equal(bangkok.length,1);
-  assert.equal(bangkok[0].verification.status,'VERIFIED');assert.equal(bangkok[0].verification.basis,enabled?'article':'metadata');
-  assert.equal(bangkok[0].url,enabled?'https://bangkokbiznews.com/finance/stock/1234567':wrapper);
-  assert.equal(reviewNewsForDisplay(bangkok[0]).status,enabled?'VERIFIED':'UNVERIFIED','metadata never becomes article proof');
+  assert.equal(result.items.length,enabled?3:2,'unresolved RSS coverage is retained alongside the optional article');assert.equal(bangkok.length,enabled?2:1);
+  const selected=bangkok.find(x=>x.verification.basis===(enabled?'article':'metadata'));
+  assert.equal(bangkok.find(x=>x.url===wrapper).verification.basis,'metadata');
+  assert.equal(selected.verification.status,'VERIFIED');assert.equal(selected.verification.basis,enabled?'article':'metadata');
+  assert.equal(selected.url,enabled?'https://bangkokbiznews.com/finance/stock/1234567':wrapper);
+  assert.equal(reviewNewsForDisplay(selected).status,enabled?'VERIFIED':'UNVERIFIED','metadata never becomes article proof');
   assert.equal(result.items.find(x=>x.sourceName==='InfoQuest').url,otherUrl);
-  if(view==='watchlist')assert.deepEqual(bangkok[0].matchedSymbols,['PTT']);
+  if(view==='watchlist')assert.deepEqual(selected.matchedSymbols,['PTT']);
  }
  assert.equal(lookups,0);
  if(enabled){assert.equal(articleCalls,2,'one sitemap plus one article, reused on the second read');assert.equal(adapter.calls.filter(x=>x.url===SITEMAP).length,1);assert.ok(adapter.calls.every(x=>!x.url.includes('news.google.com')));}

@@ -15,15 +15,17 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   const pdfWord=make('PDF ข่าวจริงรายงานคู่มือสำหรับนักลงทุน',{source:'thunhoon',sourceName:'Thunhoon',url:'https://thunhoon.com/browser-article',displayUrl:'https://thunhoon.com/browser-article',matchedSymbols:['PTT']});
   const resolved=make('SET_RESOLVED',{url:'https://news.google.com/rss/articles/browser-resolved',verification:{status:'VERIFIED',basis:'metadata'}});
   const bangkok=make('BANGKOK_ARTICLE',{source:'other',sourceName:'กรุงเทพธุรกิจ',url:'https://bangkokbiznews.com/finance/stock/1234567',displayUrl:'https://bangkokbiznews.com/finance/stock/1234567',matchedSymbols:['PTT']});
+  const than=make('THANSETTAKIJ_ARTICLE',{source:'other',sourceName:'ฐานเศรษฐกิจ',url:'https://thansettakij.com/finance/stock/1234567',displayUrl:'https://thansettakij.com/finance/stock/1234567',matchedSymbols:['PTT']});
+  const investing=make('INVESTING_RSS',{source:'other',sourceName:'Investing.com',url:'https://news.google.com/rss/articles/browser-investing',displayUrl:'https://news.google.com/rss/articles/browser-investing',verification:{status:'VERIFIED',basis:'metadata',reason:'NEWS_METADATA_EVIDENCE'},linkVerification:{status:'UNVERIFIED',kind:'UNKNOWN'},matchedSymbols:['PTT']});
   const bad=[make('BLOCKED_PDF',{linkVerification:{status:'UNVERIFIED',kind:'DOCUMENT',reason:'DOCUMENT_RESPONSE'}}),make('BLOCKED_LISTING',{linkVerification:{status:'UNVERIFIED',kind:'NON_ARTICLE',reason:'ARCHIVE_LISTING_PATH'}})];
   await context.route('**/*',async route=>{const req=route.request(),url=new URL(req.url()),json=o=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({p1DisplayGate:hardGate,...o})});
    if(url.origin!==base&&url.origin!=='https://isolation-test.supabase.co')return route.abort();
-   if(url.origin===base&&url.pathname==='/api/news')return json({items:[multi,unknown,other,pdfWord,resolved,bangkok,...bad],dataState:'fresh'});
+   if(url.origin===base&&url.pathname==='/api/news')return json({items:[multi,unknown,other,pdfWord,resolved,bangkok,than,investing,...bad],dataState:'fresh'});
    if(url.origin===base&&url.pathname==='/api/news-archive'){
-    const all=[latest,bangkok,...bad],query=(url.searchParams.get('query')||'').toUpperCase(),items=query?all.filter(x=>(x.securityIdentification?.symbols||[]).includes(query)||x.title.toUpperCase().includes(query)):all;
+    const all=[latest,bangkok,than,investing,...bad],query=(url.searchParams.get('query')||'').toUpperCase(),items=query?all.filter(x=>(x.securityIdentification?.symbols||[]).includes(query)||x.title.toUpperCase().includes(query)):all;
     return json({configured:true,items,featured:[],total:1,page:1,pageSize:10,dataState:'fresh'});
    }
-   if(url.origin===base&&url.pathname==='/api/watchlist-news')return json({items:[multi,unknown,pdfWord,bangkok,...bad],total:3,dataState:'fresh'});
+   if(url.origin===base&&url.pathname==='/api/watchlist-news')return json({items:[multi,unknown,pdfWord,bangkok,than,investing,...bad],total:3,dataState:'fresh'});
    if(url.origin===base&&url.pathname==='/api/news-analysis')return json({items:(req.postDataJSON().items||[]).map(()=>({summary:'',mode:'unavailable'}))});
    return mockRequest(route,base,state);
   });
@@ -37,9 +39,14 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   assert.match(await page.locator('#news-section').textContent(),/PDF ข่าวจริง/);
   assert.match(await page.locator('#news-section').textContent(),/BANGKOK_ARTICLE/);
   assert.equal(await page.locator('#news-section .news-item').filter({hasText:'BANGKOK_ARTICLE'}).locator('.news-title').first().getAttribute('href'),bangkok.url);
+  assert.match(await page.locator('#news-section').textContent(),/THANSETTAKIJ_ARTICLE/);
+  assert.equal(await page.locator('#news-section .news-item').filter({hasText:'THANSETTAKIJ_ARTICLE'}).locator('.news-title').first().getAttribute('href'),than.url);
   if(hardGate)assert.doesNotMatch(await page.locator('#news-section').textContent(),/SET_RESOLVED/);
   else{const link=page.locator('#news-section .news-item').filter({hasText:'SET_RESOLVED'}).locator('.news-title');assert.equal(await link.getAttribute('href'),resolved.displayUrl);}
   assert.equal(await page.locator('#news-section .news-document-tag').count(),0);
+  assert.equal((await page.locator('#news-section').textContent()).includes('INVESTING_RSS'),!hardGate);
+  if(!hardGate)assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).locator('.news-title').first().getAttribute('href'),investing.url);
+  else assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).count(),0);
   await page.waitForFunction(()=>document.querySelector('#news-list')?.textContent.includes('SET_LATEST'));
   await page.locator('#news-search').fill('PTTEP');await page.waitForFunction(()=>document.querySelector('#news-list')?.textContent.includes('SET_LATEST'));
   assert.equal(await page.locator('#news-list .news-item').filter({hasText:'SET_LATEST'}).locator('.news-relevance').textContent(),'PTT, PTTEP');
@@ -47,10 +54,12 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('SET_MULTI'));
   assert.equal(await page.locator('#watchlist-news-list .news-item').filter({hasText:'SET_MULTI'}).locator('.news-relevance').textContent(),'PTT, PTTEP');
   assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/BLOCKED_PDF|BLOCKED_LISTING/);
+  assert.equal((await page.locator('#watchlist-news-list').textContent()).includes('INVESTING_RSS'),!hardGate);
   await page.locator('#refresh-watchlist-news').click();assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/BLOCKED_PDF|BLOCKED_LISTING/);
   assert.match(await page.locator('#watchlist-news-list').textContent(),/BANGKOK_ARTICLE/);
+  assert.match(await page.locator('#watchlist-news-list').textContent(),/THANSETTAKIJ_ARTICLE/);
   await page.screenshot({path:path.join(process.env.TEMP,'setscope-link-security-'+label+'.png'),fullPage:true});
-  console.log(JSON.stringify({viewport:label,checks:15,status:'PASS',issuerScope:true,multiSymbol:true,unknownLabel:true,articlePdfWord:true,linkFilter:true,search:true,archive:true,watchlist:true,cachedResponses:true}));await context.close();
+  console.log(JSON.stringify({viewport:label,checks:21,status:'PASS',issuerScope:true,multiSymbol:true,unknownLabel:true,articlePdfWord:true,linkFilter:true,search:true,archive:true,watchlist:true,cachedResponses:true}));await context.close();
  }
  }finally{await browser?.close().catch(()=>{});server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
