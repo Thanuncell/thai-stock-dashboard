@@ -337,8 +337,8 @@ export function canDisplayNews(item, timestamp = Date.now()) {
     ||!Number.isFinite(published)||published>timestamp+600000||!String(item?.title||'').trim())return false;
   const title=String(item.title).trim();
   if(/\.(?:pdf|docx?|xlsx?|pptx?)(?:\s*[-–—].*)?$/i.test(title)||/^[a-z0-9]+(?:[-_][a-z0-9]+){2,}$/i.test(title))return false;
-  try {const url=new URL(item.url);return url.protocol==='https:'&&!url.username&&!url.password
-    &&/(?:^|\.)(?:thunhoon\.com|kaohoon\.com|settrade\.com|set\.or\.th|bot\.or\.th|efinancethai\.com)$/.test(url.hostname)&&!/\.(?:pdf|docx?|xlsx?|pptx?)(?:$|[/?#])/i.test(url.pathname+url.search);}
+  try {const url=new URL(item.url);return url.protocol==='https:'&&!url.username&&!url.password&&(!url.port||url.port==='443')
+    &&/(?:^|\.)(?:thunhoon\.com|kaohoon\.com|settrade\.com|set\.or\.th|bot\.or\.th|efinancethai\.com|infoquest\.co\.th)$/.test(url.hostname)&&!/\.(?:pdf|docx?|xlsx?|pptx?)(?:$|[/?#])/i.test(url.pathname+url.search);}
   catch{return false;}
 }
 

@@ -28,8 +28,12 @@ const MAX_FEATURED_COUNT = 5;
 const SOURCE_KEYS = new Set(['all', 'thunhoon', 'kaohoon', 'settrade', 'official', 'infoquest', 'efinance', 'broker', 'other']);
 const SOURCE_TIER = Object.freeze({ official: 4, settrade: 3, infoquest: 2, efinance: 2, thunhoon: 2, kaohoon: 2, broker: 1 });
 
-function archiveFingerprint(item) {
-  return createHash('sha256').update(newsFingerprint(item)).digest('hex');
+function archiveFingerprint(item, verification = item?.verification) {
+  const record = trustedEvidence(item, verification);
+  if (record?.archiveFingerprint && /^[a-f0-9]{64}$/.test(record.archiveFingerprint)) return record.archiveFingerprint;
+  const original = record?.originalUrl && allowedNewsUrl(record.originalUrl);
+  const identity = original?.hostname === 'news.google.com' ? { url: original.href } : item;
+  return createHash('sha256').update(newsFingerprint(identity)).digest('hex');
 }
 
 function mergeRowAssociations(target, first, second) {
@@ -89,7 +93,7 @@ function createNewsArchiveService({
       || (decision.status !== 'VERIFIED' && !(allowNegative && trustedEvidence(item, verification)))) return null;
     if (publishedAt < timestamp - RETENTION_DAYS * 24 * 60 * 60 * 1000 || publishedAt > timestamp + 10 * 60 * 1000) return null;
     const row = {
-      fingerprint: archiveFingerprint(item),
+      fingerprint: archiveFingerprint(item, verification),
       title: String(item.title).trim().slice(0, 500),
       url: safeUrl.href.slice(0, 2000),
       source: SOURCE_KEYS.has(item.source) && item.source !== 'all' ? item.source : 'other',
