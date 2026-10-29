@@ -26,7 +26,8 @@ test('frontend owns one timer per debounced search and one cloud sync timer', ()
   assert.equal((appSource.match(/let newsSearchTimer/g) || []).length, 1);
   assert.equal((appSource.match(/let watchlistSyncTimer/g) || []).length, 1);
   assert.equal((appSource.match(/clearTimeout\(searchTimer\)/g) || []).length, 1);
-  assert.equal((appSource.match(/clearTimeout\(newsSearchTimer\)/g) || []).length, 1);
+  assert.ok((appSource.match(/clearTimeout\(newsSearchTimer\)/g) || []).length >= 1);
+  assert.equal((appSource.match(/newsSearchTimer = setTimeout/g) || []).length, 1);
   assert.equal((appSource.match(/clearTimeout\(watchlistSyncTimer\)/g) || []).length, 2);
 });
 
@@ -35,7 +36,7 @@ test('breadcrumb, bell and broker controls preserve accessible UI contracts', ()
   assert.match(indexSource, /id="breadcrumb-current"[^>]*>ภาพรวม<\/span>/);
   assert.match(indexSource, /id="alerts-toggle"[\s\S]*?<svg[^>]*aria-hidden="true"/);
   assert.doesNotMatch(indexSource, />🔔</);
-  assert.match(indexSource, /data-source="broker">โบรกเกอร์<\/button>/);
+  assert.match(indexSource, /data-source="broker"[^>]*>โบรกเกอร์<\/button>/);
   assert.match(indexSource, /<h3[^>]*id="latest-news-heading"[^>]*>ข่าวล่าสุด<\/h3>/);
 });
 
@@ -59,7 +60,7 @@ test('latest and featured news headings share the same spacing', () => {
 });
 
 test('source filtering renders loaded data and auto refresh does not write history', () => {
-  const sourceHandler = appSource.match(/document\.querySelectorAll\('\.source-chip'\)[\s\S]*?\n\s*}\)\);/)?.[0] || '';
+  const sourceHandler = appSource.match(/document\.querySelectorAll\('\.source-chip(?:,\.watch-source-chip)?'\)[\s\S]*?\n\s*}\)\);/)?.[0] || '';
   assert.doesNotMatch(sourceHandler, /getNews\(/);
   assert.match(sourceHandler, /renderNews\(/);
   assert.match(appSource, /setInterval\(\(\)\s*=>\s*getNews\(\{\s*reason:\s*'poll'/);
@@ -161,8 +162,8 @@ test('News archive page restoration survives startup rendering and browser histo
   assert.match(restoreNavigation, /previousNewsSource = activeSource/);
   assert.match(restoreNavigation, /previousNewsQuery = newsQuery/);
   assert.match(restoreNavigation, /state\.route === 'news'[\s\S]*?previousNewsQuery !== newsQuery[\s\S]*?getArchiveNews\(\{ page: newsPage, reason: 'restore' \}\)/);
-  assert.match(renderNews, /const displayPage = archiveLoaded/);
-  assert.match(renderNews, /if \(archiveLoaded\) newsPage = displayPage/);
+  assert.match(renderNews, /const displayPage = Math\.max/);
+  assert.match(renderNews, /newsLoaded&&archiveState!=='loading'/);
   assert.doesNotMatch(renderNews, /newsPage = Math\.max\(1, Math\.min\(newsPage, total\)\)/);
 });
 

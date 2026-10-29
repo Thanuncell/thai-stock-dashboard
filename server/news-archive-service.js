@@ -5,7 +5,7 @@ const { allowedNewsUrl, p1DisplayGateEnabled, isSlugNewsTitle } = require('../li
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { annotateNewsContent, reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
-const { isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols } = require('../lib/news-content');
+const { normalizeNewsSources, newsMatchesSources, isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols } = require('../lib/news-content');
 const { withNewsRulesSummary } = require('../lib/news-summary');
 const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash, canonicalUrl } = require('../lib/news-evidence');
 const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
@@ -292,6 +292,7 @@ function createNewsArchiveService({
     return {
       items: displayable,
       rawTotal: rows.length,
+      countExact: Number.isSafeInteger(exactTotal)&&rows.length===exactTotal,
       qualityFiltered: rows.length - accepted.length,
       quarantined: Math.max(review.quarantined, rows.length - accepted.length - review.rejected),
       rejected: review.rejected,
@@ -318,7 +319,7 @@ function createNewsArchiveService({
       .map(url => canonicalUrl(url)).filter(Boolean));
     return items.map(displayProject).filter(item => {
       if(newsDisplayBlocked(item))return false;
-      const sourceMatch = source === 'all' || (source === 'broker' ? item.brokerCategory : item.source === source);
+      const sourceMatch = newsMatchesSources(item,source);
       const identified=newsSecuritySymbols(item);
       const symbolMatch = !symbol || newsAssociationSymbols(item).includes(symbol);
       const searchMatch = !normalizedQuery || [item.title, item.sourceName, item.snippet, item.analysisSummary, ...(identified||[])]
@@ -327,12 +328,12 @@ function createNewsArchiveService({
     });
   }
 
-  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [], featuredCount = 0 } = {}) {
+  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [], featuredCount = 0, clampPage = false } = {}) {
     const safePage = Math.max(1, Math.min(100000, Number.parseInt(page, 10) || 1));
     const safePageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, Number.parseInt(pageSize, 10) || 10));
     const safeFeaturedCount = Math.max(0, Math.min(MAX_FEATURED_COUNT, Number.parseInt(featuredCount, 10) || 0));
     if (!configured) return { configured: false, featured: [], items: [], page: safePage, pageSize: safePageSize, total: 0, maxAgeDays: RETENTION_DAYS, coverage: 'unavailable' };
-    const safeSource = SOURCE_KEYS.has(source) ? source : 'all';
+    const safeSource = normalizeNewsSources(source);
     const safeSymbol = normalizeSymbol(symbol);
     const snapshot = await getArchiveSnapshot();
     const displayable = eligibleItems(snapshot.items, {
@@ -351,14 +352,16 @@ function createNewsArchiveService({
       : [];
     const featuredKeys = new Set(featured.map(newsFingerprint));
     const paginated = featuredKeys.size ? displayable.filter(item => !featuredKeys.has(newsFingerprint(item))) : displayable;
-    const start = (safePage - 1) * safePageSize;
+    const resolvedPage=clampPage?Math.min(safePage,Math.max(1,Math.ceil(paginated.length/safePageSize))):safePage;
+    const start = (resolvedPage - 1) * safePageSize;
     return {
       configured: true,
       featured,
       items: paginated.slice(start, start + safePageSize),
-      page: safePage,
+      page: resolvedPage,
       pageSize: safePageSize,
       total: paginated.length,
+      matchingTotal: displayable.length, countExact: snapshot.countExact, countCoverage:snapshot.countExact?'complete-archive-snapshot':'loaded-archive-snapshot', snapshotRows:snapshot.rawTotal, snapshotLimit:MAX_ARCHIVE_SCAN_ROWS,
       qualityFiltered: snapshot.qualityFiltered,
       quarantined: snapshot.quarantined,
       rejected: snapshot.rejected,
