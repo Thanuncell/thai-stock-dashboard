@@ -1469,7 +1469,9 @@ async function analyzeNewsBriefs(items) {
   while (newsAnalysisAttempts.size > 500) newsAnalysisAttempts.delete(newsAnalysisAttempts.keys().next().value);
   renderNews();
   renderWatchlistNews();
-  const targets = fresh.map(item => ({ source: item.sourceName || item.source || '', title: String(item.title || '').slice(0, 300), url: item.url, snippet: String(item.snippet || '').slice(0, 1200), verification: item.verification }));
+  const targets = fresh.map(item => ({ source: item.source || '', sourceName: item.sourceName || item.source || '', pubDate: item.pubDate,
+    title: String(item.title || '').slice(0, 300), url: item.url, snippet: String(item.snippet || '').slice(0, 1200),
+    verification: item.verification, contentType: item.contentType, linkVerification: item.linkVerification }));
   try {
     const response = await apiFetch('/api/news-analysis', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: targets }) });
     if (!isCurrentPrivateIdentity(analysisIdentity)) return;

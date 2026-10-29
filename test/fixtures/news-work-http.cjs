@@ -57,5 +57,20 @@ module.exports=async function httpChecks(t,{pool,config}){
    const second=await createDurableNewsIngest({archive:archive(),store:store()}).runOnce();assert.equal(second.outcomes[0].outcome,'completed');
    assert.equal((await pool.query('select count(*)::int n from news_archive')).rows[0].n,count);
   });
+  await t.test('WS4 HTTP: canonical display dedup preserves both original fingerprints, first-seen, stored AI and rows',async()=>{
+   const date=new Date(Date.now()-60000).toISOString(),url='https://thunhoon.com/article-ws4-persisted';
+   const first=article({title:'WS4 ตรวจสอบข่าวซ้ำโดยรักษาข้อมูลเดิม',url:url+'?fbclid=first',pubDate:date});
+   const second=article({title:first.title,url:url+'?gclid=second',pubDate:date});
+   await archive().ingest([first]);
+   await pool.query("update news_archive set analysis_summary='Preserved WS4 AI',analysis_mode='ai' where url=$1",[first.url]);
+   await archive().ingest([second]);
+   const before=(await pool.query("select * from news_archive where url=any($1::text[]) order by id",[[first.url,second.url]])).rows;
+   assert.equal(before.length,2);assert.notEqual(before[0].fingerprint,before[1].fingerprint);
+   const service=archive(),display=await service.list({query:'WS4 ตรวจสอบข่าวซ้ำ'});
+   assert.equal(display.total,1);assert.equal(display.items[0].analysisSummary,'Preserved WS4 AI');
+   assert.equal(Date.parse(display.items[0].firstSeenAt),+before[0].first_seen_at);
+   assert.equal((await service.list({query:'WS4 ตรวจสอบข่าวซ้ำ',excludeUrls:[url]})).total,0);
+   const after=(await pool.query("select * from news_archive where url=any($1::text[]) order by id",[[first.url,second.url]])).rows;assert.deepEqual(after,before);
+  });
  }finally{await stop();await fs.unlink(conf).catch(()=>{});await pool.query('drop role if exists '+role);}
 };
