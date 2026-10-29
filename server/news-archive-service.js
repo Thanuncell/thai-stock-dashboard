@@ -239,6 +239,8 @@ function createNewsArchiveService({
     if (isNewsDocumentForDisplay(item)) return null;
     const verification = reviewArchivedNewsRow(row);
     const restored = {...item,verification};
+    const discovery=trustedEvidence(restored)?.discovery;
+    if(discovery)restored.discovery=discovery;
     const display = hardGate || restored.source==='thunhoon'&&isSlugNewsTitle(restored.title) ? reviewNewsForDisplay(restored,{now:Number(now())}) : verification;
     if (display.status !== 'VERIFIED') {
       if (hardGate) { quarantine.delete(newsFingerprint(item)); quarantine.set(newsFingerprint(item),{url:item.url,title:item.title,status:display.status,reason:display.reason}); while(quarantine.size>200)quarantine.delete(quarantine.keys().next().value); }

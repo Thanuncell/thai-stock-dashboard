@@ -8,6 +8,7 @@ const {publisherMatches}=require('../lib/news-policy');
 const {canonicalUrl,issueEvidence,projectEvidence}=require('../lib/news-evidence');
 const {dedupeNewsItems,decorateBrokerAttribution}=require('../lib/broker-news');
 const {matchesWatchlistStock}=require('../lib/watchlist-news-identity');
+const {recordDiscovery,projectDiscovery}=require('../lib/news-discovery');
 const {readBoundedText}=require('../lib/news-response');
 const {abortable}=require('./watchlist-news');
 const SITEMAP='https://api.bangkokbiznews.com/sitemap/latest',TTL=300000,LKG=1800000;
@@ -27,7 +28,7 @@ function parseBangkokSitemap(xml,now=Date.now()){
    ||!Number.isFinite(Date.parse(date))||Date.parse(date)>now+600000||Date.parse(date)<now-30*86400000)continue;
   // Keep the existing storage source contract; publisher identity remains explicit.
   const item=decorateBrokerAttribution({source:'other',sourceName:'กรุงเทพธุรกิจ',discoverySource:'bangkokbiznews',title,url:target.href,pubDate:new Date(date).toISOString(),snippet:''});
-  if(!isNewsDocumentForDisplay(item))items.push(item);
+  if(!isNewsDocumentForDisplay(item))items.push(recordDiscovery(item,{pathway:'bangkokbiznews/sitemap',observedAt:now}));
  }
  return [...new Map(items.map(item=>[canonicalUrl(item.url),item])).values()].sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate)).slice(0,20);
 }
@@ -74,7 +75,7 @@ function createBangkokBizNewsSource({enabled=false,transport=createNewsTransport
     if(inspection.status!=='VERIFIED'||Date.parse(inspection.publishedAt)!==Date.parse(original.pubDate)){
      assessments.push({url:original.url,reason:inspection.status==='VERIFIED'?'PUBLICATION_DATE_MISMATCH':inspection.reason});continue;
     }
-    const item={...original,url:inspection.resolvedUrl};
+    const item=projectDiscovery(original,{...original,url:inspection.resolvedUrl});
     item.verification=issueEvidence(item,{status:'VERIFIED',reason:'ARTICLE_IDENTITY_VERIFIED',basis:'article'},
      {inspection,checkedAt:Number(now()),originalUrl:original.url,pathway:'bangkokbiznews/sitemap-article'});
     if(item.verification){texts.set(item,inspection.text);seenAt.set(item,Number(now()));items.push(item);}

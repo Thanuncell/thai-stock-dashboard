@@ -70,15 +70,17 @@ test('P1: discovery to actual PostgREST HTTP to PostgreSQL 17 to restarted reade
    assert.equal(reviewNewsForDisplay(item).status,'VERIFIED');assert.equal((await archive().ingest([item])).ingested,1);
    const row=(await pool.query('select * from news_archive where fingerprint=$1',[fingerprint])).rows[0];
    assert.equal(row.verification_basis,'article');assert.equal(row.verification_provenance.displayPolicy,'news-display-1');
+   assert.deepEqual(row.verification_provenance.discovery,item.discovery);
+   assert.equal(row.verification_provenance.discovery.pathway,'google-news-rss/general');
    assert.equal(Date.parse(row.verification_provenance.articlePublishedAt),+row.published_at);
    assert.ok(httpTrace.some(x=>x.path.endsWith('/upsert_news_archive_evidence')&&x.status===200&&x.payloadKeys.join()==='p_rows'));
   });
   await t.test('restart database and HTTP service; a fresh process restores displayable evidence',async()=>{
    await pool.end();pool=null;await stopHttp();await control('stop');await control('start');
    pool=new Pool(config);pool.on('error',()=>{});await startHttp();
-   const code="const {createNewsArchiveService}=require('./server/news-archive-service');const env=JSON.parse(process.env.SETSCOPE_P1_CHILD_ENV);const base=process.env.SETSCOPE_P1_CHILD_BASE;const fetchImpl=(input,init)=>{const u=new URL(input);if(u.origin!=='https://fixture.invalid')throw Error('Unexpected host');return fetch(base+u.pathname.slice('/rest/v1'.length)+u.search,init);};createNewsArchiveService({env,fetchImpl}).list().then(r=>console.log(JSON.stringify({shown:r.items.length,article:r.items[0]?.verification.basis,datePolicy:r.items[0]?.verification.displayPolicy}))).catch(()=>{process.exitCode=1;});";
+   const code="const {createNewsArchiveService}=require('./server/news-archive-service');const env=JSON.parse(process.env.SETSCOPE_P1_CHILD_ENV);const base=process.env.SETSCOPE_P1_CHILD_BASE;const fetchImpl=(input,init)=>{const u=new URL(input);if(u.origin!=='https://fixture.invalid')throw Error('Unexpected host');return fetch(base+u.pathname.slice('/rest/v1'.length)+u.search,init);};createNewsArchiveService({env,fetchImpl}).list().then(r=>console.log(JSON.stringify({shown:r.items.length,article:r.items[0]?.verification.basis,datePolicy:r.items[0]?.verification.displayPolicy,discovery:r.items[0]?.discovery?.pathway}))).catch(()=>{process.exitCode=1;});";
    const child=await run(process.execPath,['-e',code],{cwd:repo,windowsHide:true,env:{...process.env,SETSCOPE_P1_CHILD_ENV:JSON.stringify({...env,SETSCOPE_NEWS_EVIDENCE:'read'}),SETSCOPE_P1_CHILD_BASE:base}});
-   assert.deepEqual(JSON.parse(child.stdout),{shown:1,article:'article',datePolicy:'news-display-1'});
+   assert.deepEqual(JSON.parse(child.stdout),{shown:1,article:'article',datePolicy:'news-display-1',discovery:'google-news-rss/general'});
   });
   await t.test('persisted proof reaches Featured, Latest, Archive and owner stock selectors',async()=>{
    const list=await archive('read').list({featuredCount:1});assert.equal(list.featured.length,1);assert.equal(list.total,0);
