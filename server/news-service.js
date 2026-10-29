@@ -1,6 +1,6 @@
 'use strict';
 
-const { allowedNewsUrl, isGoogleNewsUrl, publisherMatches, p1DisplayGateEnabled, isSlugNewsTitle, resolveAllowedNewsRedirect } = require('../lib/news-policy');
+const { allowedNewsUrl, isGoogleNewsUrl, publisherMatches, p1DisplayGateEnabled, isSlugNewsTitle } = require('../lib/news-policy');
 const { BROKER_FIRMS, decorateBrokerAttribution, dedupeNewsItems, matchBrokerFirms, newsFingerprint } = require('../lib/broker-news');
 const { decodeXml, marketHtmlText, xmlTag } = require('../lib/settrade-parser');
 const { normalizeWatchlistNewsStocks } = require('../lib/validation');
@@ -14,6 +14,7 @@ const { isNewsDocument, isNewsDocumentForDisplay, newsDisplayBlocked } = require
 const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
 const { createWatchlistNews, abortable } = require('./watchlist-news');
 const { matchesWatchlistStock, watchlistStockQuery } = require('../lib/watchlist-news-identity');
+const { recordDiscovery, projectDiscovery } = require('../lib/news-discovery');
 const { issueEvidence, rememberAssessments, canonicalUrl } = require('../lib/news-evidence');
 
 const FEEDS = Object.freeze([
@@ -76,9 +77,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
   let openAiInFlight = null;
   let openAiQuotaBlocked = false;
   const hardGate = p1DisplayGateEnabled(env);
-  const blockedArticleOrigins = new Set();
   const loadArticle = articleLoader || createNewsArticleLoader({transport:articleFetch,now,allowGoogleRpc:env.SETSCOPE_GOOGLE_NEWS_RPC==='on'});
-  const articleTransport = articleFetch;
   const bangkokEnabled = env.SETSCOPE_NEWS_BANGKOKBIZNEWS === 'on';
   const bangkok = createBangkokBizNewsSource({enabled:bangkokEnabled,transport:articleFetch,articleLoader:loadArticle,now});
   const thansettakijEnabled = env.SETSCOPE_NEWS_THANSETTAKIJ === 'on';
@@ -170,8 +169,8 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     const cached = riskyTargetCache.get(key);
     if (cached && Number(now()) < cached.expiresAt) return cached.value;
     const observed = (status, reason, resolvedUrl = null) => {
-      const subject = resolvedUrl ? { ...item, url: resolvedUrl } : item;
-      const value = { status, reason, ...(resolvedUrl ? { resolvedUrl } : {}), verification: issueEvidence(subject,
+      const subject = resolvedUrl ? projectDiscovery(item,{ ...item, url: resolvedUrl }) : item;
+      const value = { status, reason, ...(resolvedUrl ? { resolvedUrl,discovery:subject.discovery } : {}), verification: issueEvidence(subject,
         { status, reason, basis: 'article' }, { checkedAt: Number(now()), originalUrl: item.url, pathway: 'google-rss/article' }) };
       return cacheRiskyTarget(key, value, status === 'UNVERIFIED' ? RISKY_TARGET_UNVERIFIED_CACHE_MS : RISKY_TARGET_CACHE_MS);
     };
@@ -187,11 +186,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       const html=await abortable(readBoundedText(response,recoverHeadline?1000000:MAX_RISKY_TARGET_BYTES),signal);
       if(response.url&&articleIdentity(response.url)!==articleIdentity(target.href))return observed('UNVERIFIED','ARTICLE_RESPONSE_URL_MISMATCH');
       const inspected=inspectNewsArticle(html,{url:target.href,title:item.title,strict:hardGate||recoverHeadline,recoverHeadline});
-      if(inspected.reason==='ARTICLE_ACCESS_DENIED'){loadArticle.blockOrigin(target);blockedArticleOrigins.add(target.origin);}
-      const projected={...item,...(inspected.headline?{title:inspected.headline}:{}),url:inspected.resolvedUrl||target.href,...(inspected.publishedAt?{pubDate:inspected.publishedAt}:{})};
+      if(inspected.reason==='ARTICLE_ACCESS_DENIED'){loadArticle.blockOrigin(target);}
+      const projected=projectDiscovery(item,{...item,...(inspected.headline?{title:inspected.headline}:{}),url:inspected.resolvedUrl||target.href,...(inspected.publishedAt?{pubDate:inspected.publishedAt}:{})});
       const verification=issueEvidence(projected,{status:inspected.status,reason:inspected.reason,basis:'article'},
         {inspection:inspected,originalTitle:inspected.headline?item.title:null,originalUrl:item.url,checkedAt:Number(now()),pathway:'google-rss/article'});
-      return cacheRiskyTarget(key,{status:inspected.status,reason:inspected.reason,headline:inspected.headline,resolvedUrl:projected.url,publishedAt:inspected.publishedAt,articleText:inspected.text,verification},
+      return cacheRiskyTarget(key,{status:inspected.status,reason:inspected.reason,headline:inspected.headline,resolvedUrl:projected.url,publishedAt:inspected.publishedAt,articleText:inspected.text,discovery:projected.discovery,verification},
         inspected.status==='UNVERIFIED'?RISKY_TARGET_UNVERIFIED_CACHE_MS:RISKY_TARGET_CACHE_MS);
     } catch { return observed('UNVERIFIED','ARTICLE_NOT_VERIFIED'); }
   }
@@ -221,7 +220,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       if (risky && !budget.signal?.aborted && (cachedEvidence || budget.remaining > 0)) {
         if (!cachedEvidence) budget.remaining -= 1;
         const validation = await validateRiskyTarget(item,budget.signal,budget);
-        if (validation.resolvedUrl) item = { ...item, ...(validation.headline?{title:validation.headline,rssTitle:original.title}:{}), url: validation.resolvedUrl, ...(validation.publishedAt ? {pubDate:validation.publishedAt} : {}) };
+        if (validation.resolvedUrl) item = { ...item, ...(validation.headline?{title:validation.headline,rssTitle:original.title}:{}), url: validation.resolvedUrl, ...(validation.publishedAt ? {pubDate:validation.publishedAt} : {}), ...(validation.discovery?{discovery:validation.discovery}:{}) };
         evidence = reviewNewsItem(item, validation.verification || validation);
         if (hardGate && stock && validation.status === 'VERIFIED'
           && !matchesWatchlistStock(stock, item.title+' '+(validation.articleText || ''))) {
@@ -275,7 +274,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
             pubDate,
             snippet
           });
-        }).filter(item => {
+        }).map(item=>recordDiscovery(item,{pathway:'google-news-rss/general',observedAt:Number(now())})).filter(item => {
           const published = Date.parse(item.pubDate);
           return item.title && allowedNewsUrl(item.url)
             && Number.isFinite(published) && published >= cutoff;
@@ -319,60 +318,31 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     return rememberAssessments(result, settled.flatMap(entry => entry.assessments || []));
   }
 
-  async function extractArticle(item) {
-    let target = allowedNewsUrl(item.url);
-    if (!target) return '';
+  // Extraction is internal material for verification/summary, never a publish
+  // decision. Callers must still obtain subject-bound G1 article evidence.
+  async function extractArticle(item, { signal, budget = { httpRemaining: 12 }, strict = true } = {}) {
+    const controller = new AbortController(), relay = () => controller.abort();
+    if(signal?.aborted)controller.abort();else signal?.addEventListener('abort',relay,{once:true});
+    const timer = setTimeout(()=>controller.abort(),9000);
+    const before = budget.httpRemaining ?? 12;
+    const unknown = reason => ({state:'UNVERIFIED',reason,originalUrl:item?.url || '',canonicalUrl:null,publishedAt:null,text:'',requests:before-(budget.httpRemaining ?? before)});
     try {
-      let response;
-      for (let redirect = 0; redirect < 5; redirect++) {
-        if (blockedArticleOrigins.has(target.origin) || loadArticle.isBlocked(target)) return '';
-        response = await articleTransport(target, {
-          maxBytes: 1_500_000,
-          redirect: 'manual',
-          headers: {
-            'user-agent': 'Mozilla/5.0 (compatible; SETscope news summarizer/1.0)',
-            accept: 'text/html,application/xhtml+xml'
-          },
-          signal: AbortSignal.timeout(9000)
-        });
-        if (![301, 302, 303, 307, 308].includes(response.status)) break;
-        const location = response.headers.get('location');
-        if (!location) return '';
-        target = resolveAllowedNewsRedirect(target, location);
-        if (!target) return '';
-      }
-      if ([401,403].includes(response.status)) {blockedArticleOrigins.add(target.origin);loadArticle.blockOrigin(target);}
-      if(response.status===429)loadArticle.blockOrigin(target,300000);
-      const finalUrl = allowedNewsUrl(response.url || target.href);
-      if (!response.ok || !finalUrl || !/text\/html|application\/xhtml\+xml/i.test(response.headers.get('content-type') || '')) return '';
-      if (articleIdentity(finalUrl.href) !== articleIdentity(target.href)) return '';
-      const reader = response.body?.getReader();
-      if (!reader) return '';
-      const chunks = [];
-      let size = 0;
-      while (size < 1_500_000) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        size += value.byteLength;
-        if (size >= 1_500_000) {
-          reader.cancel().catch(() => {});
-          break;
-        }
-      }
-      const bytes = new Uint8Array(size);
-      let offset = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      const html = new TextDecoder().decode(bytes);
-      const inspection = inspectNewsArticle(html, { url: finalUrl.href, title: item.title });
-      if(inspection.reason==='ARTICLE_ACCESS_DENIED'){loadArticle.blockOrigin(target);blockedArticleOrigins.add(target.origin);}
-      return inspection.status === 'VERIFIED' ? inspection.text : '';
-    } catch (_) {
-      return '';
-    }
+      if (isNewsDocument(item)) return unknown('DOCUMENT_NOT_ARTICLE');
+      const loaded = await abortable(loadArticle(item?.url,{signal:controller.signal,budget,maxBytes:1_500_000}),controller.signal);
+      if(!loaded.response)return unknown(loaded.reason);
+      const {target,response}=loaded;
+      if(!response.ok)return unknown('ARTICLE_HTTP_UNAVAILABLE');
+      if(!/^(?:text[/]html|application[/]xhtml[+]xml)(?:;|$)/i.test(response.headers.get('content-type')||''))return unknown('ARTICLE_CONTENT_TYPE_UNVERIFIED');
+      if(response.url&&articleIdentity(response.url)!==articleIdentity(target.href))return unknown('ARTICLE_RESPONSE_URL_MISMATCH');
+      if(strict&&!publisherMatches({...item,url:target.href}))return unknown('PUBLISHER_IDENTITY_UNVERIFIED');
+      const html=await readBoundedText(response,1_500_000,controller.signal);
+      const inspection=inspectNewsArticle(html,{url:target.href,title:item.title,strict});
+      if(inspection.reason==='ARTICLE_ACCESS_DENIED')loadArticle.blockOrigin(target);
+      if(inspection.status!=='VERIFIED')return unknown(inspection.reason);
+      return {state:'EXTRACTED',reason:'ARTICLE_CONTENT_EXTRACTED',originalUrl:item.url,canonicalUrl:inspection.resolvedUrl,
+        publishedAt:inspection.publishedAt || null,text:inspection.text,requests:before-(budget.httpRemaining ?? before)};
+    } catch {return unknown(controller.signal.aborted?'ARTICLE_REQUEST_TIMEOUT':'ARTICLE_NOT_VERIFIED');}
+    finally {clearTimeout(timer);signal?.removeEventListener('abort',relay);}
   }
 
   async function analyse(items = []) {
@@ -395,34 +365,41 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       let timer;
       const controller = new AbortController();
       try {
-        const material = (await Promise.all(fresh.map(async (item,id) => {
-          const article = await extractArticle(item);
-          return { id, cacheKey: cacheKey(item), source:item.source, title:item.title, articleText:article || item.snippet,
-            basis:article?'article':item.snippet?'snippet':'headline' };
-        }))).filter(item=>item.articleText);
-        if (material.length) {
-          const expired = new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('AI_TIMEOUT'));},analysisTimeoutMs);});
-          const payload = await Promise.race([expired, (async()=>{
-            const response = await fetchImpl('https://api.openai.com/v1/responses', {
-              method:'POST', headers:{authorization:'Bearer '+env.OPENAI_API_KEY,'content-type':'application/json'},
-              body:JSON.stringify(newsAnalysisRequest(material,env.OPENAI_MODEL || 'gpt-4.1-mini')), signal:controller.signal
-            });
+        let material=[];
+        const articleBudget={remaining:MAX_RISKY_TARGET_CHECKS,httpRemaining:12};
+        const expired = new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('AI_TIMEOUT'));},analysisTimeoutMs);});
+        const payload = await Promise.race([expired, (async()=>{
+          material = (await Promise.all(fresh.map(async (item,id) => {
+            const canExtract=articleBudget.remaining>0;
+            if(canExtract)articleBudget.remaining--;
+            const extraction=canExtract?await extractArticle(item,{signal:controller.signal,budget:articleBudget,strict:false}):null;
+            const article=extraction?.state==='EXTRACTED'?extraction.text:'';
+            return {id,cacheKey:cacheKey(item),source:item.source,title:item.title,articleText:article||item.snippet,
+              basis:article?'article':item.snippet?'snippet':'headline'};
+          }))).filter(item=>item.articleText);
+          if(controller.signal.aborted)throw Error('AI_TIMEOUT');
+          if(!material.length)return null;
+          const response = await abortable(fetchImpl('https://api.openai.com/v1/responses', {
+            method:'POST', headers:{authorization:'Bearer '+env.OPENAI_API_KEY,'content-type':'application/json'},
+            body:JSON.stringify(newsAnalysisRequest(material,env.OPENAI_MODEL || 'gpt-4.1-mini')), signal:controller.signal
+          }),controller.signal);
+          if (response.status === 429) {
+            const retryAfter = parseRetryAfter(response.headers.get('retry-after'), Number(now()));
+            // Honor valid Retry-After up to the existing bounded header limit.
+            openAiCooldownUntil = Math.max(openAiCooldownUntil, Number(now()) + Math.max(OPENAI_MIN_COOLDOWN_MS, retryAfter || OPENAI_DEFAULT_COOLDOWN_MS));
+          }
+          let body;
+          try { body = JSON.parse(await readBoundedText(response,128000,controller.signal)); }
+          catch { if (response.ok) throw Error('AI_INVALID_RESPONSE'); }
+          if (!response.ok) {
             if (response.status === 429) {
-              const retryAfter = parseRetryAfter(response.headers.get('retry-after'), Number(now()));
-              // Honor valid Retry-After up to the existing bounded header limit.
-              openAiCooldownUntil = Math.max(openAiCooldownUntil, Number(now()) + Math.max(OPENAI_MIN_COOLDOWN_MS, retryAfter || OPENAI_DEFAULT_COOLDOWN_MS));
+              openAiQuotaBlocked = ['insufficient_quota','credit_balance_exhausted','billing_hard_limit_reached'].includes(body?.error?.code);
             }
-            let body;
-            try { body = JSON.parse(await readBoundedText(response,128000)); }
-            catch { if (response.ok) throw Error('AI_INVALID_RESPONSE'); }
-            if (!response.ok) {
-              if (response.status === 429) {
-                openAiQuotaBlocked = ['insufficient_quota','credit_balance_exhausted','billing_hard_limit_reached'].includes(body?.error?.code);
-              }
-              const error=Error('AI_HTTP_FAILURE');error.diagnostic=safeAiDiagnostic(response.status,body,material.length);throw error;
-            }
-            return body;
-          })()]);
+            const error=Error('AI_HTTP_FAILURE');error.diagnostic=safeAiDiagnostic(response.status,body,material.length);throw error;
+          }
+          return body;
+        })()]);
+        if(payload){
           const summaries=parseNewsAnalysis(payload,material);
           for (const item of material) analysisCache.set(item.cacheKey,{summary:summaries.get(item.id),mode:'ai',basis:item.basis,expiresAt:Number(now())+6*60*60*1000});
         }
@@ -462,7 +439,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       const pubDate=decodeXml(xmlTag(block,'pubDate')),snippet=decodeXml(xmlTag(block,'description')).slice(0,1200),outlet=decodeXml(xmlTag(block,'source'));
       return decorateBrokerAttribution({title,url,pubDate,snippet,source:sourceFromOutlet(outlet),sourceName:outlet||'ข่าวหุ้นไทย',
         matchedSymbols:matchesWatchlistStock(stock,title+' '+snippet)?[stock.symbol]:[]});
-    }).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
+    }).map(item=>recordDiscovery(item,{pathway:'google-news-rss/watchlist',observedAt:Number(now())})).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
       &&Date.parse(item.pubDate)>=Number(now())-30*86400000&&Date.parse(item.pubDate)<=Number(now())+600000&&item.matchedSymbols.length);
     const quality=await keepQualityItems(parsed,budget,stock);
     return {items:quality.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:quality.unverifiedCount,
@@ -514,7 +491,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       ...candidates.filter(item=>!kept.includes(item)).map(item=>item?.url)])].filter(url=>allowedNewsUrl(url)).slice(0,200);
     return { ...payload, p1DisplayGate:true, ...(withheldUrls.length ? {withheldUrls} : {}), items:kept.map(item=>annotateNewsContent(item,{now:Number(now())})), ...(!payload.page && typeof payload.total==='number' ? {total:kept.length} : {}), ...(kept.length < candidates.length ? {partial:true,dataState:kept.length?'partial':'unavailable'} : {}) };
   }
-  return { analyse, getNews, getWatchlistNews, filterForDisplay, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
+  return { analyse, extractArticle, getNews, getWatchlistNews, filterForDisplay, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
 }
 
 module.exports = { FEEDS, OUTLET_SOURCE, createNewsService, fallbackNewsSummary, parseRetryAfter, sourceFromOutlet };

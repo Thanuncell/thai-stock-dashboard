@@ -8,7 +8,7 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
  for(const [label,viewport,hardGate] of [['desktop-off',{width:1366,height:900},false],['mobile-off',{width:390,height:844},false],['desktop-on',{width:1366,height:900},true],['mobile-on',{width:390,height:844},true]]){
   const context=await browser.newContext({viewport}),state={getOwners:[],putOwners:[],holdNextAPut:false,holdNextLogout:false,holdNextAGet:false,holdNextAMarket:false};
   const proof={status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'},date=new Date(Date.now()-60000).toISOString();
-  const make=(name,changes={})=>{const url='https://www.set.or.th/th/market/news-and-alert/newsdetails?id='+name;return {title:name+' แจ้งผลการดำเนินงาน',url,source:'settrade',sourceName:'SET',pubDate:date,verification:proof,analysisMode:'ai',analysisSummary:'G1_STORED_AI',matchedSymbols:['OR'],securityIdentification:{status:'IDENTIFIED',symbols:['PTT','PTTEP'],publisherUrl:url},linkVerification:{status:'VERIFIED',kind:'ARTICLE'},displayUrl:url,...changes};};
+  const make=(name,changes={})=>{const url='https://www.set.or.th/th/market/news-and-alert/newsdetails?id='+name;return {title:name+' แจ้งผลการดำเนินงาน',url,source:'settrade',sourceName:'SET',pubDate:date,verification:proof,analysisMode:'ai',analysisSummary:'G1_STORED_AI',discovery:{version:'news-discovery-1',pathway:'google-news-rss/general',publisher:changes.sourceName||'SET',originalUrl:changes.url||url,publishedAt:date,observedAt:date},matchedSymbols:['OR'],securityIdentification:{status:'IDENTIFIED',symbols:['PTT','PTTEP'],publisherUrl:url},linkVerification:{status:'VERIFIED',kind:'ARTICLE'},displayUrl:url,...changes};};
   const multi=make('SET_MULTI'),latest=make('SET_LATEST');
   const unknown=make('SET_UNKNOWN',{sourceName:'Settrade',securityIdentification:{status:'UNVERIFIED',symbols:[],reason:'ISSUER_NOT_IDENTIFIED'},matchedSymbols:['PTT']});
   const other=make('OTHER_PUBLISHER',{source:'infoquest',sourceName:'InfoQuest',url:'https://www.infoquest.co.th/2026/browser-other',displayUrl:'https://www.infoquest.co.th/2026/browser-other',matchedSymbols:['OR']});
@@ -44,6 +44,7 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   if(hardGate)assert.doesNotMatch(await page.locator('#news-section').textContent(),/SET_RESOLVED/);
   else{const link=page.locator('#news-section .news-item').filter({hasText:'SET_RESOLVED'}).locator('.news-title');assert.equal(await link.getAttribute('href'),resolved.displayUrl);}
   assert.equal(await page.locator('#news-section .news-document-tag').count(),0);
+  assert.doesNotMatch(await page.locator('#news-section').textContent(),/news-discovery-1|google-news-rss[/]general/);
   assert.equal((await page.locator('#news-section').textContent()).includes('INVESTING_RSS'),!hardGate);
   if(!hardGate)assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).locator('.news-title').first().getAttribute('href'),investing.url);
   else assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).count(),0);
@@ -59,7 +60,7 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   assert.match(await page.locator('#watchlist-news-list').textContent(),/BANGKOK_ARTICLE/);
   assert.match(await page.locator('#watchlist-news-list').textContent(),/THANSETTAKIJ_ARTICLE/);
   await page.screenshot({path:path.join(process.env.TEMP,'setscope-link-security-'+label+'.png'),fullPage:true});
-  console.log(JSON.stringify({viewport:label,checks:21,status:'PASS',issuerScope:true,multiSymbol:true,unknownLabel:true,articlePdfWord:true,linkFilter:true,search:true,archive:true,watchlist:true,cachedResponses:true}));await context.close();
+  console.log(JSON.stringify({viewport:label,checks:22,status:'PASS',issuerScope:true,multiSymbol:true,unknownLabel:true,articlePdfWord:true,linkFilter:true,search:true,archive:true,watchlist:true,cachedResponses:true}));await context.close();
  }
  }finally{await browser?.close().catch(()=>{});server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
