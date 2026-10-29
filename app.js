@@ -80,6 +80,7 @@ let latestWatchlistNews = [];
 let archiveNews = [];
 let archiveFeaturedNews = [];
 let archiveTotal = null;
+let archiveSnapshotTotal = null;
 let archiveState = 'idle';
 let archiveStale = false;
 let archivePendingKey = '', archivePendingTask = null, archiveController = null;
@@ -202,7 +203,7 @@ function clearPrivateState() {
   newsAnalysisRequestId += 1;
   watchlistNewsMatchInfo = null;
   archiveNewsRequestId += 1; archiveController?.abort(); archiveController=null; archivePendingKey=''; archivePendingTask=null;
-  archiveLoaded=false; archiveState='idle'; archiveTotal=null;
+  archiveLoaded=false; archiveState='idle'; archiveTotal=null; archiveSnapshotTotal=null;
   syncNavigationControls();
   watchlistNewsRequestId += 1;
   watchlistNewsController?.abort();
@@ -1381,10 +1382,12 @@ async function getArchiveNews({ page = newsPage } = {}) {
         newsAnalyses.set(newsKey(item), {summary:String(item.analysisSummary).trim(),mode:item.analysisMode,basis:'archive'});
       }
     }
-    archiveTotal = data.countExact!==false&&Number.isSafeInteger(data.total)&&data.total>=0 ? data.total : null;
-    const totalPages = Math.max(1, Math.ceil((archiveTotal||0) / PAGE_SIZE));
-    if(Number.isInteger(data.page)&&data.page>=1&&data.page<=totalPages&&archiveConfigured){newsPage=data.page;if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
-    else if (archiveTotal!==null&&archiveConfigured&&newsPage > totalPages) {
+    // API total controls the loaded snapshot's pages; countExact controls global count copy only.
+    archiveSnapshotTotal = Number.isSafeInteger(data.total)&&data.total>=0 ? data.total : null;
+    archiveTotal = data.countExact!==false ? archiveSnapshotTotal : null;
+    const totalPages = archiveSnapshotTotal===null ? null : Math.max(1, Math.ceil(archiveSnapshotTotal / PAGE_SIZE));
+    if(Number.isSafeInteger(data.page)&&data.page>=1&&(totalPages===null||data.page<=totalPages)&&archiveConfigured){newsPage=data.page;if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
+    else if (archiveSnapshotTotal!==null&&archiveConfigured&&newsPage > totalPages) {
       newsPage = totalPages;
       if (document.body.dataset.workspacePage === 'news') writeNavigation('replace', 'news');
       archivePendingKey='';return getArchiveNews({ page: newsPage });
@@ -1395,7 +1398,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
     archiveLoaded = false;
     archiveFeaturedNews = [];
     archiveNews = [];
-    archiveTotal = null;archiveState='error';renderNews();
+    archiveTotal = null;archiveSnapshotTotal=null;archiveState='error';renderNews();
   }finally{if(archiveController===controller){archiveController=null;archivePendingKey='';archivePendingTask=null;}}
   })();archivePendingTask=task;return task;
 }
@@ -1669,8 +1672,8 @@ function renderWatchlistNews() {
 function renderPagerInto(bar, current, total, count, onPick) {
   if (!bar) return;
   bar.replaceChildren();
-  bar.hidden = count <= PAGE_SIZE;
-  if (count <= PAGE_SIZE) return;
+  bar.hidden = total===null ? current<=1 : count<=PAGE_SIZE;
+  if (bar.hidden) return;
   const makeButton = (label, page, options = {}) => {
     const button = document.createElement('button');
     button.type = 'button';
@@ -1683,11 +1686,11 @@ function renderPagerInto(bar, current, total, count, onPick) {
     return button;
   };
   bar.append(makeButton('‹', current - 1, { disabled: current === 1 }));
-  pageList(current, total).forEach(page => {
+  (total===null ? [current] : pageList(current, total)).forEach(page => {
     if (page === '…') { const separator = document.createElement('span'); separator.textContent = '…'; separator.setAttribute('aria-hidden','true');bar.append(separator); }
     else bar.append(makeButton(String(page), page, { active: page === current }));
   });
-  bar.append(makeButton('›', current + 1, { disabled: current === total }));
+  if(total!==null)bar.append(makeButton('›', current + 1, { disabled: current === total }));
 }
 function renderNews() {
   const query = newsQuery.trim().toLocaleLowerCase('th');
@@ -1719,9 +1722,9 @@ function renderNews() {
     const section = featuredBox.closest('.featured-news');
     if (section) section.hidden = !featured.length;
   }
-  const availableCount = archiveLoaded ? archiveTotal??rest.length : rest.length;
-  const total = Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
-  const displayPage = Math.max(1, Math.min(newsPage, total));
+  const availableCount = archiveLoaded ? archiveSnapshotTotal : rest.length;
+  const total = availableCount===null ? null : Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
+  const displayPage = Math.max(1, total===null ? newsPage : Math.min(newsPage, total));
   if (newsLoaded&&archiveState!=='loading'&&newsPage!==displayPage){newsPage=displayPage;if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
   const items = archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((displayPage - 1) * PAGE_SIZE, displayPage * PAGE_SIZE);
   const emptyText = !all.length&&!archiveLoaded&&['unavailable','error'].includes(newsDataState)?'ยังไม่สามารถโหลดข่าวได้ กรุณาลองอัปเดตอีกครั้ง':query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่มีข่าวในหมวดที่เลือก';

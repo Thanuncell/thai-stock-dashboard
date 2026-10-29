@@ -13,7 +13,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    checks=0;const context=await browser.newContext({viewport}),state={getOwners:[],putOwners:[],holdNextAPut:false,holdNextLogout:false,holdNextAGet:false,holdNextAMarket:false},calls={news:0,archive:0,watch:0},timings=[];
    const names=['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ','Investing.com','InfoQuest'];
    const items=Array.from({length:1205},(_,i)=>({title:'WS6 PTT รายงานข่าวลงทุน '+String(i).padStart(4,'0'),url:'https://news.google.com/rss/articles/ws6-browser-'+i,source:i%4===3?'infoquest':'other',sourceName:names[i%4],pubDate:new Date(Date.now()-60000-i*1000).toISOString(),snippet:'PTT รายงานผลประกอบการและการลงทุนตามข้อมูลต้นทาง',matchedSymbols:['PTT'],brokerCategory:i%5===0,verification:{status:'VERIFIED',basis:'metadata'}}));
-   let mode='archive',hold=false,release,watchRows=25;
+   let mode='archive',hold=false,release,watchRows=25;const archiveResponses=[];
    await context.route('**/*',async route=>{
     const request=route.request(),u=new URL(request.url());
     if(u.origin!==base&&u.origin!=='https://isolation-test.supabase.co')return route.abort();
@@ -25,7 +25,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
      if(hold){hold=false;await new Promise(r=>{release=r;});}
      await delay(20);if(mode==='error')return json({error:'synthetic unavailable'},502);
      if(['local','unavailable'].includes(mode))return json({configured:false,items:[],featured:[],total:0,dataState:'unavailable'});
-     return json({configured:true,items:rest.slice((page-1)*10,page*10),featured,total:rest.length,page,countExact:mode!=='unknown',matchingTotal:available.length,dataState:'fresh'});
+     const result={configured:true,items:rest.slice((page-1)*10,page*10),featured,total:rest.length,page,countExact:!mode.startsWith('unknown'),matchingTotal:mode.startsWith('unknown')?null:available.length,dataState:'fresh'};if(mode==='unknown-no-total')delete result.total;archiveResponses.push(result);return json(result);
     }
     if(u.origin===base&&u.pathname==='/api/watchlist-news'){calls.watch++;return json({items:[...items.slice(0,watchRows),{...items[0],title:'WS6_CROSS_ACCOUNT',url:items[0].url+'-private',matchedSymbols:['ADVANC']}],limited:true,dataState:'fresh'});}
     if(u.origin===base&&u.pathname==='/api/news-analysis')return json({items:request.postDataJSON().items.map(()=>({summary:'',mode:'unavailable'}))});
@@ -65,6 +65,38 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    await page.locator('#news-search').fill('');await page.waitForFunction(()=>document.querySelector('#news-count').textContent==='603 ข่าว');
    mode='error';await select('all');assert.match(await counter.textContent(),/คลังข่าวไม่พร้อม/);assert.doesNotMatch(await counter.textContent(),/^0 ข่าว/);
    mode='unknown';await select('infoquest');assert.equal(await counter.textContent(),'ยังนับข่าวทั้งหมดไม่ได้');await select('all');
+   // Coverage is incomplete, but API total/page still describe the loaded snapshot.
+   assert.equal(await pager.getByRole('button',{name:'หน้า 2',exact:true}).count(),1);
+   const assertUnknownPage=async n=>{
+    await page.waitForFunction(expected=>document.querySelector('#news-pager [aria-current="page"]')?.textContent===String(expected)&&document.querySelector('#news-count').textContent==='ยังนับข่าวทั้งหมดไม่ได้',n);
+    assert.equal(new URL(page.url()).searchParams.get('newsPage')||'1',String(n));
+    assert.equal(await counter.textContent(),'ยังนับข่าวทั้งหมดไม่ได้');
+    assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),archiveResponses.at(-1).items.map(x=>x.title));
+    assert.equal(archiveResponses.at(-1).page,n);
+    assert.ok((await pager.locator('button').allTextContents()).filter(x=>/^\d+$/.test(x)).length<=10);
+   };
+   await assertUnknownPage(1);
+   const unknownBefore={...calls};
+   for(const n of [2,3,120]){const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive');await pager.getByRole('button',{name:'หน้า '+n,exact:true}).click();await response;await assertUnknownPage(n);}
+   for(const n of [3,2]){await page.goBack();await assertUnknownPage(n);}
+   for(const n of [3,120]){await page.goForward();await assertUnknownPage(n);}
+   assert.equal(calls.news,unknownBefore.news);assert.equal(calls.archive-unknownBefore.archive,7);
+   const unknownClampBefore={...calls};
+   await page.evaluate(()=>{history.pushState(null,'','/?newsPage=9999#news');dispatchEvent(new PopStateEvent('popstate'));});await assertUnknownPage(120);
+   assert.equal(calls.archive-unknownClampBefore.archive,0);assert.equal(calls.news,unknownClampBefore.news);
+   await page.reload({waitUntil:'domcontentloaded'});await assertUnknownPage(120);
+   // A filtered selection resets to page one once, without an extra corrective read.
+   const filterBefore=calls.archive;await select('bangkokbiznews');await select('thansettakij');
+   assert.equal(calls.archive-filterBefore,2);await assertUnknownPage(1);
+   const searched=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive'&&new URL(r.url()).searchParams.get('query')==='PTT');await page.locator('#news-search').fill('PTT');await searched;await assertUnknownPage(1);
+   const page2=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive');await pager.getByRole('button',{name:'หน้า 2',exact:true}).click();await page2;await assertUnknownPage(2);
+   const cleared=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive'&&new URL(r.url()).searchParams.get('query')==='');await page.locator('#news-search').fill('');await cleared;await assertUnknownPage(1);
+   await select('all');
+   // Without even a snapshot total, preserve the API page and do not invent future pages.
+   mode='unknown-no-total';const missingTotal=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive');
+   await page.evaluate(()=>{history.pushState(null,'','/?newsPage=3#news');dispatchEvent(new PopStateEvent('popstate'));});await missingTotal;await assertUnknownPage(3);
+   assert.deepEqual((await pager.locator('button').allTextContents()).filter(x=>/^\d+$/.test(x)),['3']);assert.equal(await pager.getByRole('button',{name:'ถัดไป',exact:true}).count(),0);
+   const previousUnknown=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive');await pager.getByRole('button',{name:'ก่อนหน้า',exact:true}).click();await previousUnknown;await assertUnknownPage(2);
    mode='local';await page.locator('#refresh-news').click();await page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled);assert.match(await counter.textContent(),/60 ข่าว/);
    const titles1=await page.locator('#news-list .news-title-link').allTextContents();const localBefore=calls.news;await pager.getByRole('button',{name:'หน้า 2',exact:true}).click();assert.notDeepEqual(await page.locator('#news-list .news-title-link').allTextContents(),titles1);assert.equal(calls.news,localBefore);
    await page.locator('.nav-item[data-workspace-route="watchlist"]').click();await page.waitForFunction(()=>document.querySelector('#watchlist-news-list .news-title-link'));

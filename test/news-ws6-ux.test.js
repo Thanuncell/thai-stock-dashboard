@@ -65,3 +65,14 @@ test('WS6: an unconfirmed archive coverage total never claims an exact global co
  const archive=createNewsArchiveService({env:{SUPABASE_URL:'https://fixture.invalid',SUPABASE_SECRET_KEY:'synthetic'},fetchImpl:async()=>Response.json([row],{headers:{'content-range':'0-0/*'}})});
  const result=await archive.list();assert.equal(result.items.length,1);assert.equal(result.countExact,false);assert.equal(result.countCoverage,'loaded-archive-snapshot');
 });
+
+test('WS6: incomplete snapshot preserves page totals and ordered slices without claiming global coverage',async()=>{
+ const rows=Array.from({length:125},(_,i)=>({fingerprint:'partial-'+i,title:'PTT ข่าวผลประกอบการ '+i,url:'https://news.google.com/rss/articles/ws6-partial-'+i,source:'infoquest',source_name:'InfoQuest',snippet:'บริษัทเปิดเผยข้อมูลผลประกอบการและรายละเอียดการลงทุน',published_at:new Date(Date.parse(date)-i*1000).toISOString(),matched_symbols:['PTT'],broker_firms:[]}));
+ let reads=0;const archive=createNewsArchiveService({env:{SUPABASE_URL:'https://fixture.invalid',SUPABASE_SECRET_KEY:'synthetic'},fetchImpl:async(_u,init={})=>{assert.equal(init.method||'GET','GET');reads++;return Response.json(rows,{headers:{'content-range':'0-124/*'}});}});
+ for(const page of [1,2,3,12]){
+  const result=await archive.list({page,featuredCount:5,clampPage:true});
+  assert.equal(result.countExact,false);assert.equal(result.total,120);assert.equal(result.page,page);assert.equal(result.items.length,10);
+  assert.deepEqual(result.items.map(x=>x.title),rows.slice(5+(page-1)*10,5+page*10).map(x=>x.title));
+ }
+ const clamped=await archive.list({page:999,featuredCount:5,clampPage:true});assert.equal(clamped.page,12);assert.equal(clamped.items.length,10);assert.equal(reads,1);
+});
