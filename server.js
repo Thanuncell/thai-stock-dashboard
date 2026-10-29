@@ -124,7 +124,8 @@ setInterval(() => {
 const observability = createObservability();
 const responseCache = createMemoryCache({ maxEntries: 200 });
 const providerFetch = observability.observedFetch(globalThis.fetch);
-const articleFetch = observability.observedFetch(require('./lib/news-fetch').createNewsTransport());
+const newsReliability = require('./server/news-source-reliability').createNewsSourceReliability({pausedSources:String(process.env.SETSCOPE_NEWS_PAUSED_SOURCES||'').split(',').map(x=>x.trim()).filter(Boolean),onEvent:fields=>observability.emit('news_source',fields)});
+const articleFetch = newsReliability.wrap(observability.observedFetch(require('./lib/news-fetch').createNewsTransport()),'extraction');
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
@@ -154,7 +155,7 @@ let durableNewsIngest;
 const newsService = createNewsService({ onDiscovered: async items => {
   try { await durableNewsIngest.captureDiscovered(items); }
   catch { console.warn('News queue discovery admission unavailable'); }
-}, articleLoader, displayProject:newsLinkReview.project, fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
+}, reliability:newsReliability, articleLoader, displayProject:newsLinkReview.project, fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
 const newsArchiveService = createNewsArchiveService({ displayReview:newsLinkReview.review, displayProject:newsLinkReview.project, fetchImpl: providerFetch, quarantine:newsQuarantine });
 const newsWorkStore = require('./server/news-work-store').createNewsWorkStore({ fetchImpl: providerFetch });
 durableNewsIngest = require('./server/news-work').createDurableNewsIngest({ archive: newsArchiveService, store: newsWorkStore, review: newsService.reviewDiscovered });

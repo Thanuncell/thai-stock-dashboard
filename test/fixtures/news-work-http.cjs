@@ -72,5 +72,29 @@ module.exports=async function httpChecks(t,{pool,config}){
    assert.equal((await service.list({query:'WS4 ตรวจสอบข่าวซ้ำ',excludeUrls:[url]})).total,0);
    const after=(await pool.query("select * from news_archive where url=any($1::text[]) order by id",[[first.url,second.url]])).rows;assert.deepEqual(after,before);
   });
+
+  await t.test('WS5 HTTP: Retry-After defers durable work and scoped health does not read payloads',async()=>{
+   await store().enqueue({scope:'ws5-rate',key:'rate',stage:'extraction',payload:{original:true}});
+   const health=await store().inspect({scope:'ws5-rate'});assert.equal(health.depth,1);assert.ok(health.oldestAgeMs>=0);
+   const worker=require('../../server/news-work').createNewsWorker({store:store(),extract:async()=>{throw Object.assign(Error('synthetic limit'),{status:429,retryAfterMs:180000});}});
+   assert.equal((await worker.runOnce({scope:'ws5-rate'})).outcomes[0].outcome,'retry');
+   const row=(await pool.query("select * from news_work where scope='ws5-rate'")).rows[0];
+   assert.equal(row.state,'retry');assert.deepEqual(row.payload,{original:true});assert.ok(+row.available_at-Date.now()>170000);
+  });
+  await t.test('WS5 HTTP: failed completion acknowledgement reclaims without duplicate archive or lost AI',async()=>{
+   const item=article({url:'https://thunhoon.com/article-ws5-ack-failure'}),row=archive().prepare([item])[0];
+   await store().enqueue({scope:'ws5-ack',key:'ack',stage:'persistence',payload:row});
+   const failing=createNewsWorkStore({env,fetchImpl:async(input,init)=>String(input).endsWith('/finish_news_work')?new Response('',{status:503}):transport(input,init)});
+   const result=await createDurableNewsIngest({archive:archive(),store:failing}).runOnce({scope:'ws5-ack'});
+   assert.equal(result.outcomes[0].outcome,'acknowledgement-unavailable');
+   const job=(await pool.query("select * from news_work where scope='ws5-ack'")).rows[0];assert.equal(job.state,'processing');assert.deepEqual(job.payload,row);
+   await pool.query("update news_archive set analysis_mode='ai',analysis_summary='Preserved WS5 AI' where url=$1",[item.url]);
+   const before=(await pool.query('select * from news_archive where url=$1',[item.url])).rows[0];
+   await pool.query("update news_work set lease_until=now()-interval '1 second' where scope='ws5-ack'");
+   assert.equal((await createDurableNewsIngest({archive:archive(),store:store()}).runOnce({scope:'ws5-ack'})).outcomes[0].outcome,'completed');
+   const after=(await pool.query('select * from news_archive where url=$1',[item.url])).rows;assert.equal(after.length,1);assert.equal(after[0].fingerprint,before.fingerprint);assert.equal(+after[0].first_seen_at,+before.first_seen_at);assert.equal(after[0].analysis_summary,before.analysis_summary);assert.equal(after[0].verification_subject_hash,before.verification_subject_hash);
+   assert.equal((await store().inspect({scope:'ws5-ack'})).depth,0);
+  });
+
  }finally{await stop();await fs.unlink(conf).catch(()=>{});await pool.query('drop role if exists '+role);}
 };
