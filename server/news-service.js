@@ -70,7 +70,7 @@ const { createBangkokBizNewsSource } = require('./news-bangkokbiznews');
 const { createThansettakijSource } = require('./news-thansettakij');
 const { readBoundedText } = require('../lib/news-response');
 
-function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport({allowBangkok:env.SETSCOPE_NEWS_BANGKOKBIZNEWS==='on',allowThansettakij:env.SETSCOPE_NEWS_THANSETTAKIJ==='on'}), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map(), displayProject = item=>item, articleLoader } = {}) {
+function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport({allowBangkok:env.SETSCOPE_NEWS_BANGKOKBIZNEWS==='on',allowThansettakij:env.SETSCOPE_NEWS_THANSETTAKIJ==='on'}), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map(), onDiscovered, displayProject = item=>item, articleLoader } = {}) {
   if (!Number.isInteger(analysisTimeoutMs) || analysisTimeoutMs < 1 || analysisTimeoutMs > 30000) throw Error('Invalid AI timeout');
   const analysisCache = new Map();
   let openAiCooldownUntil = 0;
@@ -279,6 +279,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
           return item.title && allowedNewsUrl(item.url)
             && Number.isFinite(published) && published >= cutoff;
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
+        if(onDiscovered)await onDiscovered(parsed.slice(0,1));
         const reviewed = await keepQualityItems(parsed, articleBudget);
         settled.push({ status: 'fulfilled', value: reviewed.slice(0, 8), uncertain: reviewed.unverifiedCount, assessments: reviewed.assessments });
       } catch (reason) {
@@ -491,7 +492,10 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       ...candidates.filter(item=>!kept.includes(item)).map(item=>item?.url)])].filter(url=>allowedNewsUrl(url)).slice(0,200);
     return { ...payload, p1DisplayGate:true, ...(withheldUrls.length ? {withheldUrls} : {}), items:kept.map(item=>annotateNewsContent(item,{now:Number(now())})), ...(!payload.page && typeof payload.total==='number' ? {total:kept.length} : {}), ...(kept.length < candidates.length ? {partial:true,dataState:kept.length?'partial':'unavailable'} : {}) };
   }
-  return { analyse, extractArticle, getNews, getWatchlistNews, filterForDisplay, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
+  return { analyse, extractArticle, getNews, getWatchlistNews, filterForDisplay, reviewDiscovered: async (item, {signal,budget={remaining:1,httpRemaining:6}}={}) => {
+    const reviewed=await keepQualityItems([item],{...budget,signal});
+    return {items:reviewed,assessments:reviewed.assessments};
+  }, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };
 }
 
 module.exports = { FEEDS, OUTLET_SOURCE, createNewsService, fallbackNewsSummary, parseRetryAfter, sourceFromOutlet };
