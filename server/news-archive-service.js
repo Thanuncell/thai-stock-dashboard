@@ -7,7 +7,7 @@ const { normalizeSymbol } = require('../lib/validation');
 const { annotateNewsContent, reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
 const { isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols } = require('../lib/news-content');
 const { withNewsRulesSummary } = require('../lib/news-summary');
-const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash } = require('../lib/news-evidence');
+const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash, canonicalUrl } = require('../lib/news-evidence');
 const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
   'verification_checked_at','verification_subject_hash','verification_revision','canonical_url','canonical_key','verification_provenance'];
 
@@ -315,7 +315,7 @@ function createNewsArchiveService({
   function eligibleItems(items, { source, symbol, query, excludeUrls }) {
     const normalizedQuery = String(query || '').trim().slice(0, 80).toLocaleLowerCase('th');
     const excluded = new Set((Array.isArray(excludeUrls) ? excludeUrls : []).slice(0, 10)
-      .map(url => allowedNewsUrl(url)).filter(Boolean).map(url => newsFingerprint({ url: url.href })));
+      .map(url => canonicalUrl(url)).filter(Boolean));
     return items.map(displayProject).filter(item => {
       if(newsDisplayBlocked(item))return false;
       const sourceMatch = source === 'all' || (source === 'broker' ? item.brokerCategory : item.source === source);
@@ -323,7 +323,7 @@ function createNewsArchiveService({
       const symbolMatch = !symbol || newsAssociationSymbols(item).includes(symbol);
       const searchMatch = !normalizedQuery || [item.title, item.sourceName, item.snippet, item.analysisSummary, ...(identified||[])]
         .some(value => String(value || '').toLocaleLowerCase('th').includes(normalizedQuery));
-      return (!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED' && !quarantine.has(newsFingerprint(item))) && sourceMatch && symbolMatch && searchMatch && !excluded.has(newsFingerprint(item));
+      return (!hardGate || reviewNewsForDisplay(item,{now:Number(now())}).status==='VERIFIED' && !quarantine.has(newsFingerprint(item))) && sourceMatch && symbolMatch && searchMatch && !excluded.has(canonicalUrl(item.url));
     });
   }
 

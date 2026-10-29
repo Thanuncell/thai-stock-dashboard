@@ -51,7 +51,7 @@ test('legacy evidence remains readable without a discovery record; invalid optio
  row.verification_provenance.discovery={version:'news-discovery-1',publisher:'Wrong publisher',originalUrl:url,pathway:'google-news-rss/general',observedAt:date,publishedAt:date};const read=(await db.service().list()).items[0];assert.ok(read);assert.equal(read.discovery,undefined);assert.equal(reviewNewsForDisplay(read).status,'VERIFIED');
 });
 for(const [label,response,reason]of [
- ['PDF',()=>new Response('%PDF-1.7',{headers:{'content-type':'application/pdf'}}),'ARTICLE_CONTENT_TYPE_UNVERIFIED'],
+ ['PDF',()=>new Response('%PDF-1.7',{headers:{'content-type':'application/pdf'}}),'DOCUMENT_NOT_ARTICLE'],
  ['login',()=>new Response('<form>Sign in</form>',{headers:{'content-type':'text/html'}}),'ARTICLE_ACCESS_DENIED'],
  ['canonical mismatch',()=>new Response(html(url+'wrong'),{headers:{'content-type':'text/html'}}),'ARTICLE_IDENTITY_MISMATCH'],
  ['missing date',()=>new Response(html().replace(/,"datePublished":"[^"]+"/,''),{headers:{'content-type':'text/html'}}),'ARTICLE_DATE_UNVERIFIED'],

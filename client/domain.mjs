@@ -1,6 +1,6 @@
 'use strict';
 import * as newsContent from '../lib/news-content.js';
-const { isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols, newsClickUrl } = newsContent.default || globalThis.SETscopeNewsContent;
+const { newsUrlIdentity, isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols, newsClickUrl } = newsContent.default || globalThis.SETscopeNewsContent;
 export { newsSecuritySymbols, newsClickUrl };
 
 export const DEFAULT_WATCHLIST = [
@@ -312,11 +312,7 @@ export function newsKey(item) {
   const rawUrl = String(item?.url || '');
   if (rawUrl) {
     try {
-      const url = new URL(rawUrl);
-      ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content']
-        .forEach(key => url.searchParams.delete(key));
-      url.hash = '';
-      return `url:${url.href}`;
+      return `url:${newsUrlIdentity(rawUrl)||new URL(rawUrl).href}`;
     } catch (_) {
       return `url:${rawUrl}`;
     }
@@ -407,10 +403,20 @@ export function selectNewsForDisplay(items = [], {
   sourceTier = {}, hardGate = false
 } = {}) {
   const normalizedQuery = String(query || '').trim().toLocaleLowerCase('th');
-  const filtered = items.filter(item => {
+  const candidates = items.filter(item => {
     const sourceMatch = source === 'all' || (source === 'broker' ? Boolean(item.brokerCategory) : item.source === source);
     return canDisplayNews(item,Number(now),{hardGate}) && sourceMatch && matchesNewsQuery(item, normalizedQuery, item.analysisSummary || '');
   }).sort((left, right) => Date.parse(right.pubDate) - Date.parse(left.pubDate));
+  const unique = new Map();
+  for (const item of candidates) {
+    const key = newsKey(item), previous = unique.get(key);
+    if (!previous) { unique.set(key,item); continue; }
+    const sameContent = previous.title === item.title && previous.sourceName === item.sourceName
+      && String(previous.snippet || '') === String(item.snippet || '') && Date.parse(previous.pubDate) === Date.parse(item.pubDate);
+    if (sameContent && previous.analysisMode !== 'ai' && item.analysisMode === 'ai' && String(item.analysisSummary || '').trim())
+      unique.set(key,{...previous,analysisMode:'ai',analysisSummary:item.analysisSummary});
+  }
+  const filtered = [...unique.values()];
   const cutoff = Number(now) - 7 * 24 * 60 * 60 * 1000;
   const featured = filtered.filter(item => Number.isFinite(Date.parse(item.pubDate)) && Date.parse(item.pubDate) >= cutoff)
     .sort((left, right) => (sourceTier[right.source] || 0) - (sourceTier[left.source] || 0) || Date.parse(right.pubDate) - Date.parse(left.pubDate))

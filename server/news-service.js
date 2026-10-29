@@ -332,8 +332,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       const loaded = await abortable(loadArticle(item?.url,{signal:controller.signal,budget,maxBytes:1_500_000}),controller.signal);
       if(!loaded.response)return unknown(loaded.reason);
       const {target,response}=loaded;
+      if([404,410].includes(response.status))return unknown('ARTICLE_NOT_FOUND');
       if(!response.ok)return unknown('ARTICLE_HTTP_UNAVAILABLE');
-      if(!/^(?:text[/]html|application[/]xhtml[+]xml)(?:;|$)/i.test(response.headers.get('content-type')||''))return unknown('ARTICLE_CONTENT_TYPE_UNVERIFIED');
+      const contentType=response.headers.get('content-type')||'';
+      if(/^(?:application[/](?:pdf|msword|vnd[.]openxmlformats-officedocument[.][^;]+|vnd[.]ms-(?:excel|powerpoint)))(?:;|$)/i.test(contentType))return unknown('DOCUMENT_NOT_ARTICLE');
+      if(!/^(?:text[/]html|application[/]xhtml[+]xml)(?:;|$)/i.test(contentType))return unknown('ARTICLE_CONTENT_TYPE_UNVERIFIED');
       if(response.url&&articleIdentity(response.url)!==articleIdentity(target.href))return unknown('ARTICLE_RESPONSE_URL_MISMATCH');
       if(strict&&!publisherMatches({...item,url:target.href}))return unknown('PUBLISHER_IDENTITY_UNVERIFIED');
       const html=await readBoundedText(response,1_500_000,controller.signal);
@@ -347,7 +350,8 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
   }
 
   async function analyse(items = []) {
-    const prepared = items.slice(0, 8).map(item => ({
+    const prepared = items.slice(0, 8).map(item => item && typeof item === 'object' ? displayProject(item) : item).map(item => ({
+      analysisBlocked: newsDisplayBlocked(item),
       source: String(item?.source || '').slice(0,80), sourceName: String(item?.sourceName || item?.source || '').slice(0,160),
       title: String(item?.title || '').slice(0,300), url: String(item?.url || '').slice(0,2000), snippet: String(item?.snippet || '').slice(0,1200),
       // Caller-provided negative evidence may restrict analysis; VERIFIED can never grant trust.
@@ -356,7 +360,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     }));
     const cacheKey = item => newsFingerprint(item) + '|' + item.title + '|' + item.snippet;
     for (const [key, entry] of analysisCache) if (entry.expiresAt <= Number(now())) analysisCache.delete(key);
-    const clean = prepared.filter(item => !isNewsDocument(item) && reviewNewsItem(item).status === 'VERIFIED');
+    const clean = prepared.filter(item => !item.analysisBlocked && !isNewsDocument(item) && reviewNewsItem(item).status === 'VERIFIED');
     // Concurrent requests share the completed result rather than caching a competing fallback.
     if (openAiInFlight) await openAiInFlight;
     const fresh = [...new Map(clean.filter(item => !analysisCache.has(cacheKey(item))).map(item => [cacheKey(item), item])).values()];
@@ -374,10 +378,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
             const canExtract=articleBudget.remaining>0;
             if(canExtract)articleBudget.remaining--;
             const extraction=canExtract?await extractArticle(item,{signal:controller.signal,budget:articleBudget,strict:false}):null;
+            if(['ARTICLE_NOT_FOUND','DOCUMENT_NOT_ARTICLE'].includes(extraction?.reason)){item.analysisBlocked=true;return null;}
             const article=extraction?.state==='EXTRACTED'?extraction.text:'';
-            return {id,cacheKey:cacheKey(item),source:item.source,title:item.title,articleText:article||item.snippet,
+            return {id,cacheKey:cacheKey(item),source:item.sourceName||item.source,title:item.title,articleText:article||item.snippet,
               basis:article?'article':item.snippet?'snippet':'headline'};
-          }))).filter(item=>item.articleText);
+          }))).filter(item=>item?.articleText);
           if(controller.signal.aborted)throw Error('AI_TIMEOUT');
           if(!material.length)return null;
           const response = await abortable(fetchImpl('https://api.openai.com/v1/responses', {
@@ -411,7 +416,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       } finally { clearTimeout(timer); openAiInFlight = null; release(); }
     }
     const result=prepared.map(item=>{
-      if(isNewsDocument(item)||reviewNewsItem(item).status!=='VERIFIED')return {summary:'',mode:'unavailable',basis:'headline'};
+      if(item.analysisBlocked||isNewsDocument(item)||reviewNewsItem(item).status!=='VERIFIED')return {summary:'',mode:'unavailable',basis:'headline'};
       let cached=analysisCache.get(cacheKey(item));
       if(!cached){const summary=withNewsRulesSummary(item)?.analysisSummary || '';cached=summary?{summary,mode:'rules',basis:'snippet',expiresAt:Number(now())+5*60*1000}
         :{summary:'',mode:'unavailable',basis:'headline',expiresAt:Number(now())+5*60*1000};analysisCache.set(cacheKey(item),cached);}

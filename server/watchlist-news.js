@@ -2,7 +2,7 @@
 const {normalizeWatchlistNewsStocks}=require('../lib/validation');
 const {createWatchlistNewsCacheKey}=require('./reliability');
 const {matchesWatchlistStock,watchlistStockQuery}=require('../lib/watchlist-news-identity');
-const {newsFingerprint}=require('../lib/broker-news');
+const {newsFingerprint,dedupeNewsItems}=require('../lib/broker-news');
 const {reviewNewsItem}=require('../lib/news-quality');
 const {mergeEvidenceAssociations}=require('../lib/news-evidence');
 const {registryCompanyName}=require('./search-company-names');
@@ -22,7 +22,7 @@ function mergeStockNews(items,stocks,now){
   const key=newsFingerprint(item),old=unique.get(key);
   unique.set(key,mergeEvidenceAssociations(item,{...item,matchedSymbols:[...new Set([...(old?.matchedSymbols||[]),...matchedSymbols])]},old?[old]:[]));
  }
- return [...unique.values()].sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate));
+ return dedupeNewsItems([...unique.values()]).sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate));
 }
 function createWatchlistNews({fetchStock,registrySearch=async()=>[],isRejected=()=>false,canDisplay=()=>true,now=Date.now,deadlineMs=30000}){
  const cache=new Map(),pending=new Map(),budgets=new Map();
