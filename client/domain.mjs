@@ -1,7 +1,7 @@
 'use strict';
 import * as newsContent from '../lib/news-content.js';
-const { newsUrlIdentity, isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols, newsClickUrl } = newsContent.default || globalThis.SETscopeNewsContent;
-export { newsSecuritySymbols, newsClickUrl };
+const { NEWS_FILTER_SOURCES, normalizeNewsSources, newsPublisherKey, newsMatchesSources, newsUrlIdentity, isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols, newsClickUrl } = newsContent.default || globalThis.SETscopeNewsContent;
+export { normalizeNewsSources, newsPublisherKey, newsMatchesSources, newsSecuritySymbols, newsClickUrl };
 
 export const DEFAULT_WATCHLIST = [
   { symbol: 'PTT', name: 'ปตท.' },
@@ -13,7 +13,7 @@ export const DEFAULT_WATCHLIST = [
 export const MAX_WATCHLIST = 30;
 export const MAX_WATCHLISTS = 5;
 export const THAI_NAMES = Object.fromEntries(DEFAULT_WATCHLIST.map(item => [item.symbol, item.name]));
-export const NEWS_SOURCES = Object.freeze(['all', 'thunhoon', 'kaohoon', 'settrade', 'official', 'infoquest', 'efinance', 'broker']);
+export const NEWS_SOURCES = NEWS_FILTER_SOURCES;
 export const CHART_RANGES = Object.freeze(['1D', '1W', '1M', '3M', '1Y']);
 const ROUTES = Object.freeze(['overview', 'chart', 'news', 'watchlist']);
 
@@ -234,18 +234,18 @@ export function parseNavigationState(value, fallback = {}) {
     };
   }
   if (route === 'news') {
-    const source = String(url.searchParams.get('source') || fallback.source || 'all').toLowerCase();
+    const source = normalizeNewsSources(url.searchParams.getAll('source'));
     return {
       route,
-      query: String(url.searchParams.get('s') ?? fallback.query ?? '').trim().slice(0, 80),
-      source: NEWS_SOURCES.includes(source) ? source : 'all',
-      newsPage: positivePage(url.searchParams.get('newsPage') || fallback.newsPage)
+      query: String(url.searchParams.get('s') ?? '').trim().slice(0, 80),
+      source,
+      newsPage: positivePage(url.searchParams.get('newsPage'))
     };
   }
   return {
     route,
     watchlistId: validWatchlistId(url.searchParams.get('watchlist') || fallback.watchlistId),
-    watchPage: positivePage(url.searchParams.get('watchPage') || fallback.watchPage)
+    watchPage: positivePage(url.searchParams.get('watchPage'))
   };
 }
 
@@ -258,10 +258,10 @@ export function navigationUrl(state = {}, pathname = '/') {
     params.set('range', CHART_RANGES.includes(range) ? range : '1D');
   } else if (route === 'news') {
     const query = String(state.query || '').trim().slice(0, 80);
-    const source = String(state.source || 'all').toLowerCase();
+    const source = normalizeNewsSources(state.source);
     const page = positivePage(state.newsPage);
     if (query) params.set('s', query);
-    if (NEWS_SOURCES.includes(source) && source !== 'all') params.set('source', source);
+    if (source !== 'all') params.set('source', source);
     if (page > 1) params.set('newsPage', String(page));
   } else if (route === 'watchlist') {
     const watchlistId = validWatchlistId(state.watchlistId);
@@ -404,7 +404,7 @@ export function selectNewsForDisplay(items = [], {
 } = {}) {
   const normalizedQuery = String(query || '').trim().toLocaleLowerCase('th');
   const candidates = items.filter(item => {
-    const sourceMatch = source === 'all' || (source === 'broker' ? Boolean(item.brokerCategory) : item.source === source);
+    const sourceMatch = newsMatchesSources(item,source);
     return canDisplayNews(item,Number(now),{hardGate}) && sourceMatch && matchesNewsQuery(item, normalizedQuery, item.analysisSummary || '');
   }).sort((left, right) => Date.parse(right.pubDate) - Date.parse(left.pubDate));
   const unique = new Map();

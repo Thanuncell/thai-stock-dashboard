@@ -355,21 +355,23 @@ async function handle(req, res) {
     try {
       const page = url.searchParams.get('page') || '1';
       const pageSize = url.searchParams.get('pageSize') || '10';
-      const source = url.searchParams.get('source') || 'all';
+      const source = require('./lib/news-content').normalizeNewsSources(url.searchParams.getAll('source'));
       const symbol = url.searchParams.get('symbol') || '';
       const query = String(url.searchParams.get('query') || '').trim().slice(0, 80);
       const featuredCount = url.searchParams.get('featuredCount') || '0';
+      const clampPage = url.searchParams.get('clamp')==='1';
       const excludeUrls = url.searchParams.getAll('exclude').slice(0, 10);
       const exclusionKey = createHash('sha256').update(JSON.stringify(excludeUrls)).digest('base64url').slice(0, 16);
-      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}|${newsQuarantine.revision}|${newsLinkReview.revision}`;
+      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}|${clampPage}|${newsQuarantine.revision}|${newsLinkReview.revision}`;
       const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({
-        page, pageSize, source, symbol, query, excludeUrls, featuredCount
+        page, pageSize, source, symbol, query, excludeUrls, featuredCount, clampPage
       }));
       const safe = newsService.filterForDisplay(data);
       const featuredResult = newsService.filterForDisplay({items:data.featured || []});
       const featured = featuredResult.items;
       const withheldUrls=[...new Set([...(safe.withheldUrls||[]),...(featuredResult.withheldUrls||[])])];
-      return send(res, 200, { ...safe, ...(withheldUrls.length?{withheldUrls}:{}), featured, dataState: data.stale ? 'stale' : safe.dataState || (data.configured ? 'fresh' : 'unavailable') });
+      const countExact=data.countExact===true&&safe.items.length===data.items.length&&featured.length===(data.featured||[]).length;
+      return send(res, 200, { ...safe, countExact, matchingTotal:countExact?data.matchingTotal:null, ...(withheldUrls.length?{withheldUrls}:{}), featured, dataState: data.stale ? 'stale' : safe.dataState || (data.configured ? 'fresh' : 'unavailable') });
     } catch (error) {
       return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable', detail: error.message });
     }

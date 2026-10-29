@@ -32,7 +32,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
      if(state.holdStoredWatch)await new Promise(resolve=>{state.releaseStoredWatch=resolve;});
      const count={matchedCandidates:state.watch==='empty'?0:1,qualityExcluded:['filtered','unavailable'].includes(state.watch)?1:0};
      if(state.watch==='error')return json({error:'Synthetic load failure'},503);
-     return json({items:['partial','fresh'].includes(state.watch)?[target]:[],dataState:state.watch==='partial'?'partial':state.watch==='unavailable'?'unavailable':'fresh',fetchedAt:new Date().toISOString(),...count});
+     return json({items:['partial','fresh'].includes(state.watch)?[{...target,matchedSymbols:['PTT']}]:[],dataState:state.watch==='partial'?'partial':state.watch==='unavailable'?'unavailable':'fresh',fetchedAt:new Date().toISOString(),...count});
     }
     return mockRequest(route,base,state);
    });

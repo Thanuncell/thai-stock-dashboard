@@ -103,18 +103,22 @@
               <button class="news-refresh-btn" id="refresh-news" type="button">↻ อัปเดตข้อมูลข่าว</button>
             </div>
             <div class="news-search">
-              <input id="news-search" type="search" placeholder="ค้นหาข่าว ชื่อข่าว ที่มา หรือเนื้อหา" aria-label="ค้นหาข่าว">
+              <input id="news-search" type="search" maxlength="80" placeholder="ค้นหาข่าว ชื่อข่าว ที่มา หรือเนื้อหา" aria-label="ค้นหาข่าว">
               <small id="news-count" class="news-count" aria-live="polite"></small>
             </div>
-            <div class="news-sources" role="group" aria-label="กรองตามแหล่งข่าว">
-              <button class="source-chip active" data-source="all">ทั้งหมด</button>
-              <button class="source-chip" data-source="thunhoon">ทันหุ้น</button>
-              <button class="source-chip" data-source="kaohoon">ข่าวหุ้น</button>
-              <button class="source-chip" data-source="settrade">SETTRADE</button>
-              <button class="source-chip" data-source="official">ธนาคารแห่งประเทศไทย</button>
-              <button class="source-chip" data-source="infoquest">Infoquest</button>
-              <button class="source-chip" data-source="efinance">efinance</button>
-              <button class="source-chip" data-source="broker">โบรกเกอร์</button>
+            <div id="news-sources" class="news-sources" role="group" aria-label="กรองตามแหล่งข่าว เลือกได้หลายแหล่ง">
+              <button class="source-chip active" data-source="all" aria-pressed="true">ทั้งหมด</button>
+              <button class="source-chip" data-source="thunhoon" aria-pressed="false">ทันหุ้น</button>
+              <button class="source-chip" data-source="kaohoon" aria-pressed="false">ข่าวหุ้น</button>
+              <button class="source-chip" data-source="settrade" aria-pressed="false">SETTRADE</button>
+              <button class="source-chip" data-source="official" aria-pressed="false">ธนาคารแห่งประเทศไทย</button>
+              <button class="source-chip" data-source="infoquest" aria-pressed="false">Infoquest</button>
+              <button class="source-chip" data-source="efinance" aria-pressed="false">efinance</button>
+              <button class="source-chip" data-source="broker" aria-pressed="false">โบรกเกอร์</button>
+              <button class="source-chip" data-source="bangkokbiznews" aria-pressed="false">กรุงเทพธุรกิจ</button>
+              <button class="source-chip" data-source="investing" aria-pressed="false">Investing.com</button>
+              <button class="source-chip" data-source="thansettakij" aria-pressed="false">ฐานเศรษฐกิจ</button>
+
             </div>
             <section class="featured-news" aria-label="ข่าวเด่น 7 วันย้อนหลัง">
               <h3>ข่าวเด่น (7 วันย้อนหลัง)</h3>

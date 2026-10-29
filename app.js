@@ -18,7 +18,7 @@ import {
   mergeWatchlists,
   marketOverviewStatus,
   navigationUrl,
-  newsKey, newsSecuritySymbols, newsClickUrl,
+  newsKey, newsSecuritySymbols, newsClickUrl, normalizeNewsSources,
   normalizeLists,
   normalizeChartViewport,
   panChartViewport,
@@ -79,7 +79,13 @@ let latestNews = [];
 let latestWatchlistNews = [];
 let archiveNews = [];
 let archiveFeaturedNews = [];
-let archiveTotal = 0;
+let archiveTotal = null;
+let archiveSnapshotTotal = null;
+let archiveState = 'idle';
+let archiveStale = false;
+let archivePendingKey = '', archivePendingTask = null, archiveController = null;
+let newsLoaded = false;
+let newsDataState = 'idle';
 let archiveConfigured = false;
 let archiveLoaded = false;
 const PAGE_SIZE = 10;
@@ -170,6 +176,7 @@ function clearPrivateDom() {
 }
 function clearPrivateState() {
   const preserveInitialChartSelection = privateInitializationSequence === 0 && initialNavigation.route === 'chart';
+  const preserveInitialWatchSelection = privateInitializationSequence === 0 && initialNavigation.route === 'watchlist';
   privateInitializationSequence += 1;
   privateInitializationIdentityKey = '';
   clearTimeout(watchlistSyncTimer);
@@ -195,6 +202,9 @@ function clearPrivateState() {
   newsAnalysisPending = false;
   newsAnalysisRequestId += 1;
   watchlistNewsMatchInfo = null;
+  archiveNewsRequestId += 1; archiveController?.abort(); archiveController=null; archivePendingKey=''; archivePendingTask=null;
+  archiveLoaded=false; archiveState='idle'; archiveTotal=null; archiveSnapshotTotal=null;
+  syncNavigationControls();
   watchlistNewsRequestId += 1;
   watchlistNewsController?.abort();
   watchlistNewsController = null;
@@ -204,7 +214,7 @@ function clearPrivateState() {
   watchlistNewsFetchedAt = 0;
   hideSuggestions();
   watchlistQuery = '';
-  watchNewsPage = 1;
+  watchNewsPage = preserveInitialWatchSelection?initialNavigation.watchPage:1;
   marketRequestSequence.begin();
   latestMarket = null;
   latestMarketSymbol = '';
@@ -247,7 +257,10 @@ function writeNavigation(mode = 'push', route) {
 }
 function syncNavigationControls() {
   const search = $('#news-search'); if (search) search.value = newsQuery;
-  document.querySelectorAll('.source-chip').forEach(button => button.classList.toggle('active', button.dataset.source === activeSource));
+  document.querySelectorAll('.source-chip').forEach(button => {
+    const selected=activeSource;
+    const active=selected.split(',').includes(button.dataset.source);button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));
+  });
   document.querySelectorAll('.range-tabs button').forEach(button => button.classList.toggle('selected', button.dataset.range === currentRange));
 }
 function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
@@ -281,6 +294,7 @@ function restoreNavigationFromLocation() {
   if (locationKey === lastRestoredLocation) return;
   lastRestoredLocation = locationKey;
   const state = parseNavigationState(location.href, currentNavigationState());
+  if(state.route==='news')clearTimeout(newsSearchTimer);
   const previousRoute = document.body.dataset.workspacePage;
   const previousSymbol = activeSymbol, previousRange = currentRange, previousWatchlist = activeWatchlistId;
   const previousNewsPage = newsPage, previousNewsSource = activeSource, previousNewsQuery = newsQuery;
@@ -301,7 +315,7 @@ function restoreNavigationFromLocation() {
   setWorkspacePage(state.route, { historyMode: 'none', scroll: false });
   renderNews(); renderWatchlistNews(); renderWatchlist(latestMarket?.stocks || []); renderMovers(latestMarket?.stocks || []);
   if (state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== currentRange || previousRoute !== 'chart')) getMarket();
-  if (state.route === 'news' && archiveConfigured && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousNewsQuery !== newsQuery || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
+  if (state.route === 'news' && (archiveConfigured||archiveState==='loading') && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousNewsQuery !== newsQuery || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
   if (state.route === 'watchlist' && (previousWatchlist !== activeWatchlistId || previousRoute !== 'watchlist')) getWatchlistNews({ reason: 'restore' });
   writeNavigation('replace', state.route);
 }
@@ -1316,21 +1330,20 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
     if (!response.ok) throw new Error(data.error);
     p1NewsDisplayGate ||= data.p1DisplayGate===true;
     const keep=applyNewsWithheldUrls(data.withheldUrls);
-    latestNews = (data.items || []).filter(keep);
+    latestNews = (data.items || []).filter(keep); newsLoaded=true;newsDataState=data.dataState||'fresh';
     await getArchiveNews({ page: newsPage, reason });
     renderNews();
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
-  } catch (_) { /* Existing list remains visible when a refresh fails. */ }
+  } catch (_) { newsDataState='error';renderNews(); /* Existing list remains visible when a refresh fails. */ }
   finally {
     if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }
   }
 }
 async function getArchiveNews({ page = newsPage } = {}) {
   const identity = capturePrivateIdentity();
-  const requestId = ++archiveNewsRequestId;
   const params = new URLSearchParams({
     page: String(page),
-    pageSize: String(PAGE_SIZE),
+    pageSize: String(PAGE_SIZE), clamp:'1',
     source: activeSource,
     query: newsQuery.trim()
   });
@@ -1343,15 +1356,20 @@ async function getArchiveNews({ page = newsPage } = {}) {
   }).featured.map(item => item.url).filter(url => /^https:\/\//i.test(String(url || '')));
   if (!featuredUrls.length) params.set('featuredCount', String(FEATURED_COUNT));
   featuredUrls.forEach(url => params.append('exclude', url));
+  const key=JSON.stringify([identity?.ownerId,identity?.generation,params.toString()]);
+  if(key===archivePendingKey&&archivePendingTask)return archivePendingTask;
+  const requestId=++archiveNewsRequestId;archiveController?.abort();const controller=new AbortController();archiveController=controller;
+  archivePendingKey=key;archiveLoaded=false;archiveState='loading';renderNews();
+  const task=(async()=>{
   try {
-    const response = await apiFetch(`/api/news-archive?${params}`);
+    const response = await apiFetch(`/api/news-archive?${params}`,{signal:controller.signal});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดคลังข่าวไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
     p1NewsDisplayGate ||= data.p1DisplayGate===true;
     const keep=applyNewsWithheldUrls(data.withheldUrls);
     archiveConfigured = Boolean(data.configured);
-    archiveLoaded = archiveConfigured;
+    archiveLoaded = archiveConfigured;archiveState=archiveConfigured?'ready':'unavailable';archiveStale=Boolean(data.stale||data.dataState==='stale'||data.countExact===false);
     archiveFeaturedNews = data.dataState === 'fresh' && !data.stale && Array.isArray(data.featured) ? data.featured.filter(keep) : [];
     archiveNews = Array.isArray(data.items) ? data.items.filter(keep) : [];
     // Use one accepted stored summary across live and archived representations.
@@ -1364,12 +1382,15 @@ async function getArchiveNews({ page = newsPage } = {}) {
         newsAnalyses.set(newsKey(item), {summary:String(item.analysisSummary).trim(),mode:item.analysisMode,basis:'archive'});
       }
     }
-    archiveTotal = Number.isFinite(Number(data.total)) ? Number(data.total) : archiveNews.length;
-    const totalPages = Math.max(1, Math.ceil(archiveTotal / PAGE_SIZE));
-    if (newsPage > totalPages) {
+    // API total controls the loaded snapshot's pages; countExact controls global count copy only.
+    archiveSnapshotTotal = Number.isSafeInteger(data.total)&&data.total>=0 ? data.total : null;
+    archiveTotal = data.countExact!==false ? archiveSnapshotTotal : null;
+    const totalPages = archiveSnapshotTotal===null ? null : Math.max(1, Math.ceil(archiveSnapshotTotal / PAGE_SIZE));
+    if(Number.isSafeInteger(data.page)&&data.page>=1&&(totalPages===null||data.page<=totalPages)&&archiveConfigured){newsPage=data.page;if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
+    else if (archiveSnapshotTotal!==null&&archiveConfigured&&newsPage > totalPages) {
       newsPage = totalPages;
       if (document.body.dataset.workspacePage === 'news') writeNavigation('replace', 'news');
-      return getArchiveNews({ page: newsPage });
+      archivePendingKey='';return getArchiveNews({ page: newsPage });
     }
     renderNews();
   } catch (_) {
@@ -1377,8 +1398,9 @@ async function getArchiveNews({ page = newsPage } = {}) {
     archiveLoaded = false;
     archiveFeaturedNews = [];
     archiveNews = [];
-    archiveTotal = 0;
-  }
+    archiveTotal = null;archiveSnapshotTotal=null;archiveState='error';renderNews();
+  }finally{if(archiveController===controller){archiveController=null;archivePendingKey='';archivePendingTask=null;}}
+  })();archivePendingTask=task;return task;
 }
 async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) {
   const identity = capturePrivateIdentity();
@@ -1549,7 +1571,7 @@ function renderNewsItem(item, options = {}) {
   if (item.brokerCategory || item.source === 'broker') {
     const promo = document.createElement('span');
     promo.className = 'promo-tag';
-    promo.textContent = 'จากผู้ให้บริการ อาจมีเนื้อหาส่งเสริมการขาย';
+    promo.textContent = 'บทวิเคราะห์จากบริษัทหลักทรัพย์ภายนอก';
     tags.append(promo);
   }
   if (officialSymbols !== null && !relatedSymbols.length) {
@@ -1626,8 +1648,10 @@ function renderWatchlistNews() {
   latestWatchlistNews=retainWatchlistNews(latestWatchlistNews,watchlist);
   const sameScope=watchlistNewsScope===currentWatchlistNewsScope();
   const state=sameScope?watchlistNewsState:watchlist.length?'loading':'empty';
+  const filtered=sameScope?selectNewsForDisplay(latestWatchlistNews,{featuredCount:0}).filtered:[];
   root.dataset.state=state;
   if(!sameScope||!latestWatchlistNews.length){
+    if(sameScope&&state!=='loading'&&watchNewsPage!==1){watchNewsPage=1;if(document.body.dataset.workspacePage==='watchlist')writeNavigation('replace','watchlist');}
     const message=state==='loading'?'กำลังโหลดข่าวของหุ้นในรายการติดตาม…'
       :state==='error'?'โหลดข่าวไม่สำเร็จ กรุณาลองอัปเดตอีกครั้ง'
       :state==='unavailable'?'ยังไม่สามารถตรวจสอบข่าวของหุ้นในรายการติดตามได้'
@@ -1636,34 +1660,37 @@ function renderWatchlistNews() {
       :watchlistEmptyText();
     renderNewsItemsInto(root,[],message);const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
   }
-  const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
-  watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
-  const items = latestWatchlistNews.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
+  const total = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const displayPage = Math.max(1, Math.min(watchNewsPage, total));
+  if(watchNewsPage!==displayPage){watchNewsPage=displayPage;if(document.body.dataset.workspacePage==='watchlist')writeNavigation('replace','watchlist');}
+  const items = filtered.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
-  renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, latestWatchlistNews.length, page => {
+  renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, filtered.length, page => {
     watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToPageTop();
   });
 }
 function renderPagerInto(bar, current, total, count, onPick) {
   if (!bar) return;
   bar.replaceChildren();
-  bar.hidden = count <= PAGE_SIZE;
-  if (count <= PAGE_SIZE) return;
+  bar.hidden = total===null ? current<=1 : count<=PAGE_SIZE;
+  if (bar.hidden) return;
   const makeButton = (label, page, options = {}) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = label;
     button.className = options.active ? 'page-btn active' : 'page-btn';
     button.disabled = Boolean(options.disabled);
+    button.setAttribute('aria-label',label==='‹'?'ก่อนหน้า':label==='›'?'ถัดไป':'หน้า '+page);
+    if(options.active)button.setAttribute('aria-current','page');
     button.addEventListener('click', () => onPick(page));
     return button;
   };
-  bar.append(makeButton('ก่อนหน้า', current - 1, { disabled: current === 1 }));
-  pageList(current, total).forEach(page => {
-    if (page === '…') { const separator = document.createElement('span'); separator.textContent = '…'; bar.append(separator); }
+  bar.append(makeButton('‹', current - 1, { disabled: current === 1 }));
+  (total===null ? [current] : pageList(current, total)).forEach(page => {
+    if (page === '…') { const separator = document.createElement('span'); separator.textContent = '…'; separator.setAttribute('aria-hidden','true');bar.append(separator); }
     else bar.append(makeButton(String(page), page, { active: page === current }));
   });
-  bar.append(makeButton('ถัดไป', current + 1, { disabled: current === total }));
+  if(total!==null)bar.append(makeButton('›', current + 1, { disabled: current === total }));
 }
 function renderNews() {
   const query = newsQuery.trim().toLocaleLowerCase('th');
@@ -1695,12 +1722,12 @@ function renderNews() {
     const section = featuredBox.closest('.featured-news');
     if (section) section.hidden = !featured.length;
   }
-  const availableCount = archiveLoaded ? archiveTotal : rest.length;
-  const total = Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
-  const displayPage = archiveLoaded ? Math.max(1, Math.min(newsPage, total)) : 1;
-  if (archiveLoaded) newsPage = displayPage;
+  const availableCount = archiveLoaded ? archiveSnapshotTotal : rest.length;
+  const total = availableCount===null ? null : Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
+  const displayPage = Math.max(1, total===null ? newsPage : Math.min(newsPage, total));
+  if (newsLoaded&&archiveState!=='loading'&&newsPage!==displayPage){newsPage=displayPage;if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
   const items = archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((displayPage - 1) * PAGE_SIZE, displayPage * PAGE_SIZE);
-  const emptyText = query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่มีข่าวในหมวดที่เลือก';
+  const emptyText = !all.length&&!archiveLoaded&&['unavailable','error'].includes(newsDataState)?'ยังไม่สามารถโหลดข่าวได้ กรุณาลองอัปเดตอีกครั้ง':query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่มีข่าวในหมวดที่เลือก';
   renderNewsItemsInto($('#news-list'), items, emptyText);
   renderPagerInto($('#news-pager'), displayPage, total, availableCount, async page => {
     newsPage = page; writeNavigation('push', 'news');
@@ -1708,7 +1735,8 @@ function renderNews() {
     scrollToPageTop();
   });
   const counter = $('#news-count');
-  if (counter) counter.textContent = query ? `พบ ${archiveLoaded ? archiveTotal : all.length} ข่าวที่ตรงกับ "${newsQuery.trim()}"` : '';
+  if(counter)counter.textContent=archiveState==='loading'?'กำลังนับข่าว…':archiveState==='error'?'คลังข่าวไม่พร้อม'+(all.length?' · '+wholeNumber(all.length)+' ข่าวที่โหลดได้':''):archiveLoaded&&archiveTotal===null?'ยังนับข่าวทั้งหมดไม่ได้':
+    !archiveLoaded&&!all.length&&['error','unavailable','idle'].includes(newsDataState)?'ยังนับข่าวไม่ได้':wholeNumber(archiveLoaded?archiveTotal+featured.length:all.length)+' ข่าว'+(!archiveLoaded?' · เฉพาะชุดที่โหลดได้':archiveStale?' · ข้อมูลที่โหลดไว้':'');
 }
 
 async function initializeAccountSession(event) {
@@ -1866,18 +1894,23 @@ function setupUiEventWiring() {
   window.addEventListener('resize', scheduleChartRedraw, { passive: true });
   window.addEventListener('orientationchange', scheduleChartRedraw, { passive: true });
   document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
-    document.querySelectorAll('.source-chip').forEach(item => item.classList.remove('active'));
-    button.classList.add('active'); activeSource = button.dataset.source; newsPage = 1; renderNews(); writeNavigation('push', 'news');
-    if (archiveConfigured) getArchiveNews({ page: 1 });
+    const source=button.dataset.source,current=activeSource;
+    clearTimeout(newsSearchTimer);
+    const selected=new Set(current==='all'?[]:current.split(','));if(selected.has(source))selected.delete(source);else selected.add(source);
+    activeSource=source==='all'?'all':normalizeNewsSources([...selected]);
+    newsPage=1;archiveLoaded=false;writeNavigation('push','news');
+    if(archiveConfigured||archiveState==='loading')getArchiveNews({page:1});else renderNews();
+    syncNavigationControls();
   }));
   $('#news-search').addEventListener('input', event => {
-    newsQuery = event.target.value;
-    newsPage = 1;
+    newsQuery = String(event.target.value).slice(0,80);event.target.value=newsQuery;
+    newsPage = 1;archiveLoaded=false;
+    if(archiveConfigured||archiveState==='loading'){archiveNewsRequestId++;archiveController?.abort();archiveState='loading';}
     renderNews();
     writeNavigation('replace', 'news');
     clearTimeout(newsSearchTimer);
     newsSearchTimer = setTimeout(() => {
-      if (archiveConfigured) getArchiveNews({ page: 1 });
+      if (archiveConfigured||archiveState==='loading') getArchiveNews({ page: 1 });
     }, 280);
   });
   $('#refresh-news').addEventListener('click', () => getNews({ reason: 'manual', resetPage: true }));
