@@ -13,7 +13,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    checks=0;const context=await browser.newContext({viewport}),state={getOwners:[],putOwners:[],holdNextAPut:false,holdNextLogout:false,holdNextAGet:false,holdNextAMarket:false},calls={news:0,archive:0,watch:0},timings=[];
    const names=['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ','Investing.com','InfoQuest'];
    const items=Array.from({length:1205},(_,i)=>({title:'WS6 PTT รายงานข่าวลงทุน '+String(i).padStart(4,'0'),url:'https://news.google.com/rss/articles/ws6-browser-'+i,source:i%4===3?'infoquest':'other',sourceName:names[i%4],pubDate:new Date(Date.now()-60000-i*1000).toISOString(),snippet:'PTT รายงานผลประกอบการและการลงทุนตามข้อมูลต้นทาง',matchedSymbols:['PTT'],brokerCategory:i%5===0,verification:{status:'VERIFIED',basis:'metadata'}}));
-   let mode='archive',hold=false,release;
+   let mode='archive',hold=false,release,watchRows=25;
    await context.route('**/*',async route=>{
     const request=route.request(),u=new URL(request.url());
     if(u.origin!==base&&u.origin!=='https://isolation-test.supabase.co')return route.abort();
@@ -27,7 +27,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
      if(['local','unavailable'].includes(mode))return json({configured:false,items:[],featured:[],total:0,dataState:'unavailable'});
      return json({configured:true,items:rest.slice((page-1)*10,page*10),featured,total:rest.length,page,countExact:mode!=='unknown',matchingTotal:available.length,dataState:'fresh'});
     }
-    if(u.origin===base&&u.pathname==='/api/watchlist-news'){calls.watch++;return json({items:[...items.slice(0,25),{...items[0],title:'WS6_CROSS_ACCOUNT',url:items[0].url+'-private',matchedSymbols:['ADVANC']}],limited:true,dataState:'fresh'});}
+    if(u.origin===base&&u.pathname==='/api/watchlist-news'){calls.watch++;return json({items:[...items.slice(0,watchRows),{...items[0],title:'WS6_CROSS_ACCOUNT',url:items[0].url+'-private',matchedSymbols:['ADVANC']}],limited:true,dataState:'fresh'});}
     if(u.origin===base&&u.pathname==='/api/news-analysis')return json({items:request.postDataJSON().items.map(()=>({summary:'',mode:'unavailable'}))});
     return mockRequest(route,base,state);
    });
@@ -43,7 +43,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    const chips=page.locator('#news-sources'),counter=page.locator('#news-count'),pager=page.locator('#news-pager');
    const select=async key=>{timings.push(await measure(chips.locator('[data-source="'+key+'"]')));};
    const pendingSearch=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive'&&new URL(r.url()).searchParams.get('query')==='PTT',{timeout:5000});
-   await page.locator('#news-search').fill('PTT');await page.evaluate(()=>{document.querySelector('.nav-item[data-workspace-route="watchlist"]').click();document.querySelector('#watchlist-news-sources [data-source="bangkokbiznews"]').click();document.querySelector('#watchlist-news-sources [data-source="all"]').click();document.querySelector('.nav-item[data-workspace-route="news"]').click();});
+   await page.locator('#news-search').fill('PTT');await page.evaluate(()=>{document.querySelector('.nav-item[data-workspace-route="watchlist"]').click();document.querySelector('.nav-item[data-workspace-route="news"]').click();});
    await pendingSearch;await page.waitForFunction(()=>document.querySelector('#news-count').textContent==='1,205 ข่าว');assert.equal(new URL(page.url()).searchParams.get('s'),'PTT');
    const clearedSearch=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive'&&new URL(r.url()).searchParams.get('query')==='');await page.locator('#news-search').fill('');await clearedSearch;
    const before={...calls};await select('bangkokbiznews');assert.equal(await counter.textContent(),'302 ข่าว');
@@ -68,10 +68,44 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    mode='local';await page.locator('#refresh-news').click();await page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled);assert.match(await counter.textContent(),/60 ข่าว/);
    const titles1=await page.locator('#news-list .news-title-link').allTextContents();const localBefore=calls.news;await pager.getByRole('button',{name:'หน้า 2',exact:true}).click();assert.notDeepEqual(await page.locator('#news-list .news-title-link').allTextContents(),titles1);assert.equal(calls.news,localBefore);
    await page.locator('.nav-item[data-workspace-route="watchlist"]').click();await page.waitForFunction(()=>document.querySelector('#watchlist-news-list .news-title-link'));
-   const watchBefore=calls.watch,watch=page.locator('#watchlist-news-sources');await watch.locator('[data-source="bangkokbiznews"]').click();assert.match(await page.locator('#watchlist-news-count').textContent(),/^7 ข่าว/);
-   await watch.locator('[data-source="investing"]').press('Enter');assert.match(await page.locator('#watchlist-news-count').textContent(),/^13 ข่าว/);assert.equal(calls.watch,watchBefore);
+   const watchPager=page.locator('#watchlist-news-pager'),watchBefore={...calls};
+   assert.equal(await page.locator('#watchlist-news-sources,.watch-source-chip,#watchlist-news-count').count(),0);
+   assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),10);
    assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/WS6_CROSS_ACCOUNT/);
-   await page.locator('#watchlist-news-pager').getByRole('button',{name:'หน้า 2',exact:true}).click();assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),3);await page.reload({waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#watchlist-news-pager [aria-current="page"]')?.textContent==='2');assert.match(await page.locator('#watchlist-news-count').textContent(),/^13 ข่าว/);
+   assert.ok((await page.locator('#watchlist-news-list .source-tag').allTextContents()).includes('Investing.com'));
+   assert.equal(await watchPager.getByRole('button',{name:'ก่อนหน้า',exact:true}).isDisabled(),true);
+   await watchPager.getByRole('button',{name:'หน้า 2',exact:true}).press('Enter');
+   assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),10);
+   await watchPager.getByRole('button',{name:'ถัดไป',exact:true}).click();
+   assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),5);
+   assert.equal(await watchPager.getByRole('button',{name:'ถัดไป',exact:true}).isDisabled(),true);
+   assert.equal(calls.watch,watchBefore.watch);assert.equal(calls.news,watchBefore.news);
+   await page.goBack();await page.waitForFunction(()=>document.querySelector('#watchlist-news-pager [aria-current="page"]')?.textContent==='2');
+   await page.goForward();await page.waitForFunction(()=>document.querySelector('#watchlist-news-pager [aria-current="page"]')?.textContent==='3');
+   await page.reload({waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#watchlist-news-pager [aria-current="page"]')?.textContent==='3');
+   assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),5);
+   // Old source parameters must not narrow the all-publisher Watchlist.
+   await page.goto(base+'/?watchPage=9999&source=investing#watchlist',{waitUntil:'domcontentloaded'});
+   await page.waitForFunction(()=>document.querySelector('#watchlist-news-pager [aria-current="page"]')?.textContent==='3');
+   assert.equal(new URL(page.url()).searchParams.has('source'),false);
+   // Change the fixture size without creating private data or fetching RSS.
+   for(const size of [0,10,100,110,200,1001,11]){
+    watchRows=size;const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/watchlist-news');
+    await page.locator('#refresh-watchlist-news').click();await response;
+    await page.waitForFunction(()=>!document.querySelector('#refresh-watchlist-news').disabled);
+    const total=Math.ceil(size/10),current=1;
+    assert.equal(await watchPager.isVisible(),size>10);
+    assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),size?Math.min(10,size-(current-1)*10):0);
+    if(total>1){
+     assert.ok((await watchPager.locator('button').allTextContents()).filter(x=>/^\d+$/.test(x)).length<=10);
+     await watchPager.getByRole('button',{name:'หน้า '+total,exact:true}).click();
+     assert.equal(await watchPager.getByRole('button',{name:'ถัดไป',exact:true}).isDisabled(),true);
+     await watchPager.getByRole('button',{name:'หน้า 1',exact:true}).click();
+     assert.equal(await watchPager.getByRole('button',{name:'ก่อนหน้า',exact:true}).isDisabled(),true);
+     if(total>=3){await watchPager.getByRole('button',{name:'ถัดไป',exact:true}).click();await watchPager.getByRole('button',{name:'ถัดไป',exact:true}).click();}
+    }
+   }
+   assert.equal(await page.locator('#watchlist-news-sources,.watch-source-chip,#watchlist-news-count').count(),0);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
    if(process.env.SETSCOPE_WS6_SCREENSHOTS)await page.screenshot({path:path.join(process.env.SETSCOPE_WS6_SCREENSHOTS,label+'-watch.png'),fullPage:true});
    mode='unavailable';await page.locator('.nav-item[data-workspace-route="news"]').click();await page.locator('#refresh-news').click();await page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled);assert.equal(await counter.textContent(),'ยังนับข่าวไม่ได้');assert.match(await page.locator('#news-list').textContent(),/ยังไม่สามารถโหลดข่าวได้/);

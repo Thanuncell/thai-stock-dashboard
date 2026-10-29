@@ -245,8 +245,7 @@ export function parseNavigationState(value, fallback = {}) {
   return {
     route,
     watchlistId: validWatchlistId(url.searchParams.get('watchlist') || fallback.watchlistId),
-    watchPage: positivePage(url.searchParams.get('watchPage')),
-    ...(normalizeNewsSources(url.searchParams.getAll('source'))!=='all'?{source:normalizeNewsSources(url.searchParams.getAll('source'))}:{})
+    watchPage: positivePage(url.searchParams.get('watchPage'))
   };
 }
 
@@ -269,7 +268,6 @@ export function navigationUrl(state = {}, pathname = '/') {
     const page = positivePage(state.watchPage);
     if (watchlistId) params.set('watchlist', watchlistId);
     if (page > 1) params.set('watchPage', String(page));
-    const source=normalizeNewsSources(state.source);if(source!=='all')params.set('source',source);
   }
   const base = String(pathname || '/').startsWith('/') ? String(pathname || '/') : '/';
   return `${base}${params.size ? `?${params}` : ''}#${route}`;

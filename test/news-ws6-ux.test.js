@@ -21,7 +21,7 @@ test('WS6: multi-source navigation is canonical and old single-source URLs remai
  assert.equal(state.source,'bangkokbiznews,thansettakij');assert.equal(d.navigationUrl(state),'/?source=bangkokbiznews%2Cthansettakij&newsPage=4#news');
  assert.equal(d.parseNavigationState('https://fixture.invalid/?source=infoquest#news').source,'infoquest');
  const watch=d.parseNavigationState('https://fixture.invalid/?source=investing,broker&watchPage=2#watchlist');
- assert.equal(watch.source,'broker,investing');assert.match(d.navigationUrl(watch),/source=broker%2Cinvesting/);
+ assert.equal(watch.source,undefined);assert.equal(d.navigationUrl({...watch,source:'investing'}),'/?watchPage=2#watchlist');
 });
 test('WS6: compact page ranges stay bounded and clamp invalid numbers',async()=>{
  const {pageList}=await import('../client/domain.mjs');

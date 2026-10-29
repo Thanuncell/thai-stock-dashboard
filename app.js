@@ -85,7 +85,6 @@ let archiveStale = false;
 let archivePendingKey = '', archivePendingTask = null, archiveController = null;
 let newsLoaded = false;
 let newsDataState = 'idle';
-let watchSource = initialNavigation.route === 'watchlist' ? initialNavigation.source || 'all' : 'all';
 let archiveConfigured = false;
 let archiveLoaded = false;
 const PAGE_SIZE = 10;
@@ -157,7 +156,7 @@ function isCurrentPrivateIdentity(identity = privateSessionIdentity) {
     && window.setscopeAuth?.isCurrentIdentity?.(identity));
 }
 function clearPrivateDom() {
-  ['#watchlist', '#watchlist-mobile', '#watchlist-news-list', '#watchlist-news-pager', '#watchlist-news-count', '#mover-list', '#alerts-settings', '#alerts-history'].forEach(selector => {
+  ['#watchlist', '#watchlist-mobile', '#watchlist-news-list', '#watchlist-news-pager', '#mover-list', '#alerts-settings', '#alerts-history'].forEach(selector => {
     const node = $(selector); if (node) node.replaceChildren();
   });
   ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => {
@@ -204,7 +203,7 @@ function clearPrivateState() {
   watchlistNewsMatchInfo = null;
   archiveNewsRequestId += 1; archiveController?.abort(); archiveController=null; archivePendingKey=''; archivePendingTask=null;
   archiveLoaded=false; archiveState='idle'; archiveTotal=null;
-  watchSource=preserveInitialWatchSelection?initialNavigation.source||'all':'all';syncNavigationControls();
+  syncNavigationControls();
   watchlistNewsRequestId += 1;
   watchlistNewsController?.abort();
   watchlistNewsController = null;
@@ -244,7 +243,7 @@ const workspaceRoutes = {
 function currentNavigationState(route = document.body.dataset.workspacePage || initialNavigation.route || 'overview') {
   if (route === 'chart') return { route, symbol: activeSymbol, range: currentRange };
   if (route === 'news') return { route, query: newsQuery, source: activeSource, newsPage };
-  if (route === 'watchlist') return { route, watchlistId: activeWatchlistId, watchPage: watchNewsPage, source:watchSource };
+  if (route === 'watchlist') return { route, watchlistId: activeWatchlistId, watchPage: watchNewsPage };
   return { route: 'overview' };
 }
 function writeNavigation(mode = 'push', route) {
@@ -257,8 +256,8 @@ function writeNavigation(mode = 'push', route) {
 }
 function syncNavigationControls() {
   const search = $('#news-search'); if (search) search.value = newsQuery;
-  document.querySelectorAll('.source-chip,.watch-source-chip').forEach(button => {
-    const selected=button.classList.contains('watch-source-chip')?watchSource:activeSource;
+  document.querySelectorAll('.source-chip').forEach(button => {
+    const selected=activeSource;
     const active=selected.split(',').includes(button.dataset.source);button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));
   });
   document.querySelectorAll('.range-tabs button').forEach(button => button.classList.toggle('selected', button.dataset.range === currentRange));
@@ -307,7 +306,7 @@ function restoreNavigationFromLocation() {
   if (state.route === 'watchlist') {
     if (watchlists.some(list => list.id === state.watchlistId)) activeWatchlistId = state.watchlistId;
     watchlist = currentWatchlist().items;
-    watchNewsPage = state.watchPage; watchSource=state.source||'all';
+    watchNewsPage = state.watchPage;
   }
   syncNavigationControls();
   syncTechnicalSearch();
@@ -1646,10 +1645,10 @@ function renderWatchlistNews() {
   latestWatchlistNews=retainWatchlistNews(latestWatchlistNews,watchlist);
   const sameScope=watchlistNewsScope===currentWatchlistNewsScope();
   const state=sameScope?watchlistNewsState:watchlist.length?'loading':'empty';
-  const filtered=sameScope?selectNewsForDisplay(latestWatchlistNews,{source:watchSource,featuredCount:0}).filtered:[];
-  const counter=$('#watchlist-news-count');if(counter)counter.textContent=state==='loading'&&!filtered.length?'กำลังโหลดข่าว…':!filtered.length&&['unavailable','error'].includes(state)?'ยังนับข่าวไม่ได้':wholeNumber(filtered.length)+' ข่าว'+(watchlistNewsMatchInfo?.limited||['partial','stale'].includes(state)?' · เฉพาะชุดที่โหลดได้':'');
+  const filtered=sameScope?selectNewsForDisplay(latestWatchlistNews,{featuredCount:0}).filtered:[];
   root.dataset.state=state;
   if(!sameScope||!latestWatchlistNews.length){
+    if(sameScope&&state!=='loading'&&watchNewsPage!==1){watchNewsPage=1;if(document.body.dataset.workspacePage==='watchlist')writeNavigation('replace','watchlist');}
     const message=state==='loading'?'กำลังโหลดข่าวของหุ้นในรายการติดตาม…'
       :state==='error'?'โหลดข่าวไม่สำเร็จ กรุณาลองอัปเดตอีกครั้ง'
       :state==='unavailable'?'ยังไม่สามารถตรวจสอบข่าวของหุ้นในรายการติดตามได้'
@@ -1659,9 +1658,10 @@ function renderWatchlistNews() {
     renderNewsItemsInto(root,[],message);const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
   }
   const total = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
+  const displayPage = Math.max(1, Math.min(watchNewsPage, total));
+  if(watchNewsPage!==displayPage){watchNewsPage=displayPage;if(document.body.dataset.workspacePage==='watchlist')writeNavigation('replace','watchlist');}
   const items = filtered.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
-  renderNewsItemsInto(root, items, 'ยังไม่มีข่าวจากแหล่งที่เลือก');
+  renderNewsItemsInto(root, items, watchlistEmptyText());
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, filtered.length, page => {
     watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToPageTop();
   });
@@ -1890,13 +1890,13 @@ function setupUiEventWiring() {
   });
   window.addEventListener('resize', scheduleChartRedraw, { passive: true });
   window.addEventListener('orientationchange', scheduleChartRedraw, { passive: true });
-  document.querySelectorAll('.source-chip,.watch-source-chip').forEach(button => button.addEventListener('click', () => {
-    const watch=button.classList.contains('watch-source-chip'),source=button.dataset.source,current=watch?watchSource:activeSource;
-    if(!watch)clearTimeout(newsSearchTimer);
+  document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
+    const source=button.dataset.source,current=activeSource;
+    clearTimeout(newsSearchTimer);
     const selected=new Set(current==='all'?[]:current.split(','));if(selected.has(source))selected.delete(source);else selected.add(source);
-    const next=source==='all'?'all':normalizeNewsSources([...selected]);
-    if(watch){watchSource=next;watchNewsPage=1;renderWatchlistNews();writeNavigation('push','watchlist');}
-    else{activeSource=next;newsPage=1;archiveLoaded=false;writeNavigation('push','news');if(archiveConfigured||archiveState==='loading')getArchiveNews({page:1});else renderNews();}
+    activeSource=source==='all'?'all':normalizeNewsSources([...selected]);
+    newsPage=1;archiveLoaded=false;writeNavigation('push','news');
+    if(archiveConfigured||archiveState==='loading')getArchiveNews({page:1});else renderNews();
     syncNavigationControls();
   }));
   $('#news-search').addEventListener('input', event => {
