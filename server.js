@@ -359,12 +359,11 @@ async function handle(req, res) {
       const symbol = url.searchParams.get('symbol') || '';
       const query = String(url.searchParams.get('query') || '').trim().slice(0, 80);
       const featuredCount = url.searchParams.get('featuredCount') || '0';
-      const clampPage = url.searchParams.get('clamp')==='1';
       const excludeUrls = url.searchParams.getAll('exclude').slice(0, 10);
       const exclusionKey = createHash('sha256').update(JSON.stringify(excludeUrls)).digest('base64url').slice(0, 16);
-      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}|${clampPage}|${newsQuarantine.revision}|${newsLinkReview.revision}`;
+      const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}|${newsQuarantine.revision}|${newsLinkReview.revision}`;
       const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({
-        page, pageSize, source, symbol, query, excludeUrls, featuredCount, clampPage
+        page, pageSize, source, symbol, query, excludeUrls, featuredCount
       }));
       const safe = newsService.filterForDisplay(data);
       const featuredResult = newsService.filterForDisplay({items:data.featured || []});

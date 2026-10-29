@@ -419,4 +419,4 @@ html[data-theme="dark"] .legal-brand em{color:#8fa6b5}
   .legal-nav{display:grid;grid-template-columns:1fr 1fr}
 }
 
-.news-sources button:focus-visible,.page-btn:focus-visible{outline:2px solid #2f8c73;outline-offset:2px}
+.news-sources button:focus-visible{outline:2px solid #2f8c73;outline-offset:2px}

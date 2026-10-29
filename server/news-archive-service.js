@@ -328,7 +328,7 @@ function createNewsArchiveService({
     });
   }
 
-  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [], featuredCount = 0, clampPage = false } = {}) {
+  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [], featuredCount = 0 } = {}) {
     const safePage = Math.max(1, Math.min(100000, Number.parseInt(page, 10) || 1));
     const safePageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, Number.parseInt(pageSize, 10) || 10));
     const safeFeaturedCount = Math.max(0, Math.min(MAX_FEATURED_COUNT, Number.parseInt(featuredCount, 10) || 0));
@@ -352,13 +352,12 @@ function createNewsArchiveService({
       : [];
     const featuredKeys = new Set(featured.map(newsFingerprint));
     const paginated = featuredKeys.size ? displayable.filter(item => !featuredKeys.has(newsFingerprint(item))) : displayable;
-    const resolvedPage=clampPage?Math.min(safePage,Math.max(1,Math.ceil(paginated.length/safePageSize))):safePage;
-    const start = (resolvedPage - 1) * safePageSize;
+    const start = (safePage - 1) * safePageSize;
     return {
       configured: true,
       featured,
       items: paginated.slice(start, start + safePageSize),
-      page: resolvedPage,
+      page: safePage,
       pageSize: safePageSize,
       total: paginated.length,
       matchingTotal: displayable.length, countExact: snapshot.countExact, countCoverage:snapshot.countExact?'complete-archive-snapshot':'loaded-archive-snapshot', snapshotRows:snapshot.rawTotal, snapshotLimit:MAX_ARCHIVE_SCAN_ROWS,

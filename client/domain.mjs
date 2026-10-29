@@ -239,13 +239,13 @@ export function parseNavigationState(value, fallback = {}) {
       route,
       query: String(url.searchParams.get('s') ?? '').trim().slice(0, 80),
       source,
-      newsPage: positivePage(url.searchParams.get('newsPage'))
+      newsPage: positivePage(url.searchParams.get('newsPage') || fallback.newsPage)
     };
   }
   return {
     route,
     watchlistId: validWatchlistId(url.searchParams.get('watchlist') || fallback.watchlistId),
-    watchPage: positivePage(url.searchParams.get('watchPage'))
+    watchPage: positivePage(url.searchParams.get('watchPage') || fallback.watchPage)
   };
 }
 
