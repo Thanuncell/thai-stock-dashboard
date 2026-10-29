@@ -70,6 +70,8 @@ function createNewsArchiveService({
   maxScanRows = MAX_ARCHIVE_SCAN_ROWS,
   quarantine = new Map(),
   displayReview = async items=>items,
+  displayBlockedUrls = ()=>[],
+  displayOverlays = ()=>[],
   displayProject = item=>item
 } = {}) {
   const secretKey = env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -212,11 +214,14 @@ function createNewsArchiveService({
       body: JSON.stringify(rows)
       });
     }
+    queryIndex.invalidateReview();
     archiveSnapshotVersion += 1;
     archiveSnapshot = null;
     let cleanupRan = false, cleanupUnavailable = false;
     try { if (ingested > 0) cleanupRan = await cleanupIfDue(); } catch { cleanupUnavailable = true; }
-    return { configured: true, ingested, cleanupRan, ...(evidenceMode === 'write' ? { conflicts, retained } : {}),
+    let queryIndexUnavailable=false;
+    if(queryIndex.enabled){try{const result=await queryIndex.refresh();queryIndexUnavailable=result.pending!==0;}catch{queryIndexUnavailable=true;}}
+    return { configured: true, ingested, cleanupRan, ...(queryIndexUnavailable?{queryIndexUnavailable:true}:{}), ...(evidenceMode === 'write' ? { conflicts, retained } : {}),
       ...(cleanupUnavailable ? { cleanupUnavailable: true } : {}) };
   }
 
@@ -252,6 +257,9 @@ function createNewsArchiveService({
     }
     return safeUrl ? annotateNewsContent(withNewsRulesSummary(restored),{now:Number(now())}) : null;
   }
+
+  const queryRow=row=>evidenceMode?row:Object.fromEntries(Object.entries(row).filter(([key])=>!EVIDENCE_FIELDS.includes(key)));
+  const queryIndex=require('./news-archive-query').createArchiveQuery({enabled:configured&&env.SETSCOPE_NEWS_ARCHIVE_QUERY==='on',request,headers,fromRow:row=>fromRow(queryRow(row)),reviewRow:row=>reviewArchivedNewsRow(queryRow(row)),displayProject,displayReview,displayOverlays,blockedUrls:()=>[...displayBlockedUrls(),...(hardGate?[...quarantine.values()].map(x=>x.url):[])],now,policy:'news-query-1:'+(evidenceMode?'read':'legacy')+':'+(hardGate?'article':'metadata')});
 
   async function buildArchiveSnapshot() {
     const params = new URLSearchParams({
@@ -333,6 +341,7 @@ function createNewsArchiveService({
     const safePageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, Number.parseInt(pageSize, 10) || 10));
     const safeFeaturedCount = Math.max(0, Math.min(MAX_FEATURED_COUNT, Number.parseInt(featuredCount, 10) || 0));
     if (!configured) return { configured: false, featured: [], items: [], page: safePage, pageSize: safePageSize, total: 0, maxAgeDays: RETENTION_DAYS, coverage: 'unavailable' };
+    if(queryIndex.enabled)return queryIndex.list({page:safePage,pageSize:safePageSize,source,symbol,query,excludeUrls,featuredCount:safeFeaturedCount});
     const safeSource = normalizeNewsSources(source);
     const safeSymbol = normalizeSymbol(symbol);
     const snapshot = await getArchiveSnapshot();
@@ -370,7 +379,7 @@ function createNewsArchiveService({
     };
   }
 
-  return { configured, canQueue: configured && evidenceMode === 'write', ingest, list, prepare, restorePrepared: row => {
+  return { configured, refreshQueryIndex:queryIndex.refresh, canQueue: configured && evidenceMode === 'write', ingest, list, prepare, restorePrepared: row => {
     if (!require('../lib/news-evidence').validStoredEvidence({...row,verification_revision:1})) throw Error('INVALID_PREPARED_NEWS');
     const item=rowItem(row);
     item.verification=restoreEvidence(item,{...row,verification_revision:1});

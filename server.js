@@ -156,7 +156,7 @@ const newsService = createNewsService({ onDiscovered: async items => {
   try { await durableNewsIngest.captureDiscovered(items); }
   catch { console.warn('News queue discovery admission unavailable'); }
 }, reliability:newsReliability, articleLoader, displayProject:newsLinkReview.project, fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
-const newsArchiveService = createNewsArchiveService({ displayReview:newsLinkReview.review, displayProject:newsLinkReview.project, fetchImpl: providerFetch, quarantine:newsQuarantine });
+const newsArchiveService = createNewsArchiveService({ displayOverlays:()=>newsLinkReview.queryOverlays, displayBlockedUrls:()=>newsLinkReview.withheldUrls, displayReview:newsLinkReview.review, displayProject:newsLinkReview.project, fetchImpl: providerFetch, quarantine:newsQuarantine });
 const newsWorkStore = require('./server/news-work-store').createNewsWorkStore({ fetchImpl: providerFetch });
 durableNewsIngest = require('./server/news-work').createDurableNewsIngest({ archive: newsArchiveService, store: newsWorkStore, review: newsService.reviewDiscovered });
 const settradeProvider = createSettradeProvider({ fetchImpl: providerFetch });
