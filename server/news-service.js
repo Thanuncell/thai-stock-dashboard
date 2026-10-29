@@ -70,13 +70,17 @@ const { createBangkokBizNewsSource } = require('./news-bangkokbiznews');
 const { createThansettakijSource } = require('./news-thansettakij');
 const { readBoundedText } = require('../lib/news-response');
 
-function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport({allowBangkok:env.SETSCOPE_NEWS_BANGKOKBIZNEWS==='on',allowThansettakij:env.SETSCOPE_NEWS_THANSETTAKIJ==='on'}), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map(), onDiscovered, displayProject = item=>item, articleLoader } = {}) {
+function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, articleFetch = createNewsTransport({allowBangkok:env.SETSCOPE_NEWS_BANGKOKBIZNEWS==='on',allowThansettakij:env.SETSCOPE_NEWS_THANSETTAKIJ==='on'}), logger = console, now = Date.now, analysisTimeoutMs = 30000, registrySearch, watchlistDeadlineMs = 30000, quarantine = new Map(), onDiscovered, displayProject = item=>item, articleLoader, reliability } = {}) {
   if (!Number.isInteger(analysisTimeoutMs) || analysisTimeoutMs < 1 || analysisTimeoutMs > 30000) throw Error('Invalid AI timeout');
   const analysisCache = new Map();
   let openAiCooldownUntil = 0;
   let openAiInFlight = null;
   let openAiQuotaBlocked = false;
   const hardGate = p1DisplayGateEnabled(env);
+  reliability ||= articleFetch.newsReliability || require('./news-source-reliability').createNewsSourceReliability({now,pausedSources:String(env.SETSCOPE_NEWS_PAUSED_SOURCES||'').split(',').map(x=>x.trim()).filter(Boolean)});
+  articleFetch = reliability.wrap(articleFetch,'extraction');
+  const rssFetch = reliability.wrap(fetchImpl,'rss');
+  const rssSnapshots = new Map();
   const loadArticle = articleLoader || createNewsArticleLoader({transport:articleFetch,now,allowGoogleRpc:env.SETSCOPE_GOOGLE_NEWS_RPC==='on'});
   const bangkokEnabled = env.SETSCOPE_NEWS_BANGKOKBIZNEWS === 'on';
   const bangkok = createBangkokBizNewsSource({enabled:bangkokEnabled,transport:articleFetch,articleLoader:loadArticle,now});
@@ -108,6 +112,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
 
   function fetchGoogleRss(url, signal) {
     if (rssPending.has(url)) return rssPending.get(url);
+    if(rssPending.size>=32)return Promise.reject(providerCooldownError());
     const task = rssQueue.catch(() => {}).then(async () => {
       if (signal?.aborted) throw providerCooldownError();
       if (googleAccessDenied) throw providerCooldownError(403);
@@ -115,8 +120,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       const requestSignal = signal || AbortSignal.timeout(12000);
       let response;
       try {
-        response = await abortable(fetchImpl(url, {
-          headers: { 'user-agent': 'SETscope/1.0 news reader (local prototype)', accept: 'application/rss+xml, application/xml, text/xml' },
+        const prior=rssSnapshots.get(url);
+        response = await abortable(rssFetch(url, {
+          maxBytes:512000,
+          headers: { 'user-agent': 'SETscope/1.0 news reader (local prototype)', accept: 'application/rss+xml, application/xml, text/xml',
+            ...(prior?.etag?{'if-none-match':prior.etag}:{}),...(prior?.modified?{'if-modified-since':prior.modified}:{}) },
           signal: requestSignal
         }),requestSignal);
       } catch (error) {
@@ -125,6 +133,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
         wrapped.cause = error;
         throw wrapped;
       }
+      if(response.status===304&&rssSnapshots.has(url)){googleFailureCount=0;googleCooldownUntil=0;return rssSnapshots.get(url).text;}
       if (response.status === 429 || response.status === 503) {
         beginGoogleCooldown(response);
         throw providerCooldownError(response.status);
@@ -133,7 +142,12 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       if (!response.ok) throw Error(`Google News RSS HTTP ${response.status}`);
       googleFailureCount = 0;
       googleCooldownUntil = 0;
-      return abortable(readBoundedText(response,512000),requestSignal);
+      const text=await abortable(readBoundedText(response,512000,requestSignal),requestSignal);
+      if(/<rss(?:\s|>)/i.test(text)&&/<\/rss\s*>/i.test(text)){
+        rssSnapshots.delete(url);rssSnapshots.set(url,{text,etag:response.headers.get('etag'),modified:response.headers.get('last-modified')});
+        while(rssSnapshots.size>16)rssSnapshots.delete(rssSnapshots.keys().next().value);
+      }
+      return text;
     });
     rssPending.set(url, task);
     rssQueue = task.then(() => undefined, () => undefined);
@@ -199,6 +213,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     const key = newsFingerprint(item);
     quarantine.delete(key);
     quarantine.set(key, { url: item.url, title: item.title, status: evidence.status, reason: evidence.reason });
+    reliability.recordQuality(item.url,evidence.status);
     while (quarantine.size > 200) quarantine.delete(quarantine.keys().next().value);
   }
 
@@ -243,6 +258,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       if (evidence.status !== 'VERIFIED') { if (evidence.status === 'UNVERIFIED') kept.unverifiedCount++; quarantineItem(item, evidence); continue; }
       quarantine.delete(newsFingerprint(original));
       quarantine.delete(newsFingerprint(item));
+      reliability.recordQuality(item.url,evidence.status);
       kept.push({ ...item, verification: evidence });
     }
     return kept;
@@ -279,7 +295,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
           return item.title && allowedNewsUrl(item.url)
             && Number.isFinite(published) && published >= cutoff;
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
-        if(onDiscovered)await onDiscovered(parsed.slice(0,1));
+        if(onDiscovered){try{await onDiscovered(parsed.slice(0,1));}catch{logger.warn('News discovery checkpoint unavailable');}}
         const reviewed = await keepQualityItems(parsed, articleBudget);
         settled.push({ status: 'fulfilled', value: reviewed.slice(0, 8), uncertain: reviewed.unverifiedCount, assessments: reviewed.assessments });
       } catch (reason) {
@@ -329,7 +345,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     const unknown = reason => ({state:'UNVERIFIED',reason,originalUrl:item?.url || '',canonicalUrl:null,publishedAt:null,text:'',requests:before-(budget.httpRemaining ?? before)});
     try {
       if (isNewsDocument(item)) return unknown('DOCUMENT_NOT_ARTICLE');
-      const loaded = await abortable(loadArticle(item?.url,{signal:controller.signal,budget,maxBytes:1_500_000}),controller.signal);
+      const loaded = await abortable(loadArticle(item?.url,{signal:controller.signal,budget,maxBytes:1_500_000,retry:strict}),controller.signal);
       if(!loaded.response)return unknown(loaded.reason);
       const {target,response}=loaded;
       if([404,410].includes(response.status))return unknown('ARTICLE_NOT_FOUND');
@@ -497,7 +513,10 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       ...candidates.filter(item=>!kept.includes(item)).map(item=>item?.url)])].filter(url=>allowedNewsUrl(url)).slice(0,200);
     return { ...payload, p1DisplayGate:true, ...(withheldUrls.length ? {withheldUrls} : {}), items:kept.map(item=>annotateNewsContent(item,{now:Number(now())})), ...(!payload.page && typeof payload.total==='number' ? {total:kept.length} : {}), ...(kept.length < candidates.length ? {partial:true,dataState:kept.length?'partial':'unavailable'} : {}) };
   }
-  return { analyse, extractArticle, getNews, getWatchlistNews, filterForDisplay, reviewDiscovered: async (item, {signal,budget={remaining:1,httpRemaining:6}}={}) => {
+  return { analyse, extractArticle, getNews, getWatchlistNews, filterForDisplay,
+    reliabilityReport:reliability.snapshot,
+    pauseSource:value=>{reliability.pause(value);loadArticle.blockOrigin(value);},
+    recoverSource:value=>{reliability.resume(value);loadArticle.unblockOrigin?.(value);if(new URL(value).hostname==='news.google.com'){googleAccessDenied=false;googleCooldownUntil=0;googleFailureCount=0;}bangkok.recover(value);thansettakij.recover(value);}, reviewDiscovered: async (item, {signal,budget={remaining:1,httpRemaining:6}}={}) => {
     const reviewed=await keepQualityItems([item],{...budget,signal});
     return {items:reviewed,assessments:reviewed.assessments};
   }, quarantineReport: () => [...quarantine.values()].map(item=>({...item})) };

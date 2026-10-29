@@ -128,7 +128,7 @@ test('403/429/timeout uncertainty stays quarantined in News and Watchlist; genui
   }});
   assert.equal((await service.getNews()).items.length,0);
   assert.equal((await service.getWatchlistNews([{symbol:'PTT',name:'PTT company'}])).items.length,0);
-  assert.equal(service.quarantineReport()[0].status,'UNVERIFIED');assert.equal(calls,1);
+  assert.equal(service.quarantineReport()[0].status,'UNVERIFIED');assert.equal(calls,status==='timeout'?2:1,'only transient timeout gets one bounded retry');
  }
  const service=createNewsService({fetchImpl:async()=>new Response(rss([input({title:'PTT company earnings announcement'})]))});
  assert.equal((await service.getNews()).items.length,1);

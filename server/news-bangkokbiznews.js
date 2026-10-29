@@ -33,6 +33,8 @@ function parseBangkokSitemap(xml,now=Date.now()){
  return [...new Map(items.map(item=>[canonicalUrl(item.url),item])).values()].sort((a,b)=>Date.parse(b.pubDate)-Date.parse(a.pubDate)).slice(0,20);
 }
 function createBangkokBizNewsSource({enabled=false,transport=createNewsTransport({allowBangkok:enabled}),articleLoader,now=Date.now}={}){
+ const reliability=transport.newsReliability||require('./news-source-reliability').createNewsSourceReliability({now});
+ transport=reliability.wrap(transport,'discovery');
  const loadArticle=articleLoader||createNewsArticleLoader({transport,now,allowGoogleRpc:false}),texts=new WeakMap(),seenAt=new WeakMap(),turns=new Map();
  let snapshot=null,pending=null,retryAt=0,denied=false,turn=0;
  const empty=(reason)=>({items:[],assessments:[],errors:reason?[reason]:[],unverifiedCount:0,partial:Boolean(reason),dataState:reason?'unavailable':'disabled'});
@@ -44,16 +46,16 @@ function createBangkokBizNewsSource({enabled=false,transport=createNewsTransport
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000),budget={httpRemaining:12};
   try{
    budget.httpRemaining--;
-   const response=await transport(SITEMAP,{redirect:'manual',signal:controller.signal,maxBytes:1000000,headers:{accept:'application/xml,text/xml','user-agent':'SETscope/1.0 news reader'}});
+   const response=await transport(SITEMAP,{redirect:'manual',signal:controller.signal,maxBytes:1000000,newsStage:'discovery',newsBudget:budget,headers:{accept:'application/xml,text/xml','user-agent':'SETscope/1.0 news reader'}});
    if([401,403].includes(response.status)){denied=true;throw Error('SOURCE_ACCESS_DENIED');}
-   if(response.status===429){retryAt=Number(now())+TTL;throw Error('SOURCE_RATE_LIMIT');}
+   if(response.status===429){retryAt=Number(now())+Math.max(TTL,require('./news-source-reliability').retryAfterMs(response.headers.get('retry-after'),Number(now())));throw Error('SOURCE_RATE_LIMIT');}
    if(!response.ok)throw Error('SOURCE_HTTP_'+response.status);
    if(!/^(?:application|text)\/(?:xml|rss\+xml)(?:;|$)/i.test(response.headers.get('content-type')||''))throw Error('PARSER_MISMATCH');
    const candidates=parseBangkokSitemap(await readBoundedText(response,1000000,controller.signal),Number(now()));
    for(const item of candidates)if(!turns.has(item.url))turns.set(item.url,++turn);
    while(turns.size>200)turns.delete(turns.keys().next().value);
-   const waiting=[...candidates].sort((a,b)=>turns.get(a.url)-turns.get(b.url));
    const items=[],assessments=[],old=snapshot&&Number(now())-snapshot.at<=LKG?snapshot.value.items:[];
+   const waiting=[...candidates].sort((a,b)=>turns.get(a.url)-turns.get(b.url));
    for(const original of waiting.slice(0,3)){
     if(controller.signal.aborted||budget.httpRemaining<=0)break;
     try{
@@ -63,7 +65,7 @@ function createBangkokBizNewsSource({enabled=false,transport=createNewsTransport
     if(!loaded.response){assessments.push({url:original.url,reason:loaded.reason});continue;}
     const {response:article,target}=loaded;
     if(!article.ok||!/^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i.test(article.headers.get('content-type')||'')){
-     assessments.push({url:original.url,reason:'ARTICLE_RESPONSE_UNVERIFIED'});continue;
+     assessments.push({url:original.url,reason:[404,410].includes(article.status)?'ARTICLE_NOT_FOUND':'ARTICLE_RESPONSE_UNVERIFIED',invalidatesPrior:/application\/(?:pdf|msword|vnd\.(?:ms-|openxmlformats))/i.test(article.headers.get('content-type')||'')});continue;
     }
     if(!publisherMatches({...original,url:target.href})||isNewsDocumentForDisplay({...original,url:target.href})){
      assessments.push({url:original.url,reason:'ARTICLE_PUBLISHER_OR_DOCUMENT'});continue;
@@ -78,16 +80,17 @@ function createBangkokBizNewsSource({enabled=false,transport=createNewsTransport
     const item=projectDiscovery(original,{...original,url:inspection.resolvedUrl});
     item.verification=issueEvidence(item,{status:'VERIFIED',reason:'ARTICLE_IDENTITY_VERIFIED',basis:'article'},
      {inspection,checkedAt:Number(now()),originalUrl:original.url,pathway:'bangkokbiznews/sitemap-article'});
-    if(item.verification){texts.set(item,inspection.text);seenAt.set(item,Number(now()));items.push(item);}
+    if(item.verification){reliability.recordQuality(item.url,'VERIFIED');texts.set(item,inspection.text);seenAt.set(item,Number(now()));items.push(item);}
     }catch{assessments.push({url:original.url,reason:controller.signal.aborted?'ARTICLE_REQUEST_TIMEOUT':'ARTICLE_RESPONSE_UNVERIFIED'});}
    }
    // Previously verified stories retain their own timestamps; failed refresh cannot renew their LKG.
-   const expired=new Set(assessments.map(x=>canonicalUrl(x.url)));
+   for(const assessment of assessments)reliability.recordQuality(assessment.url,'UNVERIFIED');
+   const expired=new Set(assessments.filter(x=>x.invalidatesPrior||['ARTICLE_NOT_FOUND','DOCUMENT_NOT_ARTICLE','ARTICLE_IDENTITY_MISMATCH','PUBLICATION_DATE_MISMATCH','ARTICLE_PUBLISHER_OR_DOCUMENT'].includes(x.reason)).map(x=>canonicalUrl(x.url)));
    const combined=dedupeNewsItems([...items,...old.filter(x=>Number(now())-seenAt.get(x)<=LKG&&!expired.has(canonicalUrl(x.url))&&!items.some(y=>canonicalUrl(y.url)===canonicalUrl(x.url)))]).slice(0,20);
    const value={items:combined,assessments:[],errors:assessments.length?['ARTICLE_COVERAGE_PARTIAL']:[],unverifiedCount:assessments.length,
     diagnostics:assessments,partial:assessments.length>0,dataState:assessments.length?(combined.length?'partial':'unavailable'):combined.length?'fresh':'empty'};
    snapshot={at:Number(now()),value};return value;
-  }catch(error){retryAt=Number(now())+TTL;return fallback(controller.signal.aborted?'SOURCE_TIMEOUT':['PARSER_MISMATCH','SOURCE_ACCESS_DENIED','SOURCE_RATE_LIMIT'].includes(error.message)||/^SOURCE_HTTP_\d+$/.test(error.message)?error.message:'SOURCE_UNAVAILABLE');}
+  }catch(error){retryAt=Math.max(retryAt,Number(now())+TTL);return fallback(controller.signal.aborted?'SOURCE_TIMEOUT':['PARSER_MISMATCH','SOURCE_ACCESS_DENIED','SOURCE_RATE_LIMIT'].includes(error.message)||/^SOURCE_HTTP_\d+$/.test(error.message)?error.message:'SOURCE_UNAVAILABLE');}
   finally{clearTimeout(timer);}
  }
  async function getNews({stock,signal}={}){
@@ -104,6 +107,6 @@ function createBangkokBizNewsSource({enabled=false,transport=createNewsTransport
   }
   return {...result,items};
  }
- return {getNews};
+ return {getNews,recover(value){const key=require('./news-source-reliability').sourceKey(value);if(key==='bangkokbiznews.com'){denied=false;retryAt=0;reliability.resume(value);loadArticle.unblockOrigin?.(value);}}};
 }
 module.exports={SITEMAP,parseBangkokSitemap,createBangkokBizNewsSource};
