@@ -150,8 +150,14 @@ const newsQuarantine = new NewsQuarantine();
 const articleLoader = require('./lib/news-resolver').createNewsArticleLoader({transport:articleFetch,allowGoogleRpc:process.env.SETSCOPE_GOOGLE_NEWS_RPC==='on'});
 const {newsAssociationSymbols}=require('./lib/news-content');
 const newsLinkReview = require('./server/news-link-review').createNewsLinkReview({loadArticle:articleLoader,registrySearch:searchRegistry});
-const newsService = createNewsService({ articleLoader, displayProject:newsLinkReview.project, fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
+let durableNewsIngest;
+const newsService = createNewsService({ onDiscovered: async items => {
+  try { await durableNewsIngest.captureDiscovered(items); }
+  catch { console.warn('News queue discovery admission unavailable'); }
+}, articleLoader, displayProject:newsLinkReview.project, fetchImpl: providerFetch, articleFetch, quarantine:newsQuarantine, registrySearch: searchRegistry });
 const newsArchiveService = createNewsArchiveService({ displayReview:newsLinkReview.review, displayProject:newsLinkReview.project, fetchImpl: providerFetch, quarantine:newsQuarantine });
+const newsWorkStore = require('./server/news-work-store').createNewsWorkStore({ fetchImpl: providerFetch });
+durableNewsIngest = require('./server/news-work').createDurableNewsIngest({ archive: newsArchiveService, store: newsWorkStore, review: newsService.reviewDiscovered });
 const settradeProvider = createSettradeProvider({ fetchImpl: providerFetch });
 const marketOverviewService = createMarketOverviewService({ provider: settradeProvider });
 const watchlistService = createWatchlistService({ fetchImpl: providerFetch });
@@ -165,7 +171,7 @@ async function loadCached(res, key, policy, load, options) {
 
 async function loadNewsAndArchive() {
   const data = await newsService.getNews();
-  try { await newsArchiveService.ingest(data.items, { assessments: getAssessments(data) }); }
+  try { await durableNewsIngest.ingest(data.items, { assessments: getAssessments(data) }); }
   catch (error) { console.warn('News archive write unavailable:', error.message); }
   return {...data,items:await newsLinkReview.review(data.items)};
 }

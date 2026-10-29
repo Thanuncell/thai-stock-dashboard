@@ -144,9 +144,7 @@ function createNewsArchiveService({
     return true;
   }
 
-  async function ingest(items = [], { assessments = [] } = {}) {
-    if (!configured) return { configured: false, ingested: 0, cleanupRan: false };
-    if (evidenceMode === 'read') return { configured: true, ingested: 0, cleanupRan: false, persistence: 'read-only' };
+  function prepare(items = [], { assessments = [] } = {}) {
     const candidates = items.map(item => toRow(item)).filter(Boolean);
     if (evidenceMode === 'write') {
       for (const assessment of assessments.slice(0, 200)) {
@@ -173,7 +171,13 @@ function createNewsArchiveService({
       }
       unique.set(row.fingerprint, row);
     }
-    const rows = [...unique.values()];
+    return [...unique.values()];
+  }
+
+  async function ingest(items = [], { assessments = [] } = {}) {
+    if (!configured) return { configured: false, ingested: 0, cleanupRan: false };
+    if (evidenceMode === 'read') return { configured: true, ingested: 0, cleanupRan: false, persistence: 'read-only' };
+    const rows = prepare(items, { assessments });
     if (!rows.length) return { configured: true, ingested: 0, cleanupRan: false };
     // Feed ingestion refreshes metadata only. Omitted analysis columns cannot
     // overwrite a persisted AI summary, even during concurrent conflict updates.
@@ -364,7 +368,13 @@ function createNewsArchiveService({
     };
   }
 
-  return { configured, ingest, list };
+  return { configured, canQueue: configured && evidenceMode === 'write', ingest, list, prepare, restorePrepared: row => {
+    if (!require('../lib/news-evidence').validStoredEvidence({...row,verification_revision:1})) throw Error('INVALID_PREPARED_NEWS');
+    const item=rowItem(row);
+    item.verification=restoreEvidence(item,{...row,verification_revision:1});
+    const discovery=trustedEvidence(item)?.discovery;if(discovery)item.discovery=discovery;
+    return item;
+  } };
 }
 
 module.exports = {
