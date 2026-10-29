@@ -1680,17 +1680,17 @@ function renderPagerInto(bar, current, total, count, onPick) {
     button.textContent = label;
     button.className = options.active ? 'page-btn active' : 'page-btn';
     button.disabled = Boolean(options.disabled);
-    button.setAttribute('aria-label',label==='‹'?'ก่อนหน้า':label==='›'?'ถัดไป':'หน้า '+page);
+    button.setAttribute('aria-label',label==='ก่อนหน้า'||label==='ถัดไป'?label:'หน้า '+page);
     if(options.active)button.setAttribute('aria-current','page');
     button.addEventListener('click', () => onPick(page));
     return button;
   };
-  bar.append(makeButton('‹', current - 1, { disabled: current === 1 }));
+  bar.append(makeButton('ก่อนหน้า', current - 1, { disabled: current === 1 }));
   (total===null ? [current] : pageList(current, total)).forEach(page => {
     if (page === '…') { const separator = document.createElement('span'); separator.textContent = '…'; separator.setAttribute('aria-hidden','true');bar.append(separator); }
     else bar.append(makeButton(String(page), page, { active: page === current }));
   });
-  if(total!==null)bar.append(makeButton('›', current + 1, { disabled: current === total }));
+  if(total!==null)bar.append(makeButton('ถัดไป', current + 1, { disabled: current === total }));
 }
 function renderNews() {
   const query = newsQuery.trim().toLocaleLowerCase('th');
