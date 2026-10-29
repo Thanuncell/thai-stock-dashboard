@@ -420,3 +420,7 @@ html[data-theme="dark"] .legal-brand em{color:#8fa6b5}
 }
 
 .news-sources button:focus-visible,.page-btn:focus-visible{outline:2px solid #2f8c73;outline-offset:2px}
+
+@media(max-width:600px){
+  .news-pager>.page-btn:first-child,.news-pager>.page-btn:last-child{flex-basis:calc(50% - 3px);order:-1}
+}

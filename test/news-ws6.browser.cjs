@@ -13,7 +13,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    checks=0;const context=await browser.newContext({viewport}),state={getOwners:[],putOwners:[],holdNextAPut:false,holdNextLogout:false,holdNextAGet:false,holdNextAMarket:false},calls={news:0,archive:0,watch:0},timings=[];
    const names=['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ','Investing.com','InfoQuest'];
    const items=Array.from({length:1205},(_,i)=>({title:'WS6 PTT รายงานข่าวลงทุน '+String(i).padStart(4,'0'),url:'https://news.google.com/rss/articles/ws6-browser-'+i,source:i%4===3?'infoquest':'other',sourceName:names[i%4],pubDate:new Date(Date.now()-60000-i*1000).toISOString(),snippet:'PTT รายงานผลประกอบการและการลงทุนตามข้อมูลต้นทาง',matchedSymbols:['PTT'],brokerCategory:i%5===0,verification:{status:'VERIFIED',basis:'metadata'}}));
-   let mode='archive',hold=false,release,watchRows=25;const archiveResponses=[];
+   let mode='archive',hold=false,release,heldReady,watchRows=25;const archiveResponses=[];
    await context.route('**/*',async route=>{
     const request=route.request(),u=new URL(request.url());
     if(u.origin!==base&&u.origin!=='https://isolation-test.supabase.co')return route.abort();
@@ -22,7 +22,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
     if(u.origin===base&&u.pathname==='/api/news-archive'){
      calls.archive++;const selected=d.selectNewsForDisplay(items,{source:u.searchParams.get('source'),query:u.searchParams.get('query')||'',featuredCount:0}).filtered;
      const excluded=new Set(u.searchParams.getAll('exclude').map(url=>d.newsKey({url}))),available=selected.filter(x=>!excluded.has(d.newsKey(x))),fc=Number(u.searchParams.get('featuredCount')||0),featured=available.slice(0,fc),rest=available.slice(featured.length),page=Math.max(1,Math.min(Math.ceil(rest.length/10)||1,Number(u.searchParams.get('page')||1)));
-     if(hold){hold=false;await new Promise(r=>{release=r;});}
+     if(hold){hold=false;await new Promise(r=>{release=r;heldReady?.();});}
      await delay(20);if(mode==='error')return json({error:'synthetic unavailable'},502);
      if(['local','unavailable'].includes(mode))return json({configured:false,items:[],featured:[],total:0,dataState:'unavailable'});
      const result={configured:true,items:rest.slice((page-1)*10,page*10),featured,total:rest.length,page,countExact:!mode.startsWith('unknown'),matchingTotal:mode.startsWith('unknown')?null:available.length,dataState:'fresh'};if(mode==='unknown-no-total')delete result.total;archiveResponses.push(result);return json(result);
@@ -46,9 +46,33 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
     const buttons=bar.locator('button');assert.equal(await buttons.first().textContent(),'ก่อนหน้า');assert.equal(await buttons.last().textContent(),'ถัดไป');
     assert.equal(await bar.evaluate(node=>[...node.querySelectorAll('button')].every(button=>{const box=button.getBoundingClientRect(),range=document.createRange();range.selectNodeContents(button);return box.left>=0&&box.right<=innerWidth+1&&range.getClientRects().length===1;})),true);
     assert.equal(await bar.evaluate(node=>{const style=getComputedStyle(node);return style.display==='flex'&&style.flexWrap==='wrap'&&style.justifyContent==='center';}),true);
+    if(viewport.width<=600)assert.equal(await bar.evaluate(node=>Math.abs(node.firstElementChild.getBoundingClientRect().top-node.lastElementChild.getBoundingClientRect().top)<2),true);
    };
    if(process.env.SETSCOPE_WS6_SCREENSHOTS)await pager.screenshot({path:path.join(process.env.SETSCOPE_WS6_SCREENSHOTS,label+'-news-pager.png')});
    await assertPagerLayout(pager);
+   await page.evaluate(()=>{window.__pagerScrolls=[];window.__pagerTopScrolls=0;const original=Element.prototype.scrollIntoView;Element.prototype.scrollIntoView=function(options){if(['news-list','watchlist-news-list'].includes(this.id))window.__pagerScrolls.push({id:this.id,behavior:options?.behavior});return original.call(this,options);};const scroll=window.scrollTo;window.scrollTo=function(...args){if(args[0]?.top===0)window.__pagerTopScrolls++;return scroll.apply(this,args);};});
+   const slowBefore={...calls};hold=true;const held=new Promise(r=>{heldReady=r;});await pager.getByRole('button',{name:'หน้า 2',exact:true}).click();await held;
+   assert.equal(await page.locator('#news-list').getAttribute('aria-busy'),'true');
+   assert.equal(await page.locator('#news-list .news-title-link').count(),0);assert.match(await page.locator('#news-list').textContent(),/กำลังโหลดข่าว/);
+   assert.equal(await pager.locator('[aria-current="page"]').textContent(),'2');assert.match(page.url(),/newsPage=2/);
+   assert.deepEqual(await page.evaluate(()=>window.__pagerScrolls),[{id:'news-list',behavior:'instant'}]);
+   assert.equal(await page.evaluate(()=>window.__pagerTopScrolls),0);
+   assert.equal(await page.locator('#news-list').evaluate(node=>{const target=node.getBoundingClientRect().top+scrollY,margin=parseFloat(getComputedStyle(node).scrollMarginTop)||0,maxScroll=document.documentElement.scrollHeight-innerHeight;return Math.abs(scrollY-Math.min(Math.max(0,target-margin),maxScroll))<2&&scrollY>0;}),true);
+   if(process.env.SETSCOPE_WS6_SCREENSHOTS)await page.screenshot({path:path.join(process.env.SETSCOPE_WS6_SCREENSHOTS,label+'-slow-loading.png'),fullPage:true});
+   assert.equal(await page.locator('#news-list .news-title').evaluate(node=>{const header=document.querySelector('.topbar'),p=getComputedStyle(header).position;return node.getBoundingClientRect().top>=(['sticky','fixed'].includes(p)?header.getBoundingClientRect().bottom:0);}),true);
+   if(process.env.SETSCOPE_WS6_SCREENSHOTS)await page.screenshot({path:path.join(process.env.SETSCOPE_WS6_SCREENSHOTS,label+'-slow-viewport.png')});
+   const fast=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive'&&new URL(r.url()).searchParams.get('page')==='3');await page.evaluate(()=>document.querySelector('#news-pager [aria-label="หน้า 3"]').click());await fast;
+   await page.waitForFunction(()=>document.querySelector('#news-list').getAttribute('aria-busy')==='false');
+   const page3Titles=await page.locator('#news-list .news-title-link').allTextContents();assert.deepEqual(page3Titles,archiveResponses.at(-1).items.map(x=>x.title));assert.equal(archiveResponses.at(-1).page,3);
+   release();heldReady=null;await delay(60);assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),page3Titles);
+   assert.equal(await pager.locator('[aria-current="page"]').textContent(),'3');assert.match(page.url(),/newsPage=3/);
+   assert.equal(await page.evaluate(()=>window.__pagerScrolls.length),2);assert.equal(await page.evaluate(()=>window.__pagerTopScrolls),0);
+   assert.equal(await page.locator('#news-list').evaluate(node=>{const target=node.getBoundingClientRect().top+scrollY,margin=parseFloat(getComputedStyle(node).scrollMarginTop)||0,maxScroll=document.documentElement.scrollHeight-innerHeight;return Math.abs(scrollY-Math.min(Math.max(0,target-margin),maxScroll))<2&&scrollY>0;}),true);
+   assert.equal(calls.news,slowBefore.news);assert.equal(calls.archive-slowBefore.archive,2);
+   if(process.env.SETSCOPE_WS6_SCREENSHOTS)await page.screenshot({path:path.join(process.env.SETSCOPE_WS6_SCREENSHOTS,label+'-rapid-page3.png'),fullPage:true});
+   if(process.env.SETSCOPE_WS6_SCREENSHOTS)await page.screenshot({path:path.join(process.env.SETSCOPE_WS6_SCREENSHOTS,label+'-rapid-viewport.png')});
+   const firstPage=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive');await pager.getByRole('button',{name:'หน้า 1',exact:true}).click();await firstPage;await page.waitForFunction(()=>document.querySelector('#news-list').getAttribute('aria-busy')==='false');
+
    const pendingSearch=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive'&&new URL(r.url()).searchParams.get('query')==='PTT',{timeout:5000});
    await page.locator('#news-search').fill('PTT');await page.evaluate(()=>{document.querySelector('.nav-item[data-workspace-route="watchlist"]').click();document.querySelector('.nav-item[data-workspace-route="news"]').click();});
    await pendingSearch;await page.waitForFunction(()=>document.querySelector('#news-count').textContent==='1,205 ข่าว');assert.equal(new URL(page.url()).searchParams.get('s'),'PTT');
@@ -62,10 +86,10 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    await page.reload({waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#news-count').textContent==='603 ข่าว');
    await select('all');assert.equal(await counter.textContent(),'1,205 ข่าว');assert.ok((await pager.locator('button').allTextContents()).filter(x=>/^\d+$/.test(x)).length<=10);
    assert.equal(await pager.getByRole('button',{name:'ก่อนหน้า',exact:true}).isDisabled(),true);
-   await pager.getByRole('button',{name:'หน้า 120',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#news-pager [aria-current="page"]')?.textContent==='120');
+   await pager.getByRole('button',{name:'หน้า 120',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#news-list').getAttribute('aria-busy')!=='true'&&document.querySelector('#news-pager [aria-current="page"]')?.textContent==='120');
    assert.equal(await pager.getByRole('button',{name:'ถัดไป',exact:true}).isDisabled(),true);assert.equal(await page.locator('#news-list .news-title-link').count(),10);assert.match(page.url(),/newsPage=120/);await assertPagerLayout(pager);
-   await page.goto(base+'/?newsPage=60#news',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#news-pager [aria-current="page"]')?.textContent==='60');assert.equal(await pager.getByRole('button',{name:'ก่อนหน้า',exact:true}).isEnabled(),true);assert.equal(await pager.getByRole('button',{name:'ถัดไป',exact:true}).isEnabled(),true);await assertPagerLayout(pager);
-   const clampBefore=calls.archive;await page.goto(base+'/?newsPage=9999#news',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#news-pager [aria-current="page"]')?.textContent==='120');assert.equal(calls.archive-clampBefore,1);assert.match(page.url(),/newsPage=120/);
+   await page.goto(base+'/?newsPage=60#news',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#news-list').getAttribute('aria-busy')!=='true'&&document.querySelector('#news-pager [aria-current="page"]')?.textContent==='60');assert.equal(await pager.getByRole('button',{name:'ก่อนหน้า',exact:true}).isEnabled(),true);assert.equal(await pager.getByRole('button',{name:'ถัดไป',exact:true}).isEnabled(),true);await assertPagerLayout(pager);
+   const clampBefore=calls.archive;await page.goto(base+'/?newsPage=9999#news',{waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#news-list').getAttribute('aria-busy')!=='true'&&document.querySelector('#news-pager [aria-current="page"]')?.textContent==='120');assert.equal(calls.archive-clampBefore,1);assert.match(page.url(),/newsPage=120/);
    hold=true;await chips.locator('[data-source="bangkokbiznews"]').click();await page.waitForTimeout(30);await chips.locator('[data-source="investing"]').click();await page.waitForFunction(()=>document.querySelector('#news-count').textContent==='603 ข่าว');release();await delay(30);assert.equal(await counter.textContent(),'603 ข่าว');
    await page.locator('#news-search').fill('ไม่มีคำค้นนี้');await page.waitForFunction(()=>document.querySelector('#news-count').textContent==='0 ข่าว');assert.equal(await pager.isVisible(),false);
    const longSearch=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive'&&new URL(r.url()).searchParams.get('query')?.length===80);await page.locator('#news-search').fill('x'.repeat(120));await longSearch;assert.equal((await page.locator('#news-search').inputValue()).length,80);assert.equal(new URL(page.url()).searchParams.get('s').length,80);
@@ -75,7 +99,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    // Coverage is incomplete, but API total/page still describe the loaded snapshot.
    assert.equal(await pager.getByRole('button',{name:'หน้า 2',exact:true}).count(),1);
    const assertUnknownPage=async n=>{
-    await page.waitForFunction(expected=>document.querySelector('#news-pager [aria-current="page"]')?.textContent===String(expected)&&document.querySelector('#news-count').textContent==='ยังนับข่าวทั้งหมดไม่ได้',n);
+    await page.waitForFunction(expected=>document.querySelector('#news-list').getAttribute('aria-busy')!=='true'&&document.querySelector('#news-pager [aria-current="page"]')?.textContent===String(expected)&&document.querySelector('#news-count').textContent==='ยังนับข่าวทั้งหมดไม่ได้',n);
     assert.equal(new URL(page.url()).searchParams.get('newsPage')||'1',String(n));
     assert.equal(await counter.textContent(),'ยังนับข่าวทั้งหมดไม่ได้');
     assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),archiveResponses.at(-1).items.map(x=>x.title));
@@ -88,9 +112,9 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    for(const n of [3,2]){await page.goBack();await assertUnknownPage(n);}
    for(const n of [3,120]){await page.goForward();await assertUnknownPage(n);}
    assert.equal(calls.news,unknownBefore.news);assert.equal(calls.archive-unknownBefore.archive,7);
-   const unknownClampBefore={...calls};
-   await page.evaluate(()=>{history.pushState(null,'','/?newsPage=9999#news');dispatchEvent(new PopStateEvent('popstate'));});await assertUnknownPage(120);
-   assert.equal(calls.archive-unknownClampBefore.archive,0);assert.equal(calls.news,unknownClampBefore.news);
+   const unknownClampBefore={...calls},unknownClamp=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive');
+   await page.evaluate(()=>{history.pushState(null,'','/?newsPage=9999#news');dispatchEvent(new PopStateEvent('popstate'));});await unknownClamp;await assertUnknownPage(120);
+   assert.equal(calls.archive-unknownClampBefore.archive,1);assert.equal(calls.news,unknownClampBefore.news);
    await page.reload({waitUntil:'domcontentloaded'});await assertUnknownPage(120);
    // A filtered selection resets to page one once, without an extra corrective read.
    const filterBefore=calls.archive;await select('bangkokbiznews');await select('thansettakij');
@@ -108,6 +132,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    const titles1=await page.locator('#news-list .news-title-link').allTextContents();const localBefore=calls.news;await pager.getByRole('button',{name:'หน้า 2',exact:true}).click();assert.notDeepEqual(await page.locator('#news-list .news-title-link').allTextContents(),titles1);assert.equal(calls.news,localBefore);
    await page.locator('.nav-item[data-workspace-route="watchlist"]').click();await page.waitForFunction(()=>document.querySelector('#watchlist-news-list .news-title-link'));
    const watchPager=page.locator('#watchlist-news-pager'),watchBefore={...calls};
+   await page.evaluate(()=>{window.__pagerScrolls=[];window.__pagerTopScrolls=0;const original=Element.prototype.scrollIntoView;Element.prototype.scrollIntoView=function(options){if(['news-list','watchlist-news-list'].includes(this.id))window.__pagerScrolls.push({id:this.id,behavior:options?.behavior});return original.call(this,options);};const scroll=window.scrollTo;window.scrollTo=function(...args){if(args[0]?.top===0)window.__pagerTopScrolls++;return scroll.apply(this,args);};});
    await assertPagerLayout(watchPager);
    assert.equal(await page.locator('#watchlist-news-sources,.watch-source-chip,#watchlist-news-count').count(),0);
    assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),10);
@@ -120,6 +145,8 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
    assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),5);
    assert.equal(await watchPager.getByRole('button',{name:'ถัดไป',exact:true}).isDisabled(),true);
    assert.equal(calls.watch,watchBefore.watch);assert.equal(calls.news,watchBefore.news);await assertPagerLayout(watchPager);
+   assert.deepEqual(await page.evaluate(()=>window.__pagerScrolls),[{id:'watchlist-news-list',behavior:'instant'},{id:'watchlist-news-list',behavior:'instant'}]);assert.equal(await page.evaluate(()=>window.__pagerTopScrolls),0);
+   assert.equal(await page.locator('#watchlist-news-list').evaluate(node=>{const target=node.getBoundingClientRect().top+scrollY,margin=parseFloat(getComputedStyle(node).scrollMarginTop)||0,maxScroll=document.documentElement.scrollHeight-innerHeight;return Math.abs(scrollY-Math.min(Math.max(0,target-margin),maxScroll))<2&&scrollY>0;}),true);
    await page.goBack();await page.waitForFunction(()=>document.querySelector('#watchlist-news-pager [aria-current="page"]')?.textContent==='2');
    await page.goForward();await page.waitForFunction(()=>document.querySelector('#watchlist-news-pager [aria-current="page"]')?.textContent==='3');
    await page.reload({waitUntil:'domcontentloaded'});await page.waitForFunction(()=>document.querySelector('#watchlist-news-pager [aria-current="page"]')?.textContent==='3');

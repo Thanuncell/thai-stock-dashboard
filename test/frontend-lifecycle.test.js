@@ -117,16 +117,17 @@ test('chart redraw reuses locale formatters instead of recreating them per candl
   assert.match(renderer, /chartDateFormatter/);
 });
 
-test('News pagers move only user pagination to the actual window top', () => {
-  assert.match(appSource, /window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
-  assert.match(appSource, /target\?\.scrollIntoView\(\{ behavior: reduceMotion \? 'auto' : 'smooth', block: 'start' \}\)/);
-  assert.match(appSource, /function scrollToPageTop\(\) \{\s*window\.scrollTo\(\{ top: 0, left: 0, behavior: 'auto' \}\);\s*\}/);
-  assert.match(appSource, /watchNewsPage = page; renderWatchlistNews\(\); writeNavigation\('push', 'watchlist'\); scrollToPageTop\(\)/);
-  assert.match(appSource, /newsPage = page; writeNavigation\('push', 'news'\);[\s\S]*?if \(archiveConfigured\) await getArchiveNews\(\{ page \}\); else renderNews\(\);[\s\S]*?scrollToPageTop\(\)/);
-  assert.equal([...appSource.matchAll(/scrollToPageTop\(/g)].length, 3);
+test('News pagers immediately scroll to their own list without waiting for archive IO', () => {
+  assert.match(appSource, /target\.scrollIntoView\(\{ behavior: 'instant', block: 'start' \}\)/);
+  assert.match(appSource, /target\.style\.scrollMarginTop/);
+  assert.doesNotMatch(appSource,/scrollToPageTop/);
+  assert.match(appSource, /writeNavigation\('push', 'watchlist'\); scrollToNewsList\('#watchlist-news-list'\)/);
+  assert.match(appSource, /if \(archiveConfigured\) getArchiveNews\(\{ page \}\); else renderNews\(\);\s*scrollToNewsList\('#news-list'\)/);
+  assert.equal([...appSource.matchAll(/scrollToNewsList\(/g)].length,3);
+  assert.match(appSource,/root\.setAttribute\('aria-busy',String\(waitingForArchive\)\)/);
+  assert.match(appSource,/waitingForArchive\|\|failedArchive \? \[\]/);
   assert.match(appSource, /\$\('#watchlist-news-jump'\)\?\.addEventListener\('click', \(\) => scrollToSection\('#watchlist-news-list'\)\)/);
-  assert.doesNotMatch(appSource.match(/async function getNews\([\s\S]*?\n\}/)?.[0] || '', /scrollToPageTop/);
-  assert.doesNotMatch(appSource.match(/async function getArchiveNews\([\s\S]*?\n\}/)?.[0] || '', /scrollToPageTop/);
+  assert.doesNotMatch(appSource.match(/async function getArchiveNews\([\s\S]*?\n\}/)?.[0] || '',/scrollToNewsList/);
 });
 
 test('Watchlist workspace search, collapse and News jump preserve membership and scroll state', () => {

@@ -81,6 +81,7 @@ let archiveNews = [];
 let archiveFeaturedNews = [];
 let archiveTotal = null;
 let archiveSnapshotTotal = null;
+let archiveLoadingTotal = null, archiveSnapshotScope = '';
 let archiveState = 'idle';
 let archiveStale = false;
 let archivePendingKey = '', archivePendingTask = null, archiveController = null;
@@ -203,7 +204,7 @@ function clearPrivateState() {
   newsAnalysisRequestId += 1;
   watchlistNewsMatchInfo = null;
   archiveNewsRequestId += 1; archiveController?.abort(); archiveController=null; archivePendingKey=''; archivePendingTask=null;
-  archiveLoaded=false; archiveState='idle'; archiveTotal=null; archiveSnapshotTotal=null;
+  archiveLoaded=false; archiveState='idle'; archiveTotal=null; archiveSnapshotTotal=null; archiveLoadingTotal=null; archiveSnapshotScope='';
   syncNavigationControls();
   watchlistNewsRequestId += 1;
   watchlistNewsController?.abort();
@@ -313,9 +314,10 @@ function restoreNavigationFromLocation() {
   syncTechnicalSearch();
   renderWatchlistPicker();
   setWorkspacePage(state.route, { historyMode: 'none', scroll: false });
-  renderNews(); renderWatchlistNews(); renderWatchlist(latestMarket?.stocks || []); renderMovers(latestMarket?.stocks || []);
+  const restoreArchive = state.route === 'news' && (archiveConfigured||archiveState==='loading') && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousNewsQuery !== newsQuery || previousRoute !== 'news');
+  if(restoreArchive)getArchiveNews({ page: newsPage, reason: 'restore' });else renderNews();
+  renderWatchlistNews(); renderWatchlist(latestMarket?.stocks || []); renderMovers(latestMarket?.stocks || []);
   if (state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== currentRange || previousRoute !== 'chart')) getMarket();
-  if (state.route === 'news' && (archiveConfigured||archiveState==='loading') && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousNewsQuery !== newsQuery || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
   if (state.route === 'watchlist' && (previousWatchlist !== activeWatchlistId || previousRoute !== 'watchlist')) getWatchlistNews({ reason: 'restore' });
   writeNavigation('replace', state.route);
 }
@@ -1356,9 +1358,12 @@ async function getArchiveNews({ page = newsPage } = {}) {
   }).featured.map(item => item.url).filter(url => /^https:\/\//i.test(String(url || '')));
   if (!featuredUrls.length) params.set('featuredCount', String(FEATURED_COUNT));
   featuredUrls.forEach(url => params.append('exclude', url));
+  const scopeParams=new URLSearchParams(params);scopeParams.delete('page');
+  const scope=JSON.stringify([identity?.ownerId,identity?.generation,scopeParams.toString()]);
   const key=JSON.stringify([identity?.ownerId,identity?.generation,params.toString()]);
   if(key===archivePendingKey&&archivePendingTask)return archivePendingTask;
   const requestId=++archiveNewsRequestId;archiveController?.abort();const controller=new AbortController();archiveController=controller;
+  archiveLoadingTotal=scope===archiveSnapshotScope?archiveSnapshotTotal:null;
   archivePendingKey=key;archiveLoaded=false;archiveState='loading';renderNews();
   const task=(async()=>{
   try {
@@ -1383,6 +1388,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
       }
     }
     // API total controls the loaded snapshot's pages; countExact controls global count copy only.
+    archiveSnapshotScope=scope;
     archiveSnapshotTotal = Number.isSafeInteger(data.total)&&data.total>=0 ? data.total : null;
     archiveTotal = data.countExact!==false ? archiveSnapshotTotal : null;
     const totalPages = archiveSnapshotTotal===null ? null : Math.max(1, Math.ceil(archiveSnapshotTotal / PAGE_SIZE));
@@ -1629,8 +1635,11 @@ function scrollToSection(selector) {
   const target = $(selector);
   target?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
 }
-function scrollToPageTop() {
-  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+function scrollToNewsList(selector) {
+  const target=$(selector);if(!target)return;
+  const header=$('.topbar'),position=header?getComputedStyle(header).position:'';
+  target.style.scrollMarginTop=(header&&['sticky','fixed'].includes(position)?header.getBoundingClientRect().height+8:8)+'px';
+  target.scrollIntoView({ behavior: 'instant', block: 'start' });
 }
 function applyNewsWithheldUrls(urls = []) {
   const keys=new Set((Array.isArray(urls)?urls:[]).slice(0,200).map(url=>newsKey({url})));
@@ -1666,7 +1675,7 @@ function renderWatchlistNews() {
   const items = filtered.slice((watchNewsPage - 1) * PAGE_SIZE, watchNewsPage * PAGE_SIZE);
   renderNewsItemsInto(root, items, watchlistEmptyText());
   renderPagerInto($('#watchlist-news-pager'), watchNewsPage, total, filtered.length, page => {
-    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToPageTop();
+    watchNewsPage = page; renderWatchlistNews(); writeNavigation('push', 'watchlist'); scrollToNewsList('#watchlist-news-list');
   });
 }
 function renderPagerInto(bar, current, total, count, onPick) {
@@ -1722,17 +1731,24 @@ function renderNews() {
     const section = featuredBox.closest('.featured-news');
     if (section) section.hidden = !featured.length;
   }
-  const availableCount = archiveLoaded ? archiveSnapshotTotal : rest.length;
+  const waitingForArchive=archiveState==='loading',failedArchive=archiveConfigured&&archiveState==='error';
+  const availableCount = waitingForArchive ? archiveLoadingTotal : failedArchive ? null : archiveLoaded ? archiveSnapshotTotal : rest.length;
   const total = availableCount===null ? null : Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
   const displayPage = Math.max(1, total===null ? newsPage : Math.min(newsPage, total));
   if (newsLoaded&&archiveState!=='loading'&&newsPage!==displayPage){newsPage=displayPage;if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
-  const items = archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((displayPage - 1) * PAGE_SIZE, displayPage * PAGE_SIZE);
+  const items = waitingForArchive||failedArchive ? [] : archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((displayPage - 1) * PAGE_SIZE, displayPage * PAGE_SIZE);
   const emptyText = !all.length&&!archiveLoaded&&['unavailable','error'].includes(newsDataState)?'ยังไม่สามารถโหลดข่าวได้ กรุณาลองอัปเดตอีกครั้ง':query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่มีข่าวในหมวดที่เลือก';
-  renderNewsItemsInto($('#news-list'), items, emptyText);
-  renderPagerInto($('#news-pager'), displayPage, total, availableCount, async page => {
+  const root=$('#news-list');
+  if(root){
+    if(waitingForArchive&&root.getAttribute('aria-busy')!=='true')root.style.minHeight=Math.max(112,root.getBoundingClientRect().height)+'px';
+    root.setAttribute('aria-busy',String(waitingForArchive));root.dataset.page=String(displayPage);
+    renderNewsItemsInto(root,items,waitingForArchive?'กำลังโหลดข่าวหน้า '+displayPage+'…':failedArchive?'โหลดข่าวหน้านี้ไม่สำเร็จ กรุณาลองอีกครั้ง':emptyText);
+    if(!waitingForArchive)root.style.minHeight='';
+  }
+  renderPagerInto($('#news-pager'), displayPage, total, availableCount, page => {
     newsPage = page; writeNavigation('push', 'news');
-    if (archiveConfigured) await getArchiveNews({ page }); else renderNews();
-    scrollToPageTop();
+    if (archiveConfigured) getArchiveNews({ page }); else renderNews();
+    scrollToNewsList('#news-list');
   });
   const counter = $('#news-count');
   if(counter)counter.textContent=archiveState==='loading'?'กำลังนับข่าว…':archiveState==='error'?'คลังข่าวไม่พร้อม'+(all.length?' · '+wholeNumber(all.length)+' ข่าวที่โหลดได้':''):archiveLoaded&&archiveTotal===null?'ยังนับข่าวทั้งหมดไม่ได้':
