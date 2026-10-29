@@ -3,7 +3,7 @@ const {createHash}=require('node:crypto');
 const {createNewsArticleLoader}=require('../lib/news-resolver');
 const {inspectNewsArticle,articleIdentity}=require('../lib/news-article');
 const {classifyNewsItem}=require('../lib/news-quality');
-const {isNewsDocumentForDisplay,isSetNewsCandidate}=require('../lib/news-content');
+const {isNewsDocumentForDisplay,isSetNewsCandidate,newsSecuritySymbols}=require('../lib/news-content');
 const {identifySetSecurities}=require('../lib/news-set-security');
 const {readBoundedText}=require('../lib/news-response');
 const {publisherMatches}=require('../lib/news-policy');
@@ -94,6 +94,6 @@ function createNewsLinkReview({transport,loadArticle=createNewsArticleLoader({tr
   }
   return items.map(project);
  }
- return {review,project,inspect:(item,{budget={remaining:1,httpRemaining:6},signal=AbortSignal.timeout(7000)}={})=>inspect(item,budget,signal),get revision(){return revision;}};
+ return {get queryOverlays(){return [...cache].flatMap(([id,entry])=>{if(entry.expiresAt<=Number(now()))return [];const [url,title,pubDate,source,sourceName]=JSON.parse(id),symbols=newsSecuritySymbols({url,title,source,sourceName,securityIdentification:entry.value.security});return symbols?.length?[{url,title,published_at:new Date(pubDate).toISOString(),source,source_name:sourceName,symbols}]:[];});},get withheldUrls(){return [...cache].filter(([,entry])=>negative(entry.value)).map(([id])=>JSON.parse(id)[0]);},review,project,inspect:(item,{budget={remaining:1,httpRemaining:6},signal=AbortSignal.timeout(7000)}={})=>inspect(item,budget,signal),get revision(){return revision;}};
 }
 module.exports={createNewsLinkReview};
