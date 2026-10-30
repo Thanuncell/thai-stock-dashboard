@@ -173,7 +173,7 @@ async function loadCached(res, key, policy, load, options) {
 async function loadNewsAndArchive() {
   const data = await newsService.getNews();
   try { await durableNewsIngest.ingest(data.items, { assessments: getAssessments(data) }); }
-  catch (error) { console.warn('News archive write unavailable:', error.message); }
+  catch (error) { console.warn('News archive write unavailable'); }
   return {...data,items:await newsLinkReview.review(data.items)};
 }
 
@@ -184,7 +184,7 @@ async function handleWatchlists(req, res, user) {
       const record = await watchlistService.load(user.id, req.headers.authorization);
       return send(res, 200, { record }, { 'cache-control': 'no-store' });
     } catch (error) {
-      return send(res, 502, { error: 'โหลด Watchlist จาก Supabase ไม่สำเร็จ', detail: error.message });
+      return send(res, 502, { error: 'โหลด Watchlist จาก Supabase ไม่สำเร็จ' });
     }
   }
   if (req.method === 'PUT') {
@@ -195,7 +195,7 @@ async function handleWatchlists(req, res, user) {
       await watchlistService.save(user.id, req.headers.authorization, normalized);
       return send(res, 200, { ok: true, syncedAt: new Date().toISOString() });
     } catch (error) {
-      return send(res, 502, { error: 'บันทึก Watchlist ไป Supabase ไม่สำเร็จ', detail: error.message });
+      return send(res, 502, { error: 'บันทึก Watchlist ไป Supabase ไม่สำเร็จ' });
     }
   }
   res.writeHead(405);
@@ -216,7 +216,7 @@ async function handleNewsAnalysis(req, res, user) {
     const body = await readJson(req);
     return send(res, 200, await newsService.analyse(Array.isArray(body.items) ? body.items : []));
   } catch (error) {
-    return send(res, 502, { error: 'วิเคราะห์ข่าวไม่สำเร็จ', detail: error.message });
+    return send(res, 502, { error: 'วิเคราะห์ข่าวไม่สำเร็จ' });
   }
 }
 
@@ -316,7 +316,7 @@ async function handle(req, res) {
       ));
       return send(res, 200, { items, provider: 'Yahoo Finance' });
     }
-    catch (error) { return send(res, 502, { error: error.message, items: [] }); }
+    catch (error) { return send(res, 502, { error: 'ค้นหาหุ้นไม่สำเร็จ', items: [] }); }
   }
   if (url.pathname === '/api/market-overview' || url.pathname === '/api/settrade-overview') {
     try {
@@ -325,7 +325,7 @@ async function handle(req, res) {
       observability.markCache(res, result.meta);
       return send(res, 200, result.value);
     } catch (error) {
-      return send(res, 502, { error: 'ดึงข้อมูลภาพรวมตลาดไม่สำเร็จ', detail: error.message });
+      return send(res, 502, { error: 'ดึงข้อมูลภาพรวมตลาดไม่สำเร็จ' });
     }
   }
   if (url.pathname === '/api/market') {
@@ -344,12 +344,12 @@ async function handle(req, res) {
         () => marketService.getMarket(symbols, active, range)
       ));
     } catch (error) {
-      return send(res, 502, { error: error.message });
+      return send(res, 502, { error: 'ไม่สามารถดึงข้อมูลจากแหล่งข้อมูลได้' });
     }
   }
   if (url.pathname === '/api/news') {
     try { return send(res, 200, newsService.filterForDisplay(await loadCached(res, 'news', PROVIDER_POLICIES.news, loadNewsAndArchive))); }
-    catch (error) { return send(res, 502, { error: error.message }); }
+    catch (error) { return send(res, 502, { error: 'ไม่สามารถดึงข้อมูลจากแหล่งข้อมูลได้' }); }
   }
   if (url.pathname === '/api/news-archive') {
     try {
@@ -372,7 +372,7 @@ async function handle(req, res) {
       const countExact=data.countExact===true&&safe.items.length===data.items.length&&featured.length===(data.featured||[]).length;
       return send(res, 200, { ...safe, countExact, matchingTotal:countExact?data.matchingTotal:null, ...(withheldUrls.length?{withheldUrls}:{}), featured, dataState: data.stale ? 'stale' : safe.dataState || (data.configured ? 'fresh' : 'unavailable') });
     } catch (error) {
-      return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable', detail: error.message });
+      return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable' });
     }
   }
   if (url.pathname === '/api/watchlist-news') {
@@ -388,7 +388,7 @@ async function handle(req, res) {
       if(Array.isArray(data.stockStatus))safe.stockStatus=data.stockStatus.map(status=>({...status,retained:safe.items.filter(item=>newsAssociationSymbols(item).includes(status.symbol)).length}));
       return send(res, 200, safe);
     } catch (error) {
-      return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ', detail: error.message });
+      return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ' });
     }
   }
   return serveStatic(url, res);
@@ -396,7 +396,7 @@ async function handle(req, res) {
 
 const server = http.createServer((req, res) => {
   handle(req, res).catch(error => {
-    console.error('Request failed:', error);
+    console.error('Request failed: unexpected request handler failure');
     if (res.destroyed) return;
     if (res.headersSent) {
       res.end();
