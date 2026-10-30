@@ -21,7 +21,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
      url:'https://www.kaohoon.com/news/fixture-'+state.version,source:'infoquest',sourceName:'InfoQuest',snippet:'บริษัทเปิดเผยรายละเอียดผลประกอบการและระยะเวลาดำเนินงาน',pubDate:new Date().toISOString(),analysisMode:'ai',analysisSummary:state.version===3?'VERIFIED_STORED_AI_SURVIVES':'LEGACY_SUMMARY_MUST_NOT_OVERRIDE_UNAVAILABLE',
      ...(state.version===3?{verification:{status:'VERIFIED',reason:'NEWS_METADATA_EVIDENCE',basis:'metadata'}}:{})}],dataState:'fresh'});
     if(url.origin===base&&url.pathname==='/api/news-archive')return json({configured:false,items:[],featured:[],total:0});
-    if(url.origin===base&&url.pathname==='/api/watchlist-news')return json({items:state.version===3?[{title:'PTT กำไรเพิ่มตามรายงานรอบ 3',url:'https://www.kaohoon.com/news/fixture-3',source:'infoquest',sourceName:'InfoQuest',pubDate:new Date().toISOString(),analysisMode:'rules',analysisSummary:'RULES_MUST_NOT_REPLACE_AI'}]:[],dataState:'fresh'});
+    if(url.origin===base&&url.pathname==='/api/watchlist-news')return json({items:state.version===3?[{title:'PTT กำไรเพิ่มตามรายงานรอบ 3',url:'https://www.kaohoon.com/news/fixture-3',source:'infoquest',sourceName:'InfoQuest',pubDate:new Date().toISOString(),matchedSymbols:[owner==='B'?'CPALL':'PTT'],analysisMode:'rules',analysisSummary:'RULES_MUST_NOT_REPLACE_AI'}]:[],dataState:'fresh'});
     if(url.origin===base&&url.pathname==='/api/news-analysis'){
      state.analysisCalls.push(owner);const items=request.postDataJSON().items;
      if(owner==='A'&&state.holdA){await new Promise(resolve=>{state.release=resolve;});return json({items:items.map(()=>({summary:'OWNER_A_ONLY_OLD_RESPONSE',mode:'ai',basis:'article'}))});}
