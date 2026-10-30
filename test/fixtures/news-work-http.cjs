@@ -21,6 +21,8 @@ module.exports=async function httpChecks(t,{pool,config}){
  }
  try{
   await pool.query("create role "+role+" login noinherit nosuperuser nocreatedb nocreaterole password '"+password+"'; grant anon,authenticated,service_role to "+role);
+  const safeupdate=process.env.SETSCOPE_TEST_SAFEUPDATE_LIBRARY;
+  if(safeupdate){if(!/^[A-Za-z0-9_:./\\-]+$/.test(safeupdate))throw Error('Unsafe isolated library path');await pool.query("alter role "+role+" set session_preload_libraries='"+safeupdate.replaceAll('\\','/')+"'");}
   await fs.writeFile(conf,'db-uri = "postgresql://'+role+':'+password+'@127.0.0.1:'+config.port+'/'+config.database+'"\ndb-schemas = "public"\ndb-anon-role = "anon"\nserver-host = "127.0.0.1"\nserver-port = '+port+'\njwt-secret = "'+secret+'"\n');
   await start();
   await t.test('PostgREST real HTTP: schema cache and named queue RPC payload/response',async()=>{
@@ -28,6 +30,15 @@ module.exports=async function httpChecks(t,{pool,config}){
    const claimed=(await store().claim({scope:'http'}))[0];assert.ok(claimed.lease_token);
    assert.equal(await store().finish(claimed,'advance',{stage:'extraction',checkpoint:{discovered:true}}),true);
    assert.ok(trace.some(x=>x.path.endsWith('/enqueue_news_work')&&x.status===200));
+  });
+  await t.test('Recovery HTTP: legacy Service Role configuration can enqueue, claim, finish and inspect',async()=>{
+   const legacyEnv={...env,SUPABASE_SECRET_KEY:undefined,SUPABASE_SERVICE_ROLE_KEY:env.SUPABASE_SECRET_KEY},legacy=createNewsWorkStore({env:legacyEnv,fetchImpl:transport});
+   const job={scope:'legacy-key',key:'recovery',stage:'persistence',payload:{synthetic:true}};await legacy.enqueue(job);const claimed=(await legacy.claim({scope:job.scope}))[0];assert.equal(await legacy.finish(claimed,'completed'),true);assert.equal((await legacy.inspect({scope:job.scope})).depth,0);
+   const legacyArchive=createNewsArchiveService({env:legacyEnv,fetchImpl:transport}),item=article({url:'https://thunhoon.com/article-recovery-legacy-key'});const result=await createDurableNewsIngest({archive:legacyArchive,store:legacy}).ingest([item]);assert.equal(result.outcomes[0].outcome,'completed');const stored=(await pool.query('select * from news_archive where url=$1',[item.url])).rows;assert.equal(stored.length,1);assert.equal(stored[0].verification_basis,'article');
+
+  });
+  await t.test('Recovery HTTP: safeupdate guard remains enforced while qualified queue RPCs work',{skip:!process.env.SETSCOPE_TEST_SAFEUPDATE_LIBRARY},async()=>{
+   const response=await fetch(base+'/news_work',{method:'PATCH',headers:{Authorization:'Bearer '+env.SUPABASE_SECRET_KEY,'content-type':'application/json'},body:JSON.stringify({last_error:'synthetic'})});assert.equal(response.status,400);assert.equal((await response.json()).code,'21000');
   });
   await t.test('PostgREST HTTP: anon/authenticated cannot read queue or execute claim RPC',async()=>{
    for(const roleName of ['anon','authenticated']){
@@ -56,6 +67,16 @@ module.exports=async function httpChecks(t,{pool,config}){
    await pool.query("update news_work set available_at=now()-interval '1 second' where scope='general' and state='retry'");
    const second=await createDurableNewsIngest({archive:archive(),store:store()}).runOnce();assert.equal(second.outcomes[0].outcome,'completed');
    assert.equal((await pool.query('select count(*)::int n from news_archive')).rows[0].n,count);
+  });
+  await t.test('Recovery HTTP: kill after persistence before acknowledgement replays without losing original data',async()=>{
+   const item=article({url:'https://thunhoon.com/article-recovery-hard-crash'}),prepared=archive().prepare([item])[0],scope='hard-crash';await store().enqueue({scope,key:'checkpoint',stage:'persistence',payload:prepared});
+   const code="const path=require('path');const {createNewsWorkStore}=require('./server/news-work-store'),{createNewsArchiveService}=require('./server/news-archive-service');const base=new URL(process.env.RECOVERY_HTTP);if(base.hostname!=='127.0.0.1')throw Error('Not isolated');const transport=(input,init)=>{const u=new URL(input);if(u.origin!=='https://isolated.invalid')throw Error('Unsafe fixture request');return fetch(base.origin+u.pathname.slice('/rest/v1'.length)+u.search,init);};const store=createNewsWorkStore({fetchImpl:transport}),archive=createNewsArchiveService({fetchImpl:transport});(async()=>{const job=(await store.claim({scope:'hard-crash'}))[0],item=archive.restorePrepared(job.payload);await archive.ingest([item]);console.log('ARCHIVE_WRITTEN');setInterval(()=>{},1000);})().catch(()=>process.exit(1));";
+   const proc=spawn(process.execPath,['-e',code],{cwd:path.join(__dirname,'../..'),env:{...process.env,...env,RECOVERY_HTTP:base},windowsHide:true,stdio:['ignore','pipe','ignore']});
+   try{await new Promise((resolve,reject)=>{let text='';const timer=setTimeout(()=>reject(Error('Isolated crash checkpoint timed out')),12000);proc.once('error',e=>{clearTimeout(timer);reject(e);});proc.stdout.on('data',chunk=>{text+=chunk;if(text.includes('ARCHIVE_WRITTEN')){clearTimeout(timer);resolve();}});proc.once('exit',()=>{clearTimeout(timer);reject(Error('Isolated worker exited before checkpoint'));});});const closed=new Promise(r=>proc.once('close',r));proc.kill('SIGKILL');await closed;}finally{if(proc.exitCode===null)proc.kill();}
+   const job=(await pool.query('select * from news_work where scope=$1',[scope])).rows[0];assert.equal(job.state,'processing');assert.equal((await store().claim({scope})).length,0);
+   await pool.query("update news_archive set analysis_mode='ai',analysis_summary='Preserved recovery AI' where url=$1",[item.url]);const before=(await pool.query('select * from news_archive where url=$1',[item.url])).rows[0];
+   await pool.query("update news_work set lease_until=now()-interval '1 second' where scope=$1",[scope]);assert.equal((await createDurableNewsIngest({archive:archive(),store:store()}).runOnce({scope})).outcomes[0].outcome,'completed');
+   const rows=(await pool.query('select * from news_archive where url=$1',[item.url])).rows;assert.equal(rows.length,1);for(const name of ['fingerprint','first_seen_at','analysis_summary','verification_subject_hash','verification_basis'])assert.deepEqual(rows[0][name],before[name]);
   });
   await t.test('WS4 HTTP: canonical display dedup preserves both original fingerprints, first-seen, stored AI and rows',async()=>{
    const date=new Date(Date.now()-60000).toISOString(),url='https://thunhoon.com/article-ws4-persisted';
