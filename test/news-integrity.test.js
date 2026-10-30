@@ -327,3 +327,45 @@ test('ignored AI abort cannot cache late output or start an immediate repeated r
  release();await new Promise(resolve=>setImmediate(resolve));
  assert.equal((await service.analyse([input()])).mode,'rules');
 });
+
+
+test('malformed Google RSS cannot replace validated news or renew fallback age',async()=>{
+ let time=Date.now(),mode='fresh',calls=0;const seen=[];
+ const good=input({title:'PTT company earnings announcement',pubDate:new Date(time).toISOString()});
+ const service=createNewsService({env:{},now:()=>time,fetchImpl:async(_url,init)=>{
+  calls++;seen.push(init.headers['if-none-match']);
+  if(mode==='fresh')return new Response(rss([good]),{headers:{etag:'validated-feed'}});
+  if(mode==='malformed')return new Response('<html>Temporary maintenance</html>',{headers:{etag:'invalid-feed'}});
+  if(mode==='truncated')return new Response(rss([good]).replace('</item>',''));
+  if(mode==='not-modified')return new Response(null,{status:304});
+  return new Response(rss([]));
+ }});
+ const first=await service.getNews();assert.equal(first.items.length,1);
+ mode='malformed';time+=1000;let before=calls;const retained=await service.getNews();
+ assert.equal(retained.dataState,'stale');assert.deepEqual(retained.items,first.items);assert.equal(retained.fetchedAt,first.fetchedAt);assert.equal(calls-before,11,'no retries or additional acquisition');
+ mode='not-modified';before=seen.length;const conditional=await service.getNews();assert.equal(conditional.items.length,1);assert.ok(seen.slice(before).every(tag=>tag==='validated-feed'),'malformed payload must not poison conditional cache');
+ mode='truncated';time+=1000;assert.equal((await service.getNews()).dataState,'stale');
+ time+=31*60000;const expired=await service.getNews();assert.equal(expired.items.length,0);assert.equal(expired.dataState,'unavailable');
+ mode='fresh';assert.equal((await service.getNews()).items.length,1);
+ mode='empty';const empty=await service.getNews();assert.equal(empty.dataState,'fresh');assert.equal(empty.items.length,0,'a genuine empty feed remains an authoritative empty result');
+});
+
+test('a malformed RSS path does not hide healthy publisher results',async()=>{
+ const good=input({title:'PTT company earnings announcement',url:'https://news.google.com/articles/healthy-publisher'});
+ let mode='fresh',calls=0;
+ const service=createNewsService({env:{},fetchImpl:async value=>{calls++;const query=decodeURIComponent(String(value));return new Response(query.includes('site:kaohoon.com')?rss([good]):mode==='fresh'?rss([]):'<rss><channel><item>truncated');}});
+ await service.getNews();mode='partial';const before=calls,result=await service.getNews();
+ assert.equal(result.items.length,1);assert.equal(result.dataState,'partial');assert.ok(result.errors.length);assert.equal(calls-before,11);
+});
+
+test('General and Watchlist discovery agree on invalid and future publication dates',async()=>{
+ const time=Date.now();const rows=[
+  input({title:'PTT within source clock tolerance',url:'https://news.google.com/articles/valid-clock',pubDate:new Date(time+600000).toISOString()}),
+  input({title:'PTT beyond source clock tolerance',url:'https://news.google.com/articles/future-clock',pubDate:new Date(time+600001).toISOString()}),
+  input({title:'PTT invalid publication date',url:'https://news.google.com/articles/invalid-clock',pubDate:'not-a-date'})
+ ];
+ const service=createNewsService({env:{},now:()=>time,fetchImpl:async()=>new Response(rss(rows))});
+ for(const result of [await service.getNews(),await service.getWatchlistNews('PTT',{ownerId:'synthetic-a'})]){
+  assert.deepEqual(result.items.map(item=>item.url),[rows[0].url]);assert.equal(result.items[0].verification.basis,'metadata');
+ }
+});
