@@ -84,6 +84,7 @@ let archiveCountTotal = null;
 let archiveState = 'idle';
 let archiveStale = false;
 let newsDataState = 'idle';
+let newsRequestId = 0, newsController = null, newsPending = false, newsPresentationReady = false, pendingNewsSnapshot = null;
 let archiveConfigured = false;
 let archiveLoaded = false;
 const PAGE_SIZE = 10;
@@ -155,6 +156,9 @@ function isCurrentPrivateIdentity(identity = privateSessionIdentity) {
     && window.setscopeAuth?.isCurrentIdentity?.(identity));
 }
 function clearPrivateDom() {
+  ['#news-list','#featured-news','#watchlist-news-list'].forEach(selector=>{const root=$(selector);if(root){root.replaceChildren();root.setAttribute('aria-busy','false');root.dataset.state='idle';delete root.dataset.skeleton;}});
+  ['#refresh-news','#refresh-watchlist-news'].forEach(selector=>{const button=$(selector);if(button){button.disabled=false;button.classList.remove('is-loading');}});
+  setText('#refresh-news','↻ อัปเดตข้อมูลข่าว');
   ['#watchlist', '#watchlist-mobile', '#watchlist-news-list', '#watchlist-news-pager', '#mover-list', '#alerts-settings', '#alerts-history'].forEach(selector => {
     const node = $(selector); if (node) node.replaceChildren();
   });
@@ -191,6 +195,8 @@ function clearPrivateState() {
   alertHistory = [];
   unreadAlerts = 0;
   latestWatchlistNews = [];
+  newsRequestId++;newsController?.abort();newsController=null;newsPending=false;newsPresentationReady=false;pendingNewsSnapshot=null;
+  latestNews=[];archiveNews=[];archiveFeaturedNews=[];newsDataState='idle';
   newsAnalyses.clear();
   pendingNewsAnalysisKeys.clear();
   newsAnalysisAttempts.clear();
@@ -290,7 +296,7 @@ function restoreNavigationFromLocation() {
   const locationKey = `${location.pathname}${location.search}${location.hash}`;
   if (locationKey === lastRestoredLocation) return;
   lastRestoredLocation = locationKey;
-  const state = parseNavigationState(location.href, currentNavigationState());
+  const state = parseNavigationState(location.href, {...currentNavigationState(),newsPage:1,watchPage:1});
   if(state.route==='news')clearTimeout(newsSearchTimer);
   const previousRoute = document.body.dataset.workspacePage;
   const previousSymbol = activeSymbol, previousRange = currentRange, previousWatchlist = activeWatchlistId;
@@ -1314,32 +1320,50 @@ async function getMarket() {
 async function getNews({ reason = 'refresh', resetPage = false } = {}) {
   const identity = capturePrivateIdentity();
   if (!isCurrentPrivateIdentity(identity)) return;
+  const refreshButton = $('#refresh-news');
+  if (refreshButton?.disabled) return;
+  const previousPage=newsPage,source=activeSource,query=newsQuery;
   if (resetPage) {
     newsPage = 1;
     if (document.body.dataset.workspacePage === 'news') writeNavigation('push', 'news');
   }
-  const refreshButton = $('#refresh-news');
-  if (refreshButton?.disabled) return;
+  const requestId=++newsRequestId,controller=new AbortController();
+  newsController=controller;newsPending=true;pendingNewsSnapshot=null;
+  const current=()=>isCurrentPrivateIdentity(identity)&&requestId===newsRequestId;
   if (refreshButton) { refreshButton.disabled = true; refreshButton.classList.add('is-loading'); refreshButton.textContent = 'กำลังอัปเดตข่าว…'; }
+  renderNews();
   try {
-    const response = await apiFetch('/api/news'); const data = await response.json();
-    if (!isCurrentPrivateIdentity(identity)) return;
-    if (!response.ok) throw new Error(data.error);
+    const response = await apiFetch('/api/news',{signal:controller.signal}); const data = await response.json();
+    if (!current()) return;
+    if (!response.ok || !Array.isArray(data.items) || (data.dataState==='unavailable'&&!data.items.length)) throw new Error('News unavailable');
     p1NewsDisplayGate ||= data.p1DisplayGate===true;
     const keep=applyNewsWithheldUrls(data.withheldUrls);
-    latestNews = (data.items || []).filter(keep);newsDataState=data.dataState||'fresh';
+    pendingNewsSnapshot={items:data.items.filter(keep),state:data.dataState||'fresh'};
     await getArchiveNews({ page: newsPage, reason });
-    renderNews();
+    if (!current()) return;
     analyzeNewsBriefs([...latestNews, ...latestWatchlistNews]);
-  } catch (_) { newsDataState='error';renderNews(); /* Existing list remains visible when a refresh fails. */ }
-  finally {
-    if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }
+  } catch (_) {
+    if (!current()) return;
+    newsDataState='error';
+    if(resetPage&&activeSource===source&&newsQuery===query&&newsPage===1){newsPage=previousPage;if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
+    // A cold unavailable RSS response may still use the independent Archive.
+    if(!newsPresentationReady&&!controller.signal.aborted)await getArchiveNews({page:newsPage});
+  } finally {
+    if(current()){
+      newsController=null;newsPending=false;pendingNewsSnapshot=null;
+      if(archiveState!=='loading')newsPresentationReady=true;
+      renderNews();
+      if (refreshButton) { refreshButton.disabled = false; refreshButton.classList.remove('is-loading'); refreshButton.textContent = '↻ อัปเดตข้อมูลข่าว'; }
+    }
   }
 }
 async function getArchiveNews({ page = newsPage } = {}) {
   const identity = capturePrivateIdentity();
+  if(!isCurrentPrivateIdentity(identity))return;
   const requestId = ++archiveNewsRequestId;
+  const snapshot=pendingNewsSnapshot;
   archiveState='loading';
+  for(const selector of ['#news-list','#featured-news'])$(selector)?.setAttribute('aria-busy','true');
   const counter=$('#news-count');if(counter)counter.textContent='กำลังนับข่าว…';
   const params = new URLSearchParams({
     page: String(page),
@@ -1347,7 +1371,7 @@ async function getArchiveNews({ page = newsPage } = {}) {
     source: activeSource,
     query: newsQuery.trim()
   });
-  const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))?.summary || '' }));
+  const prepared = (snapshot?.items||latestNews).map(item => ({ ...item, analysisSummary: newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))?.summary || '' }));
   const featuredUrls = selectNewsForDisplay(prepared, {
     source: activeSource,
     query: newsQuery.trim(),
@@ -1361,12 +1385,15 @@ async function getArchiveNews({ page = newsPage } = {}) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดคลังข่าวไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
+    if(!Array.isArray(data.items)||(data.configured&&data.dataState==='unavailable'&&!data.items.length))throw Error('Invalid Archive response');
     p1NewsDisplayGate ||= data.p1DisplayGate===true;
     const keep=applyNewsWithheldUrls(data.withheldUrls);
     archiveConfigured = Boolean(data.configured);
     archiveLoaded = archiveConfigured;archiveState=archiveConfigured?'ready':'unavailable';archiveStale=Boolean(data.stale||data.dataState==='stale'||data.countExact===false);
     archiveFeaturedNews = data.dataState === 'fresh' && !data.stale && Array.isArray(data.featured) ? data.featured.filter(keep) : [];
     archiveNews = Array.isArray(data.items) ? data.items.filter(keep) : [];
+    if(snapshot){latestNews=snapshot.items.filter(keep);newsDataState=snapshot.state;}
+    if(!newsPending||snapshot)newsPresentationReady=true;
     // Use one accepted stored summary across live and archived representations.
     for (const item of [...archiveFeaturedNews, ...archiveNews]) {
       if (['UNVERIFIED', 'REJECTED'].includes(item.verification?.status)) continue;
@@ -1388,11 +1415,15 @@ async function getArchiveNews({ page = newsPage } = {}) {
     renderNews();
   } catch (_) {
     if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
+    // No usable replacement: retain the accepted view on a partial refresh failure.
+    if(newsPresentationReady&&!snapshot?.items.length){archiveState='error';archiveCountTotal=null;renderNews();return;}
+    if(snapshot){latestNews=snapshot.items;newsDataState=snapshot.state;}
+    if(!newsPending||snapshot)newsPresentationReady=true;
     archiveLoaded = false;
     archiveFeaturedNews = [];
     archiveNews = [];
     archiveTotal = 0;archiveCountTotal=null;archiveState='error';
-    const counter=$('#news-count');if(counter)counter.textContent='คลังข่าวไม่พร้อม';
+    renderNews();
   }
 }
 async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) {
@@ -1538,6 +1569,7 @@ function renderNewsItem(item, options = {}) {
       : analysisMode === 'rules' ? 'ประเมินจากคำสำคัญ' : 'สรุปไม่พร้อม';
   const article = document.createElement('article');
   article.className = 'news-item';
+  article.dataset.newsKey = newsKey(item);
   const content = document.createElement('div');
   const title = document.createElement('a');
   title.className = 'news-title news-title-link';
@@ -1596,20 +1628,43 @@ function renderNewsItem(item, options = {}) {
   article.append(content, time);
   return article;
 }
+function renderNewsSkeleton(root, message, count=3) {
+  if(!root)return;
+  root.setAttribute('aria-busy','true');
+  if(root.dataset.skeleton==='true')return;
+  root.dataset.skeleton='true';root.replaceChildren();
+  const status=document.createElement('span');status.className='news-loading-status';status.setAttribute('role','status');status.textContent=message;root.append(status);
+  for(let i=0;i<count;i++){
+    const card=document.createElement('div');card.className='news-item news-skeleton';card.setAttribute('aria-hidden','true');
+    const content=document.createElement('div');
+    for(const kind of ['title','title short','tags','summary']){const bar=document.createElement('span');bar.className='news-skeleton-bar '+kind;content.append(bar);}
+    card.append(content);root.append(card);
+  }
+}
 function renderNewsItemsInto(root, items, emptyText) {
   if (!root) return;
-  root.replaceChildren();
-  if (items.length) {
-    root.append(...items.map(item => renderNewsItem(item)));
-    return;
+  delete root.dataset.skeleton;
+  if (!items.length) {
+    const text=emptyText||'';
+    if(root.children.length===1&&root.firstElementChild?.dataset.emptyMessage===text)return;
+    root.replaceChildren();if(!text)return;
+    const message=document.createElement('div');message.className='news-item';message.dataset.emptyMessage=text;
+    const title=document.createElement('div');title.className='news-title';title.textContent=text;message.append(title);root.append(message);return;
   }
-  const message = document.createElement('div');
-  message.className = 'news-item';
-  const title = document.createElement('div');
-  title.className = 'news-title';
-  title.textContent = emptyText;
-  message.append(title);
-  root.append(message);
+  const existing=new Map([...root.children].filter(node=>node.dataset.newsKey).map(node=>[node.dataset.newsKey,node]));
+  const retained=new Set();let index=0;
+  for(const item of items){
+    const next=renderNewsItem(item);if(!next.dataset)continue;
+    let node=existing.get(next.dataset.newsKey);
+    if(node&&!node.isEqualNode(next)){
+      const oldBody=node.cloneNode(true),newBody=next.cloneNode(true);oldBody.querySelector('.news-ai-summary')?.remove();newBody.querySelector('.news-ai-summary')?.remove();
+      if(oldBody.isEqualNode(newBody))node.querySelector('.news-ai-summary').replaceChildren(...next.querySelector('.news-ai-summary').childNodes);
+      else node=null;
+    }
+    node ||= next;retained.add(node);
+    if(root.children[index]!==node)root.insertBefore(node,root.children[index]||null);index++;
+  }
+  for(const node of [...root.children])if(!retained.has(node))node.remove();
 }
 function watchlistEmptyText() {
   return watchlist.length ? 'ยังไม่มีข่าวของหุ้นในรายการติดตาม' : 'ยังไม่มีหุ้นในรายการติดตาม';
@@ -1641,7 +1696,7 @@ function renderWatchlistNews() {
   latestWatchlistNews=retainWatchlistNews(latestWatchlistNews,watchlist);
   const sameScope=watchlistNewsScope===currentWatchlistNewsScope();
   const state=sameScope?watchlistNewsState:watchlist.length?'loading':'empty';
-  root.dataset.state=state;
+  root.dataset.state=state;root.setAttribute('aria-busy',String(state==='loading'));
   if(!sameScope||!latestWatchlistNews.length){
     const message=state==='loading'?'กำลังโหลดข่าวของหุ้นในรายการติดตาม…'
       :state==='error'?'โหลดข่าวไม่สำเร็จ กรุณาลองอัปเดตอีกครั้ง'
@@ -1649,7 +1704,7 @@ function renderWatchlistNews() {
       :watchlistNewsMatchInfo?.matchedCandidates===0?'ยังไม่พบข่าวที่ตรงกับหุ้นในรายการติดตาม'
       :watchlistNewsMatchInfo?.qualityExcluded>0?'พบข่าวที่เกี่ยวข้อง แต่ยังไม่มีข่าวที่ผ่านการตรวจสอบ'
       :watchlistEmptyText();
-    renderNewsItemsInto(root,[],message);const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
+    if(state==='loading')renderNewsSkeleton(root,message);else renderNewsItemsInto(root,[],message);const pager=$('#watchlist-news-pager');if(pager)pager.hidden=true;return;
   }
   const total = Math.max(1, Math.ceil(latestWatchlistNews.length / PAGE_SIZE));
   watchNewsPage = Math.max(1, Math.min(watchNewsPage, total));
@@ -1681,6 +1736,14 @@ function renderPagerInto(bar, current, total, count, onPick) {
   bar.append(makeButton('ถัดไป', current + 1, { disabled: current === total }));
 }
 function renderNews() {
+  if(!isCurrentPrivateIdentity())return;
+  const loading=newsPending||archiveState==='loading';
+  for(const selector of ['#news-list','#featured-news'])$(selector)?.setAttribute('aria-busy',String(loading));
+  if(!newsPresentationReady&&loading){
+    const featured=$('#featured-news');if(featured?.closest('.featured-news'))featured.closest('.featured-news').hidden=false;
+    renderNewsSkeleton(featured,'กำลังโหลดข่าวเด่น…');renderNewsSkeleton($('#news-list'),'กำลังโหลดข่าวล่าสุด…');
+    const pager=$('#news-pager');if(pager)pager.hidden=true;setText('#news-count','กำลังโหลดข่าว…');return;
+  }
   const query = newsQuery.trim().toLocaleLowerCase('th');
   const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))?.summary || '' }));
   const { filtered: all, featured: liveFeatured, latest: liveLatest } = selectNewsForDisplay(prepared, {
@@ -1706,7 +1769,7 @@ function renderNews() {
   const rest = archiveLoaded ? archivedSelection.filtered : liveLatest;
   const featuredBox = $('#featured-news');
   if (featuredBox) {
-    featuredBox.replaceChildren(...featured.map(item => renderNewsItem(item)));
+    renderNewsItemsInto(featuredBox,featured,'');
     const section = featuredBox.closest('.featured-news');
     if (section) section.hidden = !featured.length;
   }
