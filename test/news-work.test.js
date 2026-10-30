@@ -126,3 +126,16 @@ test('discovered candidate crosses JSON checkpoints, real article review and per
  assert.equal(row.verification_provenance.discovery.publisher,candidate.sourceName);
  assert.equal((await archive.list()).items[0].verification.basis,'article');
 });
+
+test('recovery store accepts the same legacy Service Role credential contract as Archive',async()=>{
+ for(const keys of [{SUPABASE_SERVICE_ROLE_KEY:'synthetic-legacy'},{SUPABASE_SECRET_KEY:'sb_secret_synthetic-primary',SUPABASE_SERVICE_ROLE_KEY:'synthetic-legacy'}]){
+  const expected=keys.SUPABASE_SECRET_KEY||keys.SUPABASE_SERVICE_ROLE_KEY;let calls=0;
+  const store=createNewsWorkStore({env:{SETSCOPE_NEWS_WORK_QUEUE:'on',SUPABASE_URL:'https://fixture.invalid',...keys},fetchImpl:async(input,init)=>{
+   calls++;assert.equal(new URL(input).origin,'https://fixture.invalid');assert.equal(init.headers.apikey,expected);assert.equal(init.headers.Authorization,expected.startsWith('sb_secret_')?undefined:'Bearer '+expected);
+   if(String(input).includes('/news_work?'))return Response.json([],{headers:{'content-range':'*/0'}});
+   if(String(input).endsWith('/enqueue_news_work')){const p=JSON.parse(init.body);return Response.json([{work_key:p.p_key,scope:p.p_scope}]);}
+   return Response.json(String(input).endsWith('/finish_news_work')?true:[]);
+  }});
+  await store.enqueue({scope:'recovery',key:'fixture',payload:{original:true}});assert.deepEqual(await store.claim({scope:'recovery'}),[]);assert.equal(await store.finish({id:1,lease_token:'synthetic',scope:'recovery'},'completed'),true);assert.equal((await store.inspect({scope:'recovery'})).depth,0);assert.equal(calls,4);
+ }
+});

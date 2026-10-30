@@ -3,7 +3,7 @@ const {createHash}=require('node:crypto');
 const {retryAfterMs}=require('./news-source-reliability');
 function workKey(scope,key){return createHash('sha256').update(JSON.stringify([scope,key])).digest('hex');}
 function createNewsWorkStore({env=process.env,fetchImpl=globalThis.fetch}={}){
- const enabled=env.SETSCOPE_NEWS_WORK_QUEUE==='on',base=env.SUPABASE_URL?.replace(/\/$/,''),key=env.SUPABASE_SECRET_KEY;
+ const enabled=env.SETSCOPE_NEWS_WORK_QUEUE==='on',base=env.SUPABASE_URL?.replace(/\/$/,''),key=env.SUPABASE_SECRET_KEY||env.SUPABASE_SERVICE_ROLE_KEY;
  async function rpc(name,body,signal){
   if(!enabled)throw Error('NEWS_WORK_DISABLED');
   if(!base||!key)throw Error('NEWS_WORK_NOT_CONFIGURED');

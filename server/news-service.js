@@ -52,6 +52,12 @@ const RISKY_TARGET_UNVERIFIED_CACHE_MS = 5 * 60 * 1000;
 const MAX_RISKY_TARGET_CHECKS = 3;
 const MAX_RISKY_TARGET_BYTES = 256_000;
 
+function validGoogleRss(text) {
+  return /<rss(?:\s|>)/i.test(text) && /<\/rss\s*>/i.test(text)
+    && /<channel(?:\s|>)/i.test(text) && /<\/channel\s*>/i.test(text)
+    && (text.match(/<item(?:\s|>)/gi) || []).length === (text.match(/<\/item\s*>/gi) || []).length;
+}
+
 function sourceFromOutlet(name = '') {
   const mapped = (OUTLET_SOURCE.find(([pattern]) => pattern.test(name)) || [null, null])[1];
   return mapped || (matchBrokerFirms(name).length ? 'broker' : 'other');
@@ -143,10 +149,11 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       googleFailureCount = 0;
       googleCooldownUntil = 0;
       const text=await abortable(readBoundedText(response,512000,requestSignal),requestSignal);
-      if(/<rss(?:\s|>)/i.test(text)&&/<\/rss\s*>/i.test(text)){
-        rssSnapshots.delete(url);rssSnapshots.set(url,{text,etag:response.headers.get('etag'),modified:response.headers.get('last-modified')});
-        while(rssSnapshots.size>16)rssSnapshots.delete(rssSnapshots.keys().next().value);
-      }
+      // A successful HTTP response is not proof of a complete RSS result.
+      // Never cache maintenance HTML or a truncated feed as an authoritative empty set.
+      if (!validGoogleRss(text)) throw Error('Invalid Google RSS response');
+      rssSnapshots.delete(url);rssSnapshots.set(url,{text,etag:response.headers.get('etag'),modified:response.headers.get('last-modified')});
+      while(rssSnapshots.size>16)rssSnapshots.delete(rssSnapshots.keys().next().value);
       return text;
     });
     rssPending.set(url, task);
@@ -293,7 +300,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
         }).map(item=>recordDiscovery(item,{pathway:'google-news-rss/general',observedAt:Number(now())})).filter(item => {
           const published = Date.parse(item.pubDate);
           return item.title && allowedNewsUrl(item.url)
-            && Number.isFinite(published) && published >= cutoff;
+            && Number.isFinite(published) && published >= cutoff && published <= Number(now()) + 600000;
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
         if(onDiscovered){try{await onDiscovered(parsed.slice(0,1));}catch{logger.warn('News discovery checkpoint unavailable');}}
         const reviewed = await keepQualityItems(parsed, articleBudget);
@@ -312,7 +319,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       if (fallback) return rememberAssessments(fallback, settled.flatMap(entry => entry.assessments || []));
     }
     const uncertain = extra.unverifiedCount > 0 || thanResult.unverifiedCount > 0 || settled.some(result => result.uncertain > 0);
-    if (!items.length && uncertain) {
+    if (!items.length && (uncertain || errors.length)) {
       const fallback = staleFallback('news', Error('ARTICLE_UNVERIFIED'));
       if (fallback) return rememberAssessments(fallback, settled.flatMap(entry => entry.assessments || []));
     }
@@ -453,8 +460,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       xml=await fetchGoogleRss(url,controller.signal);
     } finally {clearTimeout(timer);parentSignal.removeEventListener('abort',relay);}
     if(parentSignal.aborted)throw Error('WATCHLIST_DEADLINE');
-    if(!/<rss(?:\s|>)/i.test(xml)||!/<\/rss\s*>/i.test(xml)||!/<channel(?:\s|>)/i.test(xml)||!/<\/channel\s*>/i.test(xml)
-      ||(xml.match(/<item(?:\s|>)/gi)||[]).length!==(xml.match(/<\/item\s*>/gi)||[]).length)throw Error('Invalid Watchlist RSS response');
+    if(!validGoogleRss(xml))throw Error('Invalid Watchlist RSS response');
     const blocks=[...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi)];
     const parsed=blocks.slice(0,100).map(match=>{
       const block=match[1],title=decodeXml(xmlTag(block,'title')),url=decodeXml(xmlTag(block,'link'));
