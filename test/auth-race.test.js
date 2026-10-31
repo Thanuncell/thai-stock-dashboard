@@ -89,7 +89,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
     if (url.includes('/auth/v1/token?grant_type=refresh_token')) return `refresh:${JSON.parse(init.body).refresh_token}`;
     if (url.includes('/auth/v1/token?grant_type=password')) return `login:${JSON.parse(init.body).email}`;
     if (url.includes('/auth/v1/signup?')) return `signup:${JSON.parse(init.body).email}`;
-    if (url.endsWith('/auth/v1/logout')) return 'logout';
+    if (url.endsWith('/auth/v1/logout?scope=local')) return 'logout';
     if (url === '/api/protected') return 'protected';
     return url;
   }
@@ -296,6 +296,23 @@ test('ordinary logout still clears the active session and reloads the login rout
   assert.equal(harness.currentSession(), null);
   assert.equal(harness.document.body.classList.contains('authenticated'), false);
   assert.equal(harness.window.reloadCount, 1);
+});
+
+test('logout is scoped to this device and preserves an independent device session', async () => {
+  const firstDevice = await createHarness();
+  const secondDevice = await createHarness();
+  await firstDevice.getNode('#logout-button').listeners.get('click')();
+  await firstDevice.settle();
+
+  const revoke = firstDevice.calls.find(call => call.key === 'logout');
+  assert.ok(revoke, 'Supabase logout endpoint must be called');
+  assert.equal(new URL(revoke.input).searchParams.get('scope'), 'local');
+  assert.equal(firstDevice.currentSession(), null);
+  assert.equal(secondDevice.window.setscopeAuth.user.id, 'user-a');
+  assert.equal(secondDevice.currentSession().access_token, 'token-a');
+  const protectedResult = await secondDevice.window.setscopeAuth.authorizedFetch('/api/protected');
+  assert.equal(protectedResult.status, 200);
+  assert.equal(secondDevice.currentSession().access_token, 'token-a');
 });
 
 test('401 refresh and an old refresh timer cannot expire a newer login', async () => {

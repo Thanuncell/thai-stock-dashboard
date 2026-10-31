@@ -306,7 +306,7 @@
     const accessToken = session?.access_token || '';
     endPrivateSession('logout', { broadcast: true, text: '' });
     const operationGeneration = authOperationGeneration;
-    try { if (accessToken) await authRequest('logout', { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } }); } catch (_) {}
+    try { if (accessToken) await authRequest('logout?scope=local', { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } }); } catch (_) {}
     if (!isCurrentAuthOperation(operationGeneration)) return;
     setMode('login', { replace: true }); window.location.reload();
   }
