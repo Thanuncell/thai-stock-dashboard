@@ -215,6 +215,7 @@ test('canonical URL state restores all four workspaces and rejects stale input',
   assert.deepEqual(domain.parseNavigationState('https://setscope.test/?watchlist=list-2&watchPage=4#watchlist'), {
     route: 'watchlist', watchlistId: 'list-2', watchPage: 4
   });
+  assert.equal(domain.navigationUrl({ route: 'watchlist', watchlistId: 'fixture-private-list', watchPage: 4 }), '/?watchPage=4#watchlist');
   assert.equal(domain.navigationUrl({ route: 'chart', symbol: 'PTT', range: '1M' }), '/?symbol=PTT&range=1M#chart');
   assert.equal(domain.navigationUrl({ route: 'news', query: '<PTT>', source: 'invalid', newsPage: -2 }), '/?s=%3CPTT%3E#news');
   assert.deepEqual(domain.parseNavigationState('https://setscope.test/?token=secret&source=bad&newsPage=NaN#news'), {

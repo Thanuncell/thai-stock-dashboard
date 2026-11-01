@@ -159,6 +159,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
     setTimeout: () => 1,
     clearTimeout: () => {},
     URLSearchParams,
+    URL,
     window
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'auth.js'), 'utf8');

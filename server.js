@@ -177,6 +177,34 @@ async function loadNewsAndArchive() {
   return {...data,items:await newsLinkReview.review(data.items)};
 }
 
+async function handleWatchlistNews(req, res, user, url) {
+  if (!['GET', 'POST'].includes(req.method)) return send(res, 405, { error: 'Method Not Allowed' }, { allow: 'GET, POST' });
+  let raw, refresh;
+  if (req.method === 'POST') {
+    if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'ต้องส่งข้อมูล JSON' });
+    let body;
+    try { body = await readJson(req); } catch (_) { return send(res, 400, { error: 'รูปแบบข้อมูลไม่ถูกต้อง' }); }
+    if (!body || !Array.isArray(body.stocks) || (body.refresh !== undefined && typeof body.refresh !== 'boolean')) return send(res, 400, { error: 'รูปแบบข้อมูลไม่ถูกต้อง' });
+    raw = body.stocks; refresh = body.refresh === true;
+  } else {
+    raw = url.searchParams.get('stocks') || url.searchParams.get('symbols') || '';
+    refresh = url.searchParams.get('refresh') === '1';
+  }
+  try {
+    const stocks = normalizeWatchlistNewsStocks(raw).map(({ symbol }) => ({ symbol, name: '' }));
+    const cacheKey = createWatchlistNewsCacheKey(stocks, user.id);
+    const force = refresh && !limited(`watch-news-refresh:${user.id}`, 3);
+    const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks, {ownerId:user.id,refresh:force}), {force});
+    const scoped = new Set(stocks.map(stock => stock.symbol));
+    const reviewed = {...data,items:(await newsLinkReview.review(data.items)).filter(item=>newsAssociationSymbols(item).some(symbol=>scoped.has(symbol)))};
+    const safe = newsService.filterForDisplay(reviewed);
+    if (Array.isArray(data.stockStatus)) safe.stockStatus = data.stockStatus.map(status=>({...status,retained:safe.items.filter(item=>newsAssociationSymbols(item).includes(status.symbol)).length}));
+    return send(res, 200, safe);
+  } catch (_) {
+    return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ' });
+  }
+}
+
 async function handleWatchlists(req, res, user) {
   if (req.method === 'GET') {
     res.setHeader('cache-control', 'no-store');
@@ -285,6 +313,7 @@ async function handle(req, res) {
   if (url.pathname.startsWith('/api/') && !user) return;
   if (url.pathname === '/api/watchlists') return handleWatchlists(req, res, user);
   if (url.pathname === '/api/news-analysis') return handleNewsAnalysis(req, res, user);
+  if (url.pathname === '/api/watchlist-news') return handleWatchlistNews(req, res, user, url);
 
   if (req.method !== 'GET') {
     res.writeHead(405);
@@ -373,22 +402,6 @@ async function handle(req, res) {
       return send(res, 200, { ...safe, countExact, matchingTotal:countExact?data.matchingTotal:null, ...(withheldUrls.length?{withheldUrls}:{}), featured, dataState: data.stale ? 'stale' : safe.dataState || (data.configured ? 'fresh' : 'unavailable') });
     } catch (error) {
       return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable' });
-    }
-  }
-  if (url.pathname === '/api/watchlist-news') {
-    try {
-      const raw = url.searchParams.get('stocks') || url.searchParams.get('symbols') || '';
-      const stocks = normalizeWatchlistNewsStocks(raw);
-      const cacheKey = createWatchlistNewsCacheKey(stocks, user.id);
-      const force = url.searchParams.get('refresh') === '1' && !limited(`watch-news-refresh:${user.id}`, 3);
-      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.watchlistNews, () => newsService.getWatchlistNews(stocks, {ownerId:user.id,refresh:force}), {force});
-      const scoped=new Set(stocks.map(stock=>stock.symbol));
-      const reviewed={...data,items:(await newsLinkReview.review(data.items)).filter(item=>newsAssociationSymbols(item).some(symbol=>scoped.has(symbol)))};
-      const safe=newsService.filterForDisplay(reviewed);
-      if(Array.isArray(data.stockStatus))safe.stockStatus=data.stockStatus.map(status=>({...status,retained:safe.items.filter(item=>newsAssociationSymbols(item).includes(status.symbol)).length}));
-      return send(res, 200, safe);
-    } catch (error) {
-      return send(res, 502, { error: 'ดึงข่าว Watchlist ไม่สำเร็จ' });
     }
   }
   return serveStatic(url, res);

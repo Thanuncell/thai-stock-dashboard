@@ -18,7 +18,7 @@ for(const [label,viewport,hardGate] of [['desktop',{width:1366,height:900},true]
  if(!hardGate&&url.origin===base&&url.pathname==='/api/news-archive')return json({configured:true,items:[...docs,pdfArticle,item('P1_G1_ARCHIVE',{verification:{status:'VERIFIED',basis:'metadata'}})],featured:[],total:1,page:1,pageSize:10,dataState:'fresh'});
  if(url.origin===base&&url.pathname==='/api/news')return json({items:live?[item('P1_LIVE'),pdfArticle,...bad]:[],dataState:'fresh'});
  if(url.origin===base&&url.pathname==='/api/news-archive')return json({configured:true,items:[pdfArticle,item('P1_ARCHIVE',{source:'infoquest',sourceName:'InfoQuest',url:'https://www.infoquest.co.th/2026/P1_ARCHIVE'}),...bad],featured:[item('P1_FALLBACK'),...bad],total:1,page:1,pageSize:10,dataState:'fresh'});
- if(url.origin===base&&url.pathname==='/api/watchlist-news'){const owner=req.headers().authorization?.includes('token-b')?'B':'A',symbol=JSON.parse(url.searchParams.get('stocks')||'[]')[0]?.symbol||'PTT';
+ if(url.origin===base&&url.pathname==='/api/watchlist-news'){assert.equal(req.method(),'POST');assert.equal(url.search,'');const owner=req.headers().authorization?.includes('token-b')?'B':'A',symbol=req.postDataJSON().stocks[0]?.symbol||'PTT';
  const valid=item('P1_WATCH_'+owner,{title:symbol+' P1_WATCH_'+owner,matchedSymbols:[symbol]});
  if(!hardGate)return json({items:[...docs,pdfArticle,{...valid,verification:{status:'VERIFIED',basis:'metadata'}}],total:1,dataState:'fresh'});
  if(owner==='A'&&withholdA)return json({items:[],withheldUrls:[valid.url],total:0,dataState:'unavailable'});
