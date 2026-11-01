@@ -2,6 +2,11 @@
 
 const { EMPTY_FOREIGN, EMPTY_NVDR, EMPTY_TFEX, LINKS } = require('./settrade-service');
 
+const PUBLIC_ERROR_CODES = new Set([
+  'SCRAPER_DISABLED', 'MANUAL_REVIEW_REQUIRED', 'BACKOFF', 'OPEN', 'REQUEST_BUDGET_EXHAUSTED',
+  'SOURCE_GUARD_REJECTED', 'RATE_LIMITED', 'TRANSIENT_PROVIDER_FAILURE', 'PROVIDER_HTTP_ERROR'
+]);
+
 function unavailableOverview(error, now = Date.now) {
   const fetchedAt = new Date(now()).toISOString();
   return {
@@ -20,7 +25,7 @@ function unavailableOverview(error, now = Date.now) {
     partial: true,
     dataState: 'unavailable',
     marketDate: null,
-    errors: [String(error?.code || error?.message || 'MARKET_OVERVIEW_UNAVAILABLE')],
+    errors: [PUBLIC_ERROR_CODES.has(error?.code) ? error.code : 'MARKET_OVERVIEW_UNAVAILABLE'],
     links: LINKS,
     fieldStatus: {},
     sourceStatus: { settrade: { state: error?.code === 'SCRAPER_DISABLED' ? 'DISABLED' : 'UNAVAILABLE' } },
@@ -61,7 +66,7 @@ function createMarketOverviewService({
         checkedAt: new Date(now()).toISOString()
       };
     } catch (error) {
-      value.sourceStatus.shadow = { state: 'UNVERIFIED', reason: error.message };
+      value.sourceStatus.shadow = { state: 'UNVERIFIED', reason: 'SHADOW_UNAVAILABLE' };
     }
     return { ...result, value };
   }

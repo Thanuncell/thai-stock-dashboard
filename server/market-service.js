@@ -2,6 +2,18 @@
 
 const { createMarketDataGuard } = require('./data-guard');
 
+const PUBLIC_ERROR_CODES = new Set([
+  'SOURCE_NO_DATA', 'SOURCE_DENIED', 'SOURCE_RATE_LIMITED', 'ACQUISITION_GAP', 'PARSER_MISMATCH',
+  'DATA_GUARD_REJECTED', 'SYMBOL_UNVERIFIED', 'SYMBOL_MISMATCH', 'MARKET_MISMATCH',
+  'INVALID_TIMESTAMP', 'FUTURE_TIMESTAMP', 'STALE_TIMESTAMP', 'INVALID_NUMERIC', 'INVALID_OHLC',
+  'NEGATIVE_VOLUME', 'LAST_CLOSE_MISMATCH', 'PRICE_CHANGE_MISMATCH', 'DATA_ANOMALY', 'HISTORICAL_ANOMALY'
+]);
+
+function publicMarketError(error, context) {
+  const code = PUBLIC_ERROR_CODES.has(error?.code) ? error.code : 'PROVIDER_UNAVAILABLE';
+  return `${context}: ${code}`;
+}
+
 const PERIODS = Object.freeze({
   '1D': ['1d', '1m'],
   '1W': ['5d', '15m'],
@@ -169,7 +181,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     const [rangeName, interval] = PERIODS[range] || PERIODS['1D'];
     const base = await Promise.allSettled(symbols.map(async symbol => shapeChart(await yahooChart(`${symbol}.BK`, '1d', '5m'), symbol, 'quote:1d:5m')));
     const stocks = base.filter(result => result.status === 'fulfilled').map(result => result.value);
-    const errors = base.filter(result => result.status === 'rejected').map(result => result.reason.message);
+    const errors = base.flatMap((result, index) => result.status === 'rejected'
+      ? [publicMarketError(result.reason, symbols[index])] : []);
     stocks.filter(stock => stock.guardStatus !== 'accepted')
       .forEach(stock => errors.push(`${stock.symbol}: ${stock.guardReasons.join(',') || stock.guardStatus}`));
     if (!stocks.length) throw Error(errors.join(' · ') || 'Yahoo Finance ยังไม่คืนข้อมูลหุ้นไทย');
@@ -178,13 +191,13 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     let index = null;
     if (indexTry[0].status === 'fulfilled') {
       try { index = shapeChart(indexTry[0].value, 'SET', 'quote:1d:5m'); }
-      catch (error) { errors.push(error.message); }
-    } else errors.push(indexTry[0].reason.message);
+      catch (error) { errors.push(publicMarketError(error, 'SET')); }
+    } else errors.push(publicMarketError(indexTry[0].reason, 'SET'));
 
     let turnoverMillionBaht = null;
     if (env.SET_API_KEY) {
       try { turnoverMillionBaht = await getSetTurnoverMillionBaht(); }
-      catch (error) { errors.push(`SET turnover: ${error.message}`); }
+      catch (error) { errors.push(publicMarketError(error, 'SET turnover')); }
     }
     if (index) index.turnoverMillionBaht = turnoverMillionBaht;
 
@@ -207,7 +220,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
           stale: historyResult.stale
         };
       } catch (error) {
-        errors.push(error.message);
+        errors.push(publicMarketError(error, active));
         selected = {
           ...selected,
           history: [],
@@ -232,7 +245,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
           levelsHistory = fallback.history;
           indicatorHistory = fallback.history;
         }
-      } catch (error) { errors.push(`ข้อมูลย้อนหลังสำหรับการวิเคราะห์: ${error.message}`); }
+      } catch (error) { errors.push(publicMarketError(error, 'ข้อมูลย้อนหลังสำหรับการวิเคราะห์')); }
     }
     const fetchedAt = new Date().toISOString();
     const latestProviderTime = [...stocks, index].filter(Boolean)

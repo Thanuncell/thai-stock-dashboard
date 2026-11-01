@@ -106,7 +106,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
       protectedCalls += 1;
       return new nativeResponse('', { status: protectedCalls === 1 ? 401 : 200 });
     }
-    if (url.endsWith('/auth/v1/logout?scope=local')) return new nativeResponse('', { status: 204 });
+    if (url.endsWith('/auth/v1/logout?scope=local')) return new nativeResponse(null, { status: 204 });
     throw new Error(`Unexpected fetch ${url}`);
   };
 

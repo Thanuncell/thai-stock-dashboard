@@ -112,7 +112,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
       const owner = ownerFor(key);
       return jsonResponse({ access_token: `token-${owner}`, refresh_token: `refresh-${owner}`, expires_in: 3600, user: { id: owner, email: `${owner}@example.test` } });
     }
-    if (key === 'logout') return new Response('', { status: 204 });
+    if (key === 'logout') return new Response(null, { status: 204 });
     if (key === 'protected') return new Response('', { status: protectedStatuses.shift() ?? 200 });
     throw new Error(`Unexpected request ${key}`);
   }
@@ -300,7 +300,7 @@ test('ordinary logout still clears the active session and reloads the login rout
 
 test('logout is scoped to this device and preserves an independent device session', async () => {
   const firstDevice = await createHarness();
-  const secondDevice = await createHarness();
+  const secondDevice = await createHarness({ protectedStatuses: [401, 200] });
   await firstDevice.getNode('#logout-button').listeners.get('click')();
   await firstDevice.settle();
 
@@ -310,9 +310,12 @@ test('logout is scoped to this device and preserves an independent device sessio
   assert.equal(firstDevice.currentSession(), null);
   assert.equal(secondDevice.window.setscopeAuth.user.id, 'user-a');
   assert.equal(secondDevice.currentSession().access_token, 'token-a');
+  const identity = secondDevice.window.setscopeAuth.captureIdentity();
   const protectedResult = await secondDevice.window.setscopeAuth.authorizedFetch('/api/protected');
   assert.equal(protectedResult.status, 200);
-  assert.equal(secondDevice.currentSession().access_token, 'token-a');
+  assert.equal(secondDevice.calls.filter(call => call.key === 'refresh:refresh-a').length, 1);
+  assert.equal(secondDevice.currentSession().access_token, 'token-user-a-refreshed');
+  assert.deepEqual(secondDevice.window.setscopeAuth.captureIdentity(), identity);
 });
 
 test('401 refresh and an old refresh timer cannot expire a newer login', async () => {
@@ -346,4 +349,22 @@ test('concurrent same-session refreshes coalesce and preserve owner generation',
   assert.deepEqual(await Promise.all([first, second]), [true, true]);
   assert.equal(harness.currentSession().access_token, 'token-a-new');
   assert.deepEqual(harness.window.setscopeAuth.captureIdentity(), identity);
+});
+
+test('active refresh failure expires private UI without retrying private requests or deleting owner data', async () => {
+  const harness = await createHarness({ holds: ['refresh:refresh-a'], protectedStatuses: [401] });
+  const savedWatchlist = JSON.stringify({ ownerId: 'user-a', items: [{ symbol: 'PTT' }] });
+  harness.sessionStorage.setItem('fixture-owner-watchlist', savedWatchlist);
+  const request = harness.window.setscopeAuth.authorizedFetch('/api/protected');
+  const rejected = assert.rejects(request);
+  await harness.waitForPending('refresh:refresh-a');
+  harness.resolvePending('refresh:refresh-a', { error: 'fixture expired refresh' }, 400);
+  await rejected;
+  assert.equal(harness.currentSession(), null);
+  assert.equal(harness.document.body.classList.contains('authenticated'), false);
+  assert.equal(harness.getNode('#app-shell').attributes.get('aria-hidden'), 'true');
+  assert.equal(harness.sessionStorage.getItem('fixture-owner-watchlist'), savedWatchlist);
+  assert.equal(harness.calls.filter(call => call.key === 'protected').length, 1);
+  await assert.rejects(harness.window.setscopeAuth.authorizedFetch('/api/protected'));
+  assert.equal(harness.calls.filter(call => call.key === 'protected').length, 1);
 });
