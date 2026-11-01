@@ -138,6 +138,11 @@ const reply = (route, body, status = 200) => route.fulfill({ status, contentType
       return reply(route, { items: [], dataState: 'unavailable' });
     });
     const [first, second] = await Promise.all(contexts.map(context => context.newPage()));
+    async function logout(page) {
+      // The form becomes visible before logout's asynchronous reload finishes.
+      await Promise.all([page.waitForEvent('load'), page.locator('#logout-button').click()]);
+      await page.waitForSelector('#login-form:not([hidden])');
+    }
     async function login(page, owner) {
       if (!page.url().startsWith(base)) await page.goto(`${base}/login`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('#login-form:not([hidden])');
@@ -153,8 +158,7 @@ const reply = (route, body, status = 200) => route.fulfill({ status, contentType
     assert.equal(metrics.logins.a, 2); assert.equal(sessions[0] !== sessions[1], true);
     const secondSession = sessions[1], originalA = JSON.stringify(records.get('a'));
     phase = 'logout-reload-refresh';
-    await first.locator('#logout-button').click();
-    await first.waitForSelector('#login-form:not([hidden])');
+    await logout(first);
     assert.equal(metrics.logoutScopes.at(-1), 'local');
     await first.reload({ waitUntil: 'domcontentloaded' });
     assert.equal(await first.evaluate(() => Boolean(sessionStorage.getItem('setscope-auth-session-v1'))), false);
@@ -214,16 +218,29 @@ const reply = (route, body, status = 200) => route.fulfill({ status, contentType
     assert.equal(metrics.newsCalls.length, beforeNews, 'GET/POST reuse the same owner cache');
     assert.equal(newsRequests.length >= 3, true);
     assert.equal(newsRequests.every(row => row.cleanUrl && row.symbolsOnly && row.noReferrer && row.fields.every(field => ['stocks', 'refresh'].includes(field))), true);
-    phase = 'relogin-and-refresh-failure';
-    await first.locator('#logout-button').click(); await first.waitForSelector('#login-form:not([hidden])');
+    phase = 'relogin-logout';
+    await logout(first);
+    phase = 'relogin-login';
     await login(first, 'a');
+    phase = 'relogin-preservation';
     assert.doesNotMatch(await first.locator('#app-shell').textContent(), /B PRIVATE/);
     assert.equal(JSON.stringify(records.get('a')) === originalA, true);
+    phase = 'refresh-failure-trigger';
     secondSession.refreshActive = false; expire(secondSession);
-    assert.equal(await second.evaluate(async () => { try { await window.setscopeAuth.authorizedFetch('/api/watchlists'); return false; } catch { return true; } }), true);
+    // Observe responses and the completed reload outside the document being destroyed.
+    const deniedRead = second.waitForResponse(response => new URL(response.url()).pathname === '/api/watchlists' && response.status() === 401);
+    const deniedRefresh = second.waitForResponse(response => new URL(response.url()).pathname === '/auth/v1/token'
+      && new URL(response.url()).searchParams.get('grant_type') === 'refresh_token' && response.status() === 400);
+    const expiredReload = second.waitForEvent('load');
+    await second.evaluate(() => { void window.setscopeAuth.authorizedFetch('/api/watchlists').catch(() => {}); });
+    await Promise.all([deniedRead, deniedRefresh, expiredReload]);
+    phase = 'refresh-failure-ui';
     await second.waitForSelector('#login-form:not([hidden])');
     assert.equal(await second.locator('#app-shell').getAttribute('aria-hidden'), 'true');
+    assert.equal(await second.evaluate(() => sessionStorage.getItem('setscope-auth-session-v1') === null), true);
+    phase = 'other-session-remains-authenticated';
     assert.equal(await first.evaluate(() => document.body.classList.contains('authenticated')), true);
+    phase = 'credential-artifact-checks';
     assert.equal(logs.some(line => [...allSecrets].some(value => line.includes(value))), false, 'runtime logs must not contain generated credentials');
     assert.equal(metrics.unexpectedUpstream, 0);
     console.log(JSON.stringify({ mockE2E: 'PASS', simulatedContexts: contexts.length, independentLogins: 'PASS',
@@ -235,4 +252,8 @@ const reply = (route, body, status = 200) => route.fulfill({ status, contentType
     if (server?.listening) await new Promise(resolve => server.close(resolve));
     restores.forEach(restore => restore()); globalThis.fetch = nativeFetch; console.info = originalInfo;
   }
-})().catch(() => { console.error(JSON.stringify({ mockE2E: 'FAIL', phase, details: 'Suppressed to protect in-memory credentials' })); process.exitCode = 1; });
+})().catch(error => {
+  const failureKind = /Execution context was destroyed|navigation/i.test(String(error?.message)) ? 'navigation-interrupted'
+    : error?.name === 'TimeoutError' ? 'timeout' : error?.code === 'ERR_ASSERTION' ? 'assertion' : 'other';
+  console.error(JSON.stringify({ mockE2E: 'FAIL', phase, failureKind, details: 'Suppressed to protect in-memory credentials' })); process.exitCode = 1;
+});
