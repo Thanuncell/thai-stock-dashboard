@@ -19,11 +19,13 @@ const NativeResponse = globalThis.Response;
 const upstreamCalls = [];
 let watchlistReadFailure = false;
 let watchlistWriteFailure = false;
+let malformedAuth = false;
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
 globalThis.fetch = async (input, init = {}) => {
   const url = String(input);
   upstreamCalls.push({ url, init });
   if (url.endsWith('/auth/v1/user')) {
+    if (malformedAuth !== false) return new NativeResponse(malformedAuth, { status: 200, headers: { 'content-type': 'application/json' } });
     if (/Bearer (invalid|expired)-token/.test(init.headers?.Authorization || '')) {
       return new NativeResponse('fixture-private-auth-diagnostic', { status: 401 });
     }
@@ -370,6 +372,26 @@ test('invalid and expired tokens fail closed before private read or write', asyn
       assert.equal(upstreamCalls.filter(call => call.url.includes('/rest/v1/user_watchlists')).length, before);
     }
   }
+});
+
+test('successful auth responses without a valid owner fail closed before private reads or writes', async () => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const before = upstreamCalls.filter(call => call.url.includes('/rest/v1/user_watchlists')).length;
+  try {
+    for (const payload of ['{}', 'null', '[]', '{"id":""}', '{"id":123}', '{"id":" "}', 'invalid JSON']) {
+      malformedAuth = payload;
+      for (const method of ['GET', 'PUT']) {
+        const result = await request(base, '/api/watchlists', {
+          method, headers: { authorization: 'Bearer test-token', 'content-type': 'application/json' },
+          ...(method === 'PUT' ? { body: JSON.stringify({ watchlists: [{ id: 'list-1', name: 'Fixture', items: [] }] }) } : {})
+        });
+        assert.equal(result.status, 503);
+        assert.equal(result.headers['cache-control'], 'no-store');
+        assert.equal(JSON.parse(result.body).retryable, true);
+      }
+    }
+    assert.equal(upstreamCalls.filter(call => call.url.includes('/rest/v1/user_watchlists')).length, before);
+  } finally { malformedAuth = false; }
 });
 
 test('partial Market responses omit untrusted exception text and provider descriptions', async () => {
