@@ -18,6 +18,7 @@ delete process.env.OPENAI_API_KEY;
 const NativeResponse = globalThis.Response;
 const upstreamCalls = [];
 let watchlistReadFailure = false;
+let watchlistWriteFailure = false;
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
 globalThis.fetch = async (input, init = {}) => {
   const url = String(input);
@@ -29,8 +30,11 @@ globalThis.fetch = async (input, init = {}) => {
     });
   }
   if (url.includes('/rest/v1/user_watchlists')) {
-    if ((init.method || 'GET') === 'POST') return new NativeResponse('', { status: 201 });
-    if (watchlistReadFailure) return new NativeResponse('fixture unavailable', { status: 503 });
+    if ((init.method || 'GET') === 'POST') {
+      if (watchlistWriteFailure) return new NativeResponse('fixture-upstream-private-metadata', { status: 503 });
+      return new NativeResponse('', { status: 201 });
+    }
+    if (watchlistReadFailure) return new NativeResponse('fixture-upstream-private-metadata', { status: 503 });
     return new NativeResponse(JSON.stringify([{ watchlists: [], active_watchlist_id: 'list-1' }]), {
       status: 200,
       headers: { 'content-type': 'application/json' }
@@ -167,6 +171,20 @@ test('watchlist reads and writes are scoped to the validated auth user', async (
   watchlistReadFailure = false;
   assert.equal(failedRead.status, 502);
   assert.equal(failedRead.headers['cache-control'], 'no-store');
+  assert.deepEqual(JSON.parse(failedRead.body), { error: 'โหลด Watchlist จาก Supabase ไม่สำเร็จ' });
+  assert.doesNotMatch(failedRead.body, /fixture-upstream-private-metadata|detail/i);
+
+  watchlistWriteFailure = true;
+  try {
+    const failedWrite = await request(base, '/api/watchlists', {
+      method: 'PUT', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ watchlists: [{ id: 'list-1', name: 'Main', items: [] }], activeWatchlistId: 'list-1' })
+    });
+    assert.equal(failedWrite.status, 502);
+    assert.equal(failedWrite.headers['cache-control'], 'no-store');
+    assert.deepEqual(JSON.parse(failedWrite.body), { error: 'บันทึก Watchlist ไป Supabase ไม่สำเร็จ' });
+    assert.doesNotMatch(failedWrite.body, /fixture-upstream-private-metadata|detail/i);
+  } finally { watchlistWriteFailure = false; }
 });
 
 test('backend API response contracts remain stable before service extraction', async () => {
@@ -266,4 +284,12 @@ test('partial provider outages degrade independently without fabricating zero va
   assert.deepEqual(news.errors, require('../server/news-service').FEEDS.slice(1).map(([source]) => source));
   assert.equal(news.dataState, 'partial');
   assert.equal(news.partial, true);
+});
+
+test('API route error envelopes do not forward raw provider exception text', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const upstream = fs.readFileSync(path.join(__dirname, '..', 'server', 'watchlist-service.js'), 'utf8');
+  assert.doesNotMatch(source, /(?:detail|error):\s*error\.message/);
+  assert.doesNotMatch(source, /console\.(?:warn|error)\([^\n]*error\.message/);
+  assert.doesNotMatch(upstream, /upstream\.text\(\)/);
 });
