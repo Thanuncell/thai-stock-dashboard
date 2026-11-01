@@ -31,7 +31,15 @@ function createAuthService({ env = process.env, fetchImpl = globalThis.fetch, se
       send(res, 503, { error: 'ระบบสมาชิกตอบสนองช้า กรุณาลองใหม่อีกครั้ง', retryable: true });
       return false;
     }
-    if (response.ok) return response.json();
+    if (response.ok) {
+      let user;
+      try { user = await response.json(); } catch (_) {}
+      if (!user || typeof user.id !== 'string' || !user.id.trim() || user.id !== user.id.trim() || user.id.length > 128) {
+        send(res, 503, { error: 'ระบบสมาชิกตอบกลับไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง', retryable: true });
+        return false;
+      }
+      return user;
+    }
     if (response.status === 401 || response.status === 403) {
       send(res, 401, { error: 'เซสชันไม่ถูกต้อง กรุณาเข้าสู่ระบบอีกครั้ง' });
       return false;

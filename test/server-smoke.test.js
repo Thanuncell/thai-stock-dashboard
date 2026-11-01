@@ -18,19 +18,28 @@ delete process.env.OPENAI_API_KEY;
 const NativeResponse = globalThis.Response;
 const upstreamCalls = [];
 let watchlistReadFailure = false;
+let watchlistWriteFailure = false;
+let malformedAuth = false;
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
 globalThis.fetch = async (input, init = {}) => {
   const url = String(input);
   upstreamCalls.push({ url, init });
   if (url.endsWith('/auth/v1/user')) {
+    if (malformedAuth !== false) return new NativeResponse(malformedAuth, { status: 200, headers: { 'content-type': 'application/json' } });
+    if (/Bearer (invalid|expired)-token/.test(init.headers?.Authorization || '')) {
+      return new NativeResponse('fixture-private-auth-diagnostic', { status: 401 });
+    }
     return new NativeResponse(JSON.stringify({ id: 'user-a', email: 'a@example.test' }), {
       status: 200,
       headers: { 'content-type': 'application/json' }
     });
   }
   if (url.includes('/rest/v1/user_watchlists')) {
-    if ((init.method || 'GET') === 'POST') return new NativeResponse('', { status: 201 });
-    if (watchlistReadFailure) return new NativeResponse('fixture unavailable', { status: 503 });
+    if ((init.method || 'GET') === 'POST') {
+      if (watchlistWriteFailure) return new NativeResponse('fixture-upstream-private-metadata', { status: 503 });
+      return new NativeResponse('', { status: 201 });
+    }
+    if (watchlistReadFailure) return new NativeResponse('fixture-upstream-private-metadata', { status: 503 });
     return new NativeResponse(JSON.stringify([{ watchlists: [], active_watchlist_id: 'list-1' }]), {
       status: 200,
       headers: { 'content-type': 'application/json' }
@@ -71,7 +80,31 @@ globalThis.fetch = async (input, init = {}) => {
 
 const restoreNewsHttps=require('./fixtures/news-https.cjs').installNewsHttpsFixture(globalThis.fetch);
 test.after(restoreNewsHttps);
+let failedOperation = '';
+const restoreFactories = [];
+for (const [modulePath, factory, methods] of [
+  ['../server/market-service', 'createMarketService', ['getMarket']],
+  ['../server/search-service', 'createStockSearchService', ['search']],
+  ['../server/market-overview-service', 'createMarketOverviewService', ['getOverview']],
+  ['../server/news-service', 'createNewsService', ['filterForDisplay', 'getWatchlistNews', 'analyse']],
+  ['../server/news-archive-service', 'createNewsArchiveService', ['list']]
+]) {
+  const module = require(modulePath), original = module[factory];
+  module[factory] = options => {
+    const service = original(options);
+    for (const method of methods) {
+      const run = service[method].bind(service);
+      service[method] = (...args) => {
+        if (failedOperation === method) throw Error('fixture-private-route-diagnostic');
+        return run(...args);
+      };
+    }
+    return service;
+  };
+  restoreFactories.push(() => { module[factory] = original; });
+}
 const { server } = require('../server');
+restoreFactories.forEach(restore => restore());
 
 function request(base, pathname, options = {}) {
   const url = new URL(pathname, base);
@@ -167,6 +200,20 @@ test('watchlist reads and writes are scoped to the validated auth user', async (
   watchlistReadFailure = false;
   assert.equal(failedRead.status, 502);
   assert.equal(failedRead.headers['cache-control'], 'no-store');
+  assert.deepEqual(JSON.parse(failedRead.body), { error: 'โหลด Watchlist จาก Supabase ไม่สำเร็จ' });
+  assert.doesNotMatch(failedRead.body, /fixture-upstream-private-metadata|detail/i);
+
+  watchlistWriteFailure = true;
+  try {
+    const failedWrite = await request(base, '/api/watchlists', {
+      method: 'PUT', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ watchlists: [{ id: 'list-1', name: 'Main', items: [] }], activeWatchlistId: 'list-1' })
+    });
+    assert.equal(failedWrite.status, 502);
+    assert.equal(failedWrite.headers['cache-control'], 'no-store');
+    assert.deepEqual(JSON.parse(failedWrite.body), { error: 'บันทึก Watchlist ไป Supabase ไม่สำเร็จ' });
+    assert.doesNotMatch(failedWrite.body, /fixture-upstream-private-metadata|detail/i);
+  } finally { watchlistWriteFailure = false; }
 });
 
 test('backend API response contracts remain stable before service extraction', async () => {
@@ -266,4 +313,138 @@ test('partial provider outages degrade independently without fabricating zero va
   assert.deepEqual(news.errors, require('../server/news-service').FEEDS.slice(1).map(([source]) => source));
   assert.equal(news.dataState, 'partial');
   assert.equal(news.partial, true);
+});
+
+test('API route error envelopes do not forward raw provider exception text', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const upstream = fs.readFileSync(path.join(__dirname, '..', 'server', 'watchlist-service.js'), 'utf8');
+  assert.doesNotMatch(source, /(?:detail|error):\s*error\.message/);
+  assert.doesNotMatch(source, /console\.(?:warn|error)\([^\n]*error\.message/);
+  assert.doesNotMatch(upstream, /upstream\.text\(\)/);
+});
+
+test('route failures preserve HTTP errors, safe fallbacks and request diagnostics', async () => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { authorization: 'Bearer test-token', 'content-type': 'application/json' };
+  const logs = [], originalInfo = console.info;
+  console.info = line => logs.push(String(line));
+  try {
+    for (const [method, route, options, extra = {}] of [
+      ['search', '/api/search?q=ERRORFIXTURE', {}, { items: [] }],
+      ['getMarket', '/api/market?symbols=BBL&symbol=BBL', {}],
+      ['getOverview', '/api/market-overview', {}],
+      ['getOverview', '/api/settrade-overview', {}],
+      ['filterForDisplay', '/api/news', {}],
+      ['getWatchlistNews', '/api/watchlist-news?symbols=BBL', {}],
+      ['list', '/api/news-archive?query=ERRORFIXTURE', {}, { items: [], dataState: 'unavailable' }],
+      ['analyse', '/api/news-analysis', { method: 'POST', body: JSON.stringify({ items: [] }) }]
+    ]) {
+      failedOperation = method;
+      const result = await request(base, route, { ...options, headers });
+      assert.equal(result.status, 502, route);
+      assert.equal(result.headers['cache-control'], 'no-store');
+      assert.ok(result.headers['x-request-id']);
+      const payload = JSON.parse(result.body);
+      assert.equal(typeof payload.error, 'string');
+      assert.deepEqual(payload, { error: payload.error, ...extra });
+      assert.doesNotMatch(result.body, /fixture-private|detail|stack/i);
+      assert.ok(logs.some(line => {
+        const record = JSON.parse(line);
+        return record.event === 'http_request' && record.requestId === result.headers['x-request-id'] && record.status === 502;
+      }), 'failed request must remain diagnosable');
+    }
+    assert.doesNotMatch(logs.join('\n'), /fixture-private|test-token/);
+  } finally { failedOperation = ''; console.info = originalInfo; }
+});
+
+test('invalid and expired tokens fail closed before private read or write', async () => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  for (const token of ['invalid-token', 'expired-token']) {
+    for (const method of ['GET', 'PUT']) {
+      const before = upstreamCalls.filter(call => call.url.includes('/rest/v1/user_watchlists')).length;
+      const result = await request(base, '/api/watchlists', {
+        method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        ...(method === 'PUT' ? { body: JSON.stringify({ watchlists: [] }) } : {})
+      });
+      assert.equal(result.status, 401);
+      assert.equal(result.headers['cache-control'], 'no-store');
+      assert.doesNotMatch(result.body, /fixture-private|invalid-token|expired-token/);
+      assert.equal(upstreamCalls.filter(call => call.url.includes('/rest/v1/user_watchlists')).length, before);
+    }
+  }
+});
+
+test('successful auth responses without a valid owner fail closed before private reads or writes', async () => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const before = upstreamCalls.filter(call => call.url.includes('/rest/v1/user_watchlists')).length;
+  try {
+    for (const payload of ['{}', 'null', '[]', '{"id":""}', '{"id":123}', '{"id":" "}', 'invalid JSON']) {
+      malformedAuth = payload;
+      for (const method of ['GET', 'PUT']) {
+        const result = await request(base, '/api/watchlists', {
+          method, headers: { authorization: 'Bearer test-token', 'content-type': 'application/json' },
+          ...(method === 'PUT' ? { body: JSON.stringify({ watchlists: [{ id: 'list-1', name: 'Fixture', items: [] }] }) } : {})
+        });
+        assert.equal(result.status, 503);
+        assert.equal(result.headers['cache-control'], 'no-store');
+        assert.equal(JSON.parse(result.body).retryable, true);
+      }
+    }
+    assert.equal(upstreamCalls.filter(call => call.url.includes('/rest/v1/user_watchlists')).length, before);
+  } finally { malformedAuth = false; }
+});
+
+test('partial Market responses omit untrusted exception text and provider descriptions', async () => {
+  const { createMarketService } = require('../server/market-service');
+  for (const failure of ['description', 'network', 'json']) {
+    const service = createMarketService({ env: {}, fetchImpl: async input => {
+      if (String(input).includes('AOT.BK')) {
+        if (failure === 'network') throw Error('fixture-private-diagnostic');
+        if (failure === 'json') return { ok: true, json: async () => { throw Error('fixture-private-diagnostic'); } };
+        return new NativeResponse(JSON.stringify({ chart: { result: null, error: {
+          code: 'Not Found', description: 'fixture-private-diagnostic'
+        } } }));
+      }
+      return globalThis.fetch(input);
+    } });
+    const result = await service.getMarket(['PTT', 'AOT'], 'PTT', '1D');
+    assert.equal(result.dataState, 'partial');
+    assert.equal(result.stocks[0].last, 35.25);
+    assert.doesNotMatch(JSON.stringify(result), /fixture-private-diagnostic/);
+    assert.ok(result.errors.some(error => error.includes('AOT')));
+  }
+});
+
+test('Overview fallback and shadow failure omit untrusted exception messages and codes', async () => {
+  const { createMarketOverviewService } = require('../server/market-overview-service');
+  const privateError = Object.assign(Error('fixture-private-diagnostic'), { code: 'fixture-private-code' });
+  const unavailable = await createMarketOverviewService({ provider: { getOverview: async () => { throw privateError; } } }).getOverview();
+  assert.equal(unavailable.value.dataState, 'unavailable');
+  assert.doesNotMatch(JSON.stringify(unavailable), /fixture-private/);
+  const shadow = await createMarketOverviewService({
+    provider: { getOverview: async () => ({ value: { indices: [], dataState: 'delayed' }, meta: {} }) },
+    shadowEnabled: true, shadowProvider: { compare: async () => { throw privateError; } }
+  }).getOverview();
+  assert.equal(shadow.value.dataState, 'delayed');
+  assert.equal(shadow.value.sourceStatus.shadow.state, 'UNVERIFIED');
+  assert.doesNotMatch(JSON.stringify(shadow), /fixture-private/);
+});
+
+test('Market range failure keeps the quote and blocks history without exposing exception fields', async () => {
+  const { createMarketService } = require('../server/market-service');
+  const service = createMarketService({ env: {}, fetchImpl: async input => {
+    if (new URL(String(input)).searchParams.get('range') === '3mo') {
+      throw Object.assign(Error('fixture-private-message'), {
+        code: 'fixture-private-code', guardReasons: ['fixture-private-reason']
+      });
+    }
+    return globalThis.fetch(input);
+  } });
+  const result = await service.getMarket(['PTT'], 'PTT', '3M');
+  assert.equal(result.stocks[0].last, 35.25);
+  assert.equal(result.dataState, 'unavailable');
+  assert.deepEqual(result.history, []);
+  assert.equal(result.partial, true);
+  assert.ok(result.errors.includes('PTT: PROVIDER_UNAVAILABLE'));
+  assert.doesNotMatch(JSON.stringify(result), /fixture-private/);
 });

@@ -32,7 +32,9 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     if(url.origin===base&&url.pathname==='/api/news-archive')return json({configured:false,items:[],featured:[],total:0});
     if(url.origin===base&&url.pathname==='/api/news-analysis')return json({items:request.postDataJSON().items.map(()=>({summary:'Fixture keyword assessment',mode:'rules'}))});
     if(url.origin===base&&url.pathname==='/api/watchlist-news'){
-     const result=await engine.getWatchlistNews(JSON.parse(url.searchParams.get('stocks')),{ownerId:owner,refresh:url.searchParams.get('refresh')==='1'});
+     assert.equal(request.method(),'POST');assert.equal(url.search,'');
+     const body=request.postDataJSON();for(const stock of body.stocks)assert.deepEqual(Object.keys(stock),['symbol']);
+     const result=await engine.getWatchlistNews(body.stocks,{ownerId:owner,refresh:body.refresh===true});
      if(owner==='a'&&state.holdA){state.holdA=false;await new Promise(resolve=>{state.releaseA=resolve;});}
      return json(result);
     }
@@ -57,6 +59,11 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    const picker=page.locator(label==='mobile'?'#watchlist-select-mobile':'#watchlist-select');await picker.selectOption('list-2');
    await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('SCB รายงาน'));assert.doesNotMatch(await news.textContent(),/PTT รายงาน|KBANK รายงาน/);
    await picker.selectOption('list-1');await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('PTT รายงาน'));
+   assert.equal(new URL(page.url()).searchParams.has('watchlist'),false);
+   await page.goBack();await page.waitForFunction(()=>document.querySelector('#watchlist-select')?.value==='list-2');
+   await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('SCB รายงาน'));
+   await page.goForward();await page.waitForFunction(()=>document.querySelector('#watchlist-select')?.value==='list-1');
+   await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('PTT รายงาน'));
    state.failure=true;await page.locator('#refresh-watchlist-news').click();await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.dataset.state==='stale');assert.match(await news.textContent(),/PTT รายงาน/);
    state.failure=false;state.time+=31000;state.holdA=true;await page.locator('#refresh-watchlist-news').click();
    for(let i=0;i<100&&!state.releaseA;i++)await pause(20);assert.ok(state.releaseA);

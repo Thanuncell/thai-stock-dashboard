@@ -64,7 +64,7 @@ function ownerFor(value) {
     || String(value).toLowerCase().includes('token-b') || String(value).toLowerCase().includes('refresh-b') ? 'user-b' : 'user-a';
 }
 
-async function createHarness({ initialSession = { access_token: 'token-a', refresh_token: 'refresh-a', expires_at: Date.now() + 3_600_000 }, holds = [], protectedStatuses = [] } = {}) {
+async function createHarness({ initialSession = { access_token: 'token-a', refresh_token: 'refresh-a', expires_at: Date.now() + 3_600_000 }, holds = [], protectedStatuses = [], initialLocation = {} } = {}) {
   const nodes = new Map();
   const getNode = selector => {
     if (!nodes.has(selector)) nodes.set(selector, new FakeNode());
@@ -89,7 +89,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
     if (url.includes('/auth/v1/token?grant_type=refresh_token')) return `refresh:${JSON.parse(init.body).refresh_token}`;
     if (url.includes('/auth/v1/token?grant_type=password')) return `login:${JSON.parse(init.body).email}`;
     if (url.includes('/auth/v1/signup?')) return `signup:${JSON.parse(init.body).email}`;
-    if (url.endsWith('/auth/v1/logout')) return 'logout';
+    if (url.endsWith('/auth/v1/logout?scope=local')) return 'logout';
     if (url === '/api/protected') return 'protected';
     return url;
   }
@@ -112,7 +112,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
       const owner = ownerFor(key);
       return jsonResponse({ access_token: `token-${owner}`, refresh_token: `refresh-${owner}`, expires_in: 3600, user: { id: owner, email: `${owner}@example.test` } });
     }
-    if (key === 'logout') return new Response('', { status: 204 });
+    if (key === 'logout') return new Response(null, { status: 204 });
     if (key === 'protected') return new Response('', { status: protectedStatuses.shift() ?? 200 });
     throw new Error(`Unexpected request ${key}`);
   }
@@ -129,7 +129,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
 
   const events = [];
   const listeners = new Map();
-  const location = { pathname: '/', search: '', hash: '#watchlist' };
+  const location = { pathname: '/', search: '', hash: '#watchlist', ...initialLocation };
   const window = {
     location: { origin: 'https://setscope.example', reload: () => { window.reloadCount += 1; } },
     reloadCount: 0,
@@ -191,7 +191,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
 
   await settle();
   return {
-    calls, currentSession, document, events, getNode, holdKeys, listeners, pending,
+    calls, currentSession, document, events, getNode, holdKeys, listeners, pending, location,
     resolvePending, sessionStorage, settle, submit, timers, waitForPending, window
   };
 }
@@ -298,6 +298,26 @@ test('ordinary logout still clears the active session and reloads the login rout
   assert.equal(harness.window.reloadCount, 1);
 });
 
+test('logout is scoped to this device and preserves an independent device session', async () => {
+  const firstDevice = await createHarness();
+  const secondDevice = await createHarness({ protectedStatuses: [401, 200] });
+  await firstDevice.getNode('#logout-button').listeners.get('click')();
+  await firstDevice.settle();
+
+  const revoke = firstDevice.calls.find(call => call.key === 'logout');
+  assert.ok(revoke, 'Supabase logout endpoint must be called');
+  assert.equal(new URL(revoke.input).searchParams.get('scope'), 'local');
+  assert.equal(firstDevice.currentSession(), null);
+  assert.equal(secondDevice.window.setscopeAuth.user.id, 'user-a');
+  assert.equal(secondDevice.currentSession().access_token, 'token-a');
+  const identity = secondDevice.window.setscopeAuth.captureIdentity();
+  const protectedResult = await secondDevice.window.setscopeAuth.authorizedFetch('/api/protected');
+  assert.equal(protectedResult.status, 200);
+  assert.equal(secondDevice.calls.filter(call => call.key === 'refresh:refresh-a').length, 1);
+  assert.equal(secondDevice.currentSession().access_token, 'token-user-a-refreshed');
+  assert.deepEqual(secondDevice.window.setscopeAuth.captureIdentity(), identity);
+});
+
 test('401 refresh and an old refresh timer cannot expire a newer login', async () => {
   const harness = await createHarness({ holds: ['refresh:refresh-a'], protectedStatuses: [401] });
   const oldTimer = [...harness.timers.values()].find(timer => timer.delay >= 15_000)?.callback;
@@ -329,4 +349,90 @@ test('concurrent same-session refreshes coalesce and preserve owner generation',
   assert.deepEqual(await Promise.all([first, second]), [true, true]);
   assert.equal(harness.currentSession().access_token, 'token-a-new');
   assert.deepEqual(harness.window.setscopeAuth.captureIdentity(), identity);
+});
+
+test('active refresh failure expires private UI without retrying private requests or deleting owner data', async () => {
+  const harness = await createHarness({ holds: ['refresh:refresh-a'], protectedStatuses: [401] });
+  const savedWatchlist = JSON.stringify({ ownerId: 'user-a', items: [{ symbol: 'PTT' }] });
+  harness.sessionStorage.setItem('fixture-owner-watchlist', savedWatchlist);
+  const request = harness.window.setscopeAuth.authorizedFetch('/api/protected');
+  const rejected = assert.rejects(request);
+  await harness.waitForPending('refresh:refresh-a');
+  harness.resolvePending('refresh:refresh-a', { error: 'fixture expired refresh' }, 400);
+  await rejected;
+  assert.equal(harness.currentSession(), null);
+  assert.equal(harness.document.body.classList.contains('authenticated'), false);
+  assert.equal(harness.getNode('#app-shell').attributes.get('aria-hidden'), 'true');
+  assert.equal(harness.sessionStorage.getItem('fixture-owner-watchlist'), savedWatchlist);
+  assert.equal(harness.calls.filter(call => call.key === 'protected').length, 1);
+  await assert.rejects(harness.window.setscopeAuth.authorizedFetch('/api/protected'));
+  assert.equal(harness.calls.filter(call => call.key === 'protected').length, 1);
+});
+
+test('callback credentials leave the URL before auth config completes and persist only session fields', async () => {
+  const harness = await createHarness({ initialSession: null, holds: ['config'], initialLocation: {
+    pathname: '/login', hash: '#access_token=token-a&refresh_token=refresh-a&expires_in=3600&provider_token=fixture-provider'
+  } });
+  assert.equal(harness.location.hash, '');
+  assert.equal(harness.currentSession(), null);
+  harness.resolvePending('config', { configured: true, url: 'https://project.supabase.co', anonKey: 'publishable-test' });
+  await harness.settle();
+  assert.equal(harness.window.setscopeAuth.user.id, 'user-a');
+  assert.deepEqual(Object.keys(harness.currentSession()).sort(), ['access_token', 'expires_at', 'refresh_token']);
+  assert.equal(harness.window.setscopeAuth.accessToken, undefined);
+});
+
+test('authenticated fetch rejects non-API or foreign destinations before making any request', async () => {
+  const harness = await createHarness();
+  const before = harness.calls.length;
+  for (const url of ['https://external.example/api/news', '//external.example/api/news', 'https://other.supabase.co/auth/v1/user', '/login', '/api/../outside']) {
+    await assert.rejects(harness.window.setscopeAuth.authorizedFetch(url), error => error.code === 'UNSAFE_AUTH_TARGET');
+  }
+  assert.equal(harness.calls.length, before);
+  const response = await harness.window.setscopeAuth.authorizedFetch('/api/protected');
+  assert.equal(response.status, 200);
+  assert.equal(harness.calls.at(-1).init.redirect, 'error');
+  assert.equal(harness.calls.at(-1).init.referrerPolicy, 'no-referrer');
+  let conversions = 0;
+  const changingTarget = { toString() { return ++conversions === 1 ? '/api/protected' : 'https://external.example/api/news'; } };
+  assert.equal((await harness.window.setscopeAuth.authorizedFetch(changingTarget)).status, 200);
+  assert.equal(conversions, 1);
+  assert.equal(harness.calls.at(-1).input, '/api/protected');
+});
+
+test('rejected rotated token fails closed after one refresh retry', async () => {
+  const harness = await createHarness({ protectedStatuses: [401, 401] });
+  await assert.rejects(harness.window.setscopeAuth.authorizedFetch('/api/protected'));
+  assert.equal(harness.currentSession(), null);
+  assert.equal(harness.document.body.classList.contains('authenticated'), false);
+  assert.equal(harness.calls.filter(call => call.key === 'protected').length, 2);
+  assert.equal(harness.calls.filter(call => call.key === 'refresh:refresh-a').length, 1);
+});
+
+test('login response metadata is not retained in session storage', async () => {
+  const harness = await createHarness({ initialSession: null });
+  await harness.submit('#login-form', { email: 'a@example.test', password: 'fixture' });
+  assert.deepEqual(Object.keys(harness.currentSession()).sort(), ['access_token', 'expires_at', 'refresh_token']);
+});
+
+test('invalid stored expiry never initializes a private session', async () => {
+  for (const expires_at of [null, 'invalid', -1]) {
+    const harness = await createHarness({ initialSession: { access_token: 'token-a', refresh_token: 'refresh-a', expires_at } });
+    assert.equal(harness.currentSession(), null);
+    assert.equal(harness.window.setscopeAuth.user, null);
+    assert.equal(harness.document.body.classList.contains('authenticated'), false);
+    assert.equal(harness.calls.filter(call => call.key.startsWith('user:')).length, 0);
+  }
+});
+
+test('malformed refresh expiry cannot overwrite valid stored tokens', async () => {
+  for (const expires_in of ['invalid', 0, 1e308]) {
+    const harness = await createHarness({ holds: ['refresh:refresh-a'] });
+    const before = harness.currentSession();
+    const refresh = harness.window.setscopeAuth.refresh();
+    await harness.waitForPending('refresh:refresh-a');
+    harness.resolvePending('refresh:refresh-a', { access_token: 'fixture-invalid-new', refresh_token: 'fixture-invalid-refresh', expires_in });
+    assert.equal(await refresh, false);
+    assert.deepEqual(harness.currentSession(), before);
+  }
 });

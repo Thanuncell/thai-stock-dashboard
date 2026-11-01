@@ -1,4 +1,10 @@
 (() => {
+  let authCallback = (() => {
+    const params = new URLSearchParams(location.hash.slice(1));
+    if (!['access_token', 'refresh_token', 'provider_token', 'provider_refresh_token'].some(key => params.has(key))) return null;
+    history.replaceState(null, '', location.pathname + location.search);
+    return { access_token: params.get('access_token'), refresh_token: params.get('refresh_token'), expires_in: params.get('expires_in') ?? 3600 };
+  })();
   const STORAGE_KEY = 'setscope-auth-session-v1';
   const AUTH_BOUNDARY_KEY = 'setscope-auth-boundary-v1';
   const THEME_KEY = 'setscope-theme';
@@ -59,10 +65,24 @@
     }
     throw lastError;
   }
-  function readSession() { try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null'); } catch (_) { return null; } }
+  function readSession() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null');
+      if (!value) return null;
+      if (typeof value.access_token !== 'string' || !value.access_token || !Number.isFinite(Number(value.expires_at)) || Number(value.expires_at) <= 0) {
+        sessionStorage.removeItem(STORAGE_KEY); return null;
+      }
+      return { access_token: value.access_token, refresh_token: typeof value.refresh_token === 'string' ? value.refresh_token : '', expires_at: Number(value.expires_at) };
+    } catch (_) { return null; }
+  }
   function writeSession(value) { session = value; if (value) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(value)); else sessionStorage.removeItem(STORAGE_KEY); }
   function replaceSession(value) { sessionGeneration += 1; writeSession(value); }
-  function sessionFrom(payload) { return { ...payload, expires_at: Date.now() + Number(payload.expires_in || 3600) * 1000 }; }
+  function sessionFrom(payload) {
+    const expiresIn = Number(payload.expires_in ?? 3600);
+    const expiresAt = Date.now() + expiresIn * 1000;
+    if (typeof payload.access_token !== 'string' || !payload.access_token || !Number.isFinite(expiresIn) || expiresIn <= 0 || !Number.isFinite(expiresAt)) throw Error('ข้อมูลเซสชันไม่ถูกต้อง กรุณาเข้าสู่ระบบอีกครั้ง');
+    return { access_token: payload.access_token, refresh_token: typeof payload.refresh_token === 'string' ? payload.refresh_token : '', expires_at: expiresAt };
+  }
   function captureSession() {
     return Object.freeze({
       generation: sessionGeneration,
@@ -121,7 +141,7 @@
     if (reload) window.location.reload();
   }
   async function authRequest(path, options = {}) {
-    const response = await fetch(`${config.url}/auth/v1/${path}`, { ...options, headers: { apikey: config.anonKey, 'Content-Type': 'application/json', ...(options.headers || {}) } });
+    const response = await fetch(`${config.url}/auth/v1/${path}`, { ...options, redirect: 'error', referrerPolicy: 'no-referrer', headers: { apikey: config.anonKey, 'Content-Type': 'application/json', ...(options.headers || {}) } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.msg || payload.message || payload.error_description || payload.error || 'ดำเนินการไม่สำเร็จ กรุณาลองอีกครั้ง');
     return payload;
@@ -306,11 +326,18 @@
     const accessToken = session?.access_token || '';
     endPrivateSession('logout', { broadcast: true, text: '' });
     const operationGeneration = authOperationGeneration;
-    try { if (accessToken) await authRequest('logout', { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } }); } catch (_) {}
+    try { if (accessToken) await authRequest('logout?scope=local', { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } }); } catch (_) {}
     if (!isCurrentAuthOperation(operationGeneration)) return;
     setMode('login', { replace: true }); window.location.reload();
   }
   async function authorizedFetch(url, options = {}) {
+    let target;
+    try { target = new URL(String(url), window.location.origin); } catch (_) {}
+    if (!target || target.origin !== window.location.origin || target.username || target.password || !target.pathname.startsWith('/api/')) {
+      throw Object.assign(Error('ปลายทางคำขอไม่ถูกต้อง'), { code: 'UNSAFE_AUTH_TARGET' });
+    }
+    url = target.pathname + target.search;
+    options = { ...options, redirect: 'error', referrerPolicy: 'no-referrer' };
     const operationGeneration = authOperationGeneration;
     const sessionState = captureSession();
     if (!await ensureFresh()) {
@@ -337,6 +364,10 @@
           headers.set('Authorization', `Bearer ${session.access_token}`);
           response = await fetch(url, { ...options, headers, signal: controller.signal });
           if (!isCurrentIdentity(identity) || !isCurrentAuthOperation(operationGeneration)) throw staleSessionError();
+          if (response.status === 401) {
+            endPrivateSession('expiry', { broadcast: true, reload: true });
+            throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง');
+          }
         } else {
           endPrivateSession('expiry', { broadcast: true, reload: true });
           throw new Error('กรุณาเข้าสู่ระบบอีกครั้ง');
@@ -351,7 +382,6 @@
     }
   }
   window.setscopeAuth = {
-    get accessToken() { return session?.access_token || ''; },
     get user() { return user; },
     captureIdentity,
     isCurrentIdentity,
@@ -377,7 +407,7 @@
     if (document.body.classList.contains('authenticated')) showDashboard();
     else setMode(modeFromPath(), { updateUrl: false });
   });
-  const isAuthCallback = location.hash.includes('access_token=');
+  const isAuthCallback = Boolean(authCallback?.access_token);
   if (session?.access_token || isAuthCallback) {
     document.body.classList.add('auth-checking');
     $('#auth-gate').setAttribute('aria-busy', 'true');
@@ -391,20 +421,20 @@
       message('กำลังเริ่มระบบ อาจใช้เวลาประมาณ 1 นาที');
       const response = await fetchWithWake('/api/auth-config', { cache: 'no-store' }); config = await response.json();
       if (!config.configured) {
+        authCallback = null;
         document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = true; });
         showLogin('ระบบสมาชิกยังไม่ได้ตั้งค่าใน Render (SUPABASE_URL และ SUPABASE_ANON_KEY)', 'error'); return;
       }
       document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = false; });
-      if (location.hash.includes('access_token=')) {
-        const params = new URLSearchParams(location.hash.slice(1));
-        if (params.get('access_token')) {
+      if (authCallback) {
+        const callback = authCallback; authCallback = null;
+        if (callback.access_token) {
           beginAuthOperation();
-          replaceSession(sessionFrom({ access_token: params.get('access_token'), refresh_token: params.get('refresh_token'), expires_in: params.get('expires_in') }));
-          history.replaceState(null, '', location.pathname + location.search);
+          replaceSession(sessionFrom(callback));
         }
       }
       const operationGeneration = authOperationGeneration;
       if (!await openDashboardIfValid(operationGeneration) && isCurrentAuthOperation(operationGeneration)) showLogin();
-    } catch (_) { showLogin('เชื่อมต่อระบบสมาชิกไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ', 'error'); }
+    } catch (_) { authCallback = null; showLogin('เชื่อมต่อระบบสมาชิกไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ', 'error'); }
   })();
 })();

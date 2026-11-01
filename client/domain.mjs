@@ -264,9 +264,7 @@ export function navigationUrl(state = {}, pathname = '/') {
     if (source !== 'all') params.set('source', source);
     if (page > 1) params.set('newsPage', String(page));
   } else if (route === 'watchlist') {
-    const watchlistId = validWatchlistId(state.watchlistId);
     const page = positivePage(state.watchPage);
-    if (watchlistId) params.set('watchlist', watchlistId);
     if (page > 1) params.set('watchPage', String(page));
   }
   const base = String(pathname || '/').startsWith('/') ? String(pathname || '/') : '/';

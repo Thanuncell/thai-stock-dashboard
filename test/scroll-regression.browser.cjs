@@ -27,7 +27,8 @@ const chartBars = Array.from({ length: 120 }, (_, index) => {
 const archiveItems = newsItems(33).map((item, index) => ({
   ...item,
   analysisSummary: index === 0 ? 'สรุปข่าวที่บันทึกไว้สำหรับการทดสอบ' : '',
-  analysisMode: index === 0 ? 'ai' : ''
+  analysisMode: index === 0 ? 'ai' : '',
+  ...(index === 0 ? { verification: { status: 'VERIFIED', basis: 'article' } } : {})
 }));
 
 function json(route, body, status = 200) {
@@ -176,6 +177,13 @@ async function pinch(cdp, page, center) {
 }
 
 async function run() {
+  const { newsDisplayAnalysis } = await import('../client/domain.mjs');
+  const storedSummary = archiveItems[0];
+  assert.equal(newsDisplayAnalysis(storedSummary)?.summary, storedSummary.analysisSummary);
+  assert.equal(newsDisplayAnalysis({ ...storedSummary, verification: undefined }), null);
+  for (const status of ['UNVERIFIED', 'REJECTED']) {
+    assert.equal(newsDisplayAnalysis({ ...storedSummary, verification: { status } }), null);
+  }
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const server = spawn(process.execPath, ['server.js'], {

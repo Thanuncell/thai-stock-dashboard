@@ -13,7 +13,7 @@ function createWatchlistService({ env = process.env, fetchImpl = globalThis.fetc
       headers: { apikey: env.SUPABASE_ANON_KEY, Authorization: authorization },
       signal: AbortSignal.timeout(8000)
     });
-    if (!upstream.ok) throw Error((await upstream.text()).slice(0, 300));
+    if (!upstream.ok) throw Error('WATCHLIST_PROVIDER_REQUEST_FAILED');
     const rows = await upstream.json();
     return rows[0] || null;
   }
@@ -36,7 +36,7 @@ function createWatchlistService({ env = process.env, fetchImpl = globalThis.fetc
       }),
       signal: AbortSignal.timeout(8000)
     });
-    if (!upstream.ok) throw Error((await upstream.text()).slice(0, 300));
+    if (!upstream.ok) throw Error('WATCHLIST_PROVIDER_REQUEST_FAILED');
   }
 
   return { load, save };

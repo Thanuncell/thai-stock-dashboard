@@ -141,6 +141,44 @@ if(require.main===module)(async () => {
   try {
     await waitForServer(`${baseUrl}/healthz`);
     browser = await chromium.launch({ headless: true, executablePath: process.env.SETSCOPE_BROWSER_EXECUTABLE || undefined });
+    for (const configured of [true, false]) {
+      const callbackContext = await browser.newContext();
+      let releaseConfig, configObserved = false;
+      const configGate = new Promise(resolve => { releaseConfig = resolve; });
+      const callbackState = { getOwners: [], putOwners: [] };
+      await callbackContext.route('**/*', async route => {
+        const url = new URL(route.request().url());
+        if (url.origin === baseUrl && url.pathname === '/api/auth-config') {
+          configObserved = true; await configGate;
+          return json(route, { configured, url: 'https://isolation-test.supabase.co', anonKey: 'public-browser-fixture' });
+        }
+        if (url.origin !== baseUrl && url.origin !== 'https://isolation-test.supabase.co') return route.abort();
+        return mockRequest(route, baseUrl, callbackState);
+      });
+      const callbackPage = await callbackContext.newPage();
+      await callbackPage.goto(`${baseUrl}/login#access_token=token-a&refresh_token=fixture-callback-refresh&expires_in=3600&provider_token=fixture-provider`, { waitUntil: 'domcontentloaded' });
+      await callbackPage.waitForFunction(() => !/(?:access_token|refresh_token|provider_token)=/.test(location.hash));
+      for (let attempt = 0; attempt < 50 && !configObserved; attempt++) await callbackPage.waitForTimeout(10);
+      assert.equal(configObserved, true);
+      assert.doesNotMatch(callbackPage.url(), /access_token|refresh_token|provider_token/);
+      assert.equal(await callbackPage.evaluate(() => sessionStorage.getItem('setscope-auth-session-v1')), null);
+      releaseConfig();
+      if (configured) {
+        await callbackPage.waitForSelector('body.authenticated');
+        const stored = await callbackPage.evaluate(() => ({
+          fields: Object.keys(JSON.parse(sessionStorage.getItem('setscope-auth-session-v1'))).sort(),
+          exposedToken: window.setscopeAuth.accessToken,
+          persistentSession: localStorage.getItem('setscope-auth-session-v1')
+        }));
+        assert.deepEqual(stored.fields, ['access_token', 'expires_at', 'refresh_token']);
+        assert.equal(stored.exposedToken, undefined); assert.equal(stored.persistentSession, null);
+      } else {
+        await callbackPage.waitForFunction(() => document.querySelector('#auth-message')?.textContent.includes('ยังไม่ได้ตั้งค่า'));
+        assert.equal(await callbackPage.evaluate(() => document.body.classList.contains('authenticated')), false);
+      }
+      await callbackContext.close();
+    }
+    console.log(JSON.stringify({ callbackScrubBeforeConfig: 'PASS', failedConfigCallbackPrivacy: 'PASS', sessionFieldMinimization: 'PASS' }));
     const context = await browser.newContext({ viewport: { width: 1000, height: 760 } });
     const state = { getOwners: [], putOwners: [], holdNextAPut: true, releaseAPut: null, holdNextLogout: false, releaseLogout: null, holdNextAGet: false, releaseAGet: null, holdNextAMarket: false, releaseAMarket: null };
     await context.route('**/*', route => mockRequest(route, baseUrl, state));

@@ -43,6 +43,9 @@ test('an old failed load cannot poison a newer valid cache entry after invalidat
 });
 
 test('actual protected manual trigger refreshes the next /api/market price, candles and provider as-of', async t => {
+  // Keep the real calendar/auth/cache paths, with one clock shared by their fixtures.
+  let fixtureNow = Date.parse('2026-10-26T10:00:00Z');
+  t.mock.method(Date, 'now', () => fixtureNow);
   process.env.SUPABASE_URL = 'https://fixture.supabase.co';
   process.env.SUPABASE_ANON_KEY = 'synthetic-publishable';
   process.env.SUPABASE_SECRET_KEY = 'synthetic-fixture';
@@ -83,4 +86,13 @@ test('actual protected manual trigger refreshes the next /api/market price, cand
   assert.ok(!['stale', 'unavailable', 'suspect'].includes(after.body.dataState));
   assert.notEqual(after.body.asOf, before.body.asOf);
   t.diagnostic(JSON.stringify({ trigger: run.body.metrics, apiCallsAcrossTwoLoads: db.calls.filter(call => call.url.hostname === 'query1.finance.yahoo.com').length - run.body.metrics.providerCalls }));
+
+  fixtureNow = Date.parse('2026-11-01T10:00:00Z');
+  const beforeWeekend = db.calls.length;
+  const weekend = await request('/api/automation/manual', { method: 'POST', auth: process.env.SETSCOPE_V156_TRIGGER_TOKEN, body: { tag: 'weekend' } });
+  assert.equal(weekend.status, 200);
+  assert.deepEqual(weekend.body, {
+    runKey: 'v156:coverage:2026-11-01:weekend', skipped: true, reason: 'NON_TRADING_DAY', schedulerEnabled: false
+  });
+  assert.equal(db.calls.length, beforeWeekend, 'non-trading day must skip before provider or database requests');
 });

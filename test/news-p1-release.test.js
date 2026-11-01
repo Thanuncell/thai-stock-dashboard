@@ -9,6 +9,22 @@ const gateEnv={SETSCOPE_NEWS_EVIDENCE:'write',SETSCOPE_P1_DISPLAY_GATE:'on'};
 const date=new Date(Date.now()-60000).toISOString(),url='https://thunhoon.com/article-identity-123',title='AMATA รายงานผลประกอบการและแผนลงทุนล่าสุด',slug='amata-กำไร-q3-ส่อวูบ-5-โบรกชี้ยอด';
 const html=(changes={})=>'<link rel="canonical" href="'+url+'"><script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url,headline:title,datePublished:date,articleBody:'AMATA รายงานรายละเอียดผลประกอบการและแผนลงทุนจากต้นฉบับ '.repeat(6),...changes})+'</script>';
 const rss=()=>'<rss><channel><item><title>'+slug+'</title><link>'+url+'</link><pubDate>'+date+'</pubDate><source>Thunhoon</source></item></channel></rss>';
+
+test('news analysis sends only public article fields to OpenAI and never forwards account metadata',async()=>{
+ const sent=[];
+ const service=createNewsService({env:{...gateEnv,OPENAI_API_KEY:'synthetic-openai-key'},
+  articleFetch:async(input,init)=>{assert.equal(String(input),url);assert.equal(new Headers(init?.headers).has('authorization'),false);return new Response(html(),{headers:{'content-type':'text/html'}});},
+  fetchImpl:async(input,init)=>{assert.equal(String(input),'https://api.openai.com/v1/responses');sent.push(init);return Response.json({status:'completed',output_text:JSON.stringify({items:[{id:0,summary:'สรุปจากข่าวต้นฉบับสำหรับการทดสอบ'}]})});}
+ });
+ const result=await service.analyse([{source:'thunhoon',sourceName:'Thunhoon',title,url,pubDate:date,snippet:'AMATA รายงานรายละเอียดผลประกอบการจากต้นฉบับ '.repeat(6),
+  ownerId:'fixture-private-owner',userId:'fixture-private-user',email:'fixture-private@example.test',watchlistId:'fixture-private-list',access_token:'fixture-private-access',refresh_token:'fixture-private-refresh'}]);
+ assert.equal(sent.length,1);assert.equal(result.items[0].mode,'ai');
+ const body=JSON.parse(sent[0].body);assert.equal(body.store,false);
+ const material=JSON.parse(body.input.slice(body.input.indexOf('\n')+1));
+ assert.deepEqual(Object.keys(material[0]).sort(),['articleText','basis','id','source','title']);
+ assert.doesNotMatch(sent[0].body,/fixture-private|access_token|refresh_token|watchlistId|ownerId/);
+ assert.equal(new Headers(sent[0].headers).get('authorization'),'Bearer synthetic-openai-key');
+});
 test('P1 Runtime: observed provider fetch never bypasses private DNS validation',async()=>{
  let unsafeCalls=0,sockets=0;const observed=createObservability({logger:{info(){}}}).observedFetch(async()=>{unsafeCalls++;return new Response('unsafe');});
  const transport=createNewsTransport({fetchImpl:observed,lookup:async()=>[{address:'127.0.0.1',family:4}],requestImpl:()=>{sockets++;}});

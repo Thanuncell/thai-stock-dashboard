@@ -58,12 +58,12 @@ const wholeNumber = value => value !== null && value !== undefined && value !== 
 const marketRequestSequence = createRequestSequence();
 const NAVIGATION_FALLBACK_KEY = 'setscope-navigation-fallback-v1';
 const navigationFallback = (() => {
-  try { return JSON.parse(sessionStorage.getItem(NAVIGATION_FALLBACK_KEY) || '{}'); } catch (_) { return {}; }
+  try { const value = JSON.parse(sessionStorage.getItem(NAVIGATION_FALLBACK_KEY) || '{}'); delete value.watchlistId; return value; } catch (_) { return {}; }
 })();
 const initialNavigation = parseNavigationState(location.href, navigationFallback);
 let userStorageScope = '';
 let watchlists = [{ id: 'list-1', name: 'Watchlist 1', items: [] }];
-const requestedWatchlistId = initialNavigation.route === 'watchlist' ? initialNavigation.watchlistId : '';
+let requestedWatchlistId = initialNavigation.route === 'watchlist' ? initialNavigation.watchlistId : '';
 let activeWatchlistId = requestedWatchlistId || 'list-1';
 let watchlist = currentWatchlist().items;
 let activeSymbol = initialNavigation.route === 'chart' ? initialNavigation.symbol : watchlist[0]?.symbol || 'PTT';
@@ -252,11 +252,13 @@ function currentNavigationState(route = document.body.dataset.workspacePage || i
 }
 function writeNavigation(mode = 'push', route) {
   const state = currentNavigationState(route);
+  const privateState = state.route === 'watchlist' ? { ownerId: userStorageScope, watchlistId: state.watchlistId } : null;
   const target = navigationUrl(state, location.pathname === '/login' || location.pathname === '/register' ? '/' : location.pathname);
   const current = `${location.pathname}${location.search}${location.hash}`;
-  try { sessionStorage.setItem(NAVIGATION_FALLBACK_KEY, JSON.stringify(state)); } catch (_) {}
-  if (target === current || mode === 'none') return;
-  history[mode === 'replace' ? 'replaceState' : 'pushState'](null, '', target);
+  const { watchlistId, ...publicState } = state;
+  try { sessionStorage.setItem(NAVIGATION_FALLBACK_KEY, JSON.stringify(publicState)); } catch (_) {}
+  if (mode === 'none' || (target === current && JSON.stringify(history.state?.setscopeWatchlist || null) === JSON.stringify(privateState))) return;
+  history[mode === 'replace' ? 'replaceState' : 'pushState'](privateState ? { setscopeWatchlist: privateState } : null, '', target);
 }
 function syncNavigationControls() {
   const search = $('#news-search'); if (search) search.value = newsQuery;
@@ -293,10 +295,12 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
 }
 let lastRestoredLocation = '';
 function restoreNavigationFromLocation() {
-  const locationKey = `${location.pathname}${location.search}${location.hash}`;
+  const stored = history.state?.setscopeWatchlist;
+  const ownedList = stored?.ownerId === userStorageScope ? stored.watchlistId : '';
+  const locationKey = `${userStorageScope}|${location.pathname}${location.search}${location.hash}|${ownedList}`;
   if (locationKey === lastRestoredLocation) return;
   lastRestoredLocation = locationKey;
-  const state = parseNavigationState(location.href, {...currentNavigationState(),newsPage:1,watchPage:1});
+  const state = parseNavigationState(location.href, {...currentNavigationState(),...(ownedList ? { watchlistId: ownedList } : {}),newsPage:1,watchPage:1});
   if(state.route==='news')clearTimeout(newsSearchTimer);
   const previousRoute = document.body.dataset.workspacePage;
   const previousSymbol = activeSymbol, previousRange = currentRange, previousWatchlist = activeWatchlistId;
@@ -467,6 +471,8 @@ function initializeUserScopedState() {
   }
   privateSessionIdentity = identity;
   userStorageScope = identity.ownerId;
+  requestedWatchlistId = history.state?.setscopeWatchlist?.ownerId === identity.ownerId
+    ? history.state.setscopeWatchlist.watchlistId : (initialNavigation.route === 'watchlist' ? initialNavigation.watchlistId : '');
   const snapshot = loadWatchlistSnapshot();
   watchlists = snapshot.watchlists;
   hasOwnedWatchlistData = snapshot.owned;
@@ -1461,8 +1467,11 @@ async function getWatchlistNews({ reason = 'refresh', resetPage = false } = {}) 
   renderWatchlistNews();
   if (button) { button.disabled = true; button.classList.add('is-loading'); }
   try {
-    const stockQuery = encodeURIComponent(JSON.stringify(watchlist.map(item => ({ symbol: item.symbol, name: item.name || item.symbol }))));
-    const response = await apiFetch(`/api/watchlist-news?stocks=${stockQuery}${reason==='manual'?'&refresh=1':''}`,controller?{signal:controller.signal}:undefined);
+    const response = await apiFetch('/api/watchlist-news', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ stocks: watchlist.map(item => ({ symbol: item.symbol })), refresh: reason === 'manual' }),
+      ...(controller ? { signal: controller.signal } : {})
+    });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'โหลดข่าว Watchlist ไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || requestId !== watchlistNewsRequestId || scope!==currentWatchlistNewsScope()) return;

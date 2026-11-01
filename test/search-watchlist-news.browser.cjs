@@ -25,7 +25,9 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
      const items=(q==='amata'?['AMATA']:q==='tha'?['THAI','THANI']:q==='ptt'?['PTT']:q==='thani'?['THANI']:q==='thai'?['THAI']:[]).map(symbol=>({symbol,name:({AMATA:'AMATA CORPORATION PUBLIC COMPANY LIMITED',THAI:'THAI AIRWAYS INTERNATIONAL PUBLIC COMPANY LIMITED',THANI:'Ratchthani Leasing Public Company Limited'})[symbol]||symbol,exchange:'SET'}));return json({items});
     }
     if(url.origin===base&&url.pathname==='/api/watchlist-news'){
-     const stocks=JSON.parse(url.searchParams.get('stocks')),symbol=stocks[0]?.symbol||'NONE';
+     assert.equal(request.method(),'POST');assert.equal(url.search,'');
+     const stocks=request.postDataJSON().stocks,symbol=stocks[0]?.symbol||'NONE';
+     for(const stock of stocks)assert.deepEqual(Object.keys(stock),['symbol']);
      if(state.newsHold===symbol){state.newsHold=null;await new Promise(resolve=>{state.releaseNews=resolve;});}
      if(state.newsError)return state.newsError==='unavailable'?json({items:[],dataState:'unavailable'}):json({error:'fixture unavailable'},503);
      return json({items:[{title:symbol+' ข่าวผลประกอบการของบัญชี '+owner,source:'thunhoon',sourceName:'ทันหุ้น',url:'https://thunhoon.com/article/'+symbol,

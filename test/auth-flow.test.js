@@ -106,7 +106,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
       protectedCalls += 1;
       return new nativeResponse('', { status: protectedCalls === 1 ? 401 : 200 });
     }
-    if (url.endsWith('/auth/v1/logout')) return new nativeResponse('', { status: 204 });
+    if (url.endsWith('/auth/v1/logout?scope=local')) return new nativeResponse(null, { status: 204 });
     throw new Error(`Unexpected fetch ${url}`);
   };
 
@@ -159,6 +159,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
     setTimeout: () => 1,
     clearTimeout: () => {},
     URLSearchParams,
+    URL,
     window
   });
   const source = fs.readFileSync(path.join(__dirname, '..', 'auth.js'), 'utf8');
@@ -182,6 +183,8 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   assert.deepEqual(window.setscopeAuth.captureIdentity(), identityBeforeRefresh);
 
   await getNode('#logout-button').listeners.get('click')();
+  assert.equal(calls.filter(call => call.url.includes('/auth/v1/logout')).length, 1);
+  assert.ok(calls.some(call => call.url.endsWith('/auth/v1/logout?scope=local')));
   assert.equal(location.pathname, '/login');
   assert.equal(window.reloadCalled, true);
 
