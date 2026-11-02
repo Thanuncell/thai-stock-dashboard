@@ -221,7 +221,7 @@ test('Market Overview display labels, units and unavailable copy remain truthful
   assert.doesNotMatch(indexSource, /SET \/ mai · สถิติขึ้น–ลง|ข้อมูลและความถี่ขึ้นกับต้นทาง/);
   assert.match(indexSource, /มูลค่าซื้อขาย SET \+ mai/);
   assert.doesNotMatch(indexSource, /มูลค่าตลาด SET \+ mai/);
-  assert.match(appSource, /ข้อมูลล่าช้า \$\{tfexDelayLabel\} นาที/);
+  assert.match(appSource, /ต้นทางระบุล่าช้า \$\{tfexDelayLabel\} นาที/);
   assert.doesNotMatch(appSource, /อ้างอิงแหล่งข้อมูลด้านล่าง|โปรดตรวจสอบจากแหล่งข้อมูลด้านล่าง/);
   assert.match(appSource, /มีข้อมูล \$\{tfex\.topVolume\?\.length \|\| 0\} รายการ/);
   assert.match(appSource, /ยังไม่มีสรุปภาวะตลาดรอบนี้/);
@@ -233,7 +233,9 @@ test('Market Overview has deterministic startup banner ownership and truthful fr
   assert.match(appSource, /resolveMarketBannerFields\(overviewIndex, marketIndex\)/);
   assert.doesNotMatch(appSource, /volumeThousand \* 1000/);
   assert.match(appSource, /marketOverviewStatus\(data\)/);
-  assert.match(domainSource, /แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด:/);
+  assert.match(domainSource, /เวลาตลาดยังไม่ยืนยัน/);
+  assert.match(domainSource, /รับข้อมูลเมื่อ:/);
+  assert.doesNotMatch(domainSource, /indexAsOf \|\| data\.fetchedAt/);
   assert.match(domainSource, /ข้อมูลที่บันทึกล่าสุด \(LKG\)/);
   assert.match(appSource, /updateTradingViewChart\(\);\s*getMarket\(\);\s*getSettradeOverview\(\);/);
 });

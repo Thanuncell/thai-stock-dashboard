@@ -17,6 +17,9 @@ import {
   formatSearchCompanyName,
   mergeWatchlists,
   marketOverviewStatus,
+  tfexOverviewContext,
+  activeOverviewContext,
+  activeAmountDisplay,
   navigationUrl,
   newsKey, newsSecuritySymbols, newsClickUrl, normalizeNewsSources,
   normalizeLists,
@@ -550,14 +553,20 @@ function renderSettradeOverview(data) {
   const tfex = data.tfex || {};
   const tfexDelayMinutes = toFiniteNumber(tfex.delayMinutes) ?? 15;
   const tfexDelayLabel = Number.isInteger(tfexDelayMinutes) ? String(tfexDelayMinutes) : number(tfexDelayMinutes);
+  const tfexContext = tfexOverviewContext(data.fieldStatus?.tfex);
+  const tfexProvenance = `<small class="tfex-source-label">${escapeHtml(tfexContext.sourceLabel)} · ${escapeHtml(tfexContext.stateLabel)}</small>
+    <small class="tfex-source-updated">${escapeHtml(tfexContext.updated)}</small>
+    <details class="tfex-data-context"><summary>เวลาและรอบอ้างอิงข้อมูล</summary>
+      <small>${escapeHtml(tfexContext.received)}</small><small>${escapeHtml(tfexContext.volumeEffective)}</small>
+      <small>${escapeHtml(tfexContext.oiReference)}</small><small>${escapeHtml(tfexContext.oiEffective)}</small></details>`;
   $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => {
     if (symbol === 'TFEX') {
-      if (!tfex.available) return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ข้อมูลยังไม่พร้อม</strong><small>ข้อมูลล่าช้า ${tfexDelayLabel} นาที</small></article>`;
+      if (!tfex.available || !tfexContext.displayable) return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ข้อมูลยังไม่พร้อม</strong><small>ต้นทางระบุล่าช้า ${tfexDelayLabel} นาที</small>${tfexProvenance}</article>`;
       const volume = toFiniteNumber(tfex.totalVolume);
       const openInterest = toFiniteNumber(tfex.openInterest);
       const primary = volume === null ? `มีข้อมูล ${tfex.topVolume?.length || 0} รายการ` : `${number(volume)} สัญญา`;
       const detail = openInterest === null ? 'สถานะคงค้างยังไม่พร้อม' : `สถานะคงค้าง ${number(openInterest)} สัญญา`;
-      return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>${primary}</strong><small>${detail} · ล่าช้า ${tfexDelayLabel} นาที</small></article>`;
+      return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>${primary}</strong><small>${detail} · ต้นทางระบุล่าช้า ${tfexDelayLabel} นาที</small>${tfexProvenance}</article>`;
     }
     const item = indices.find(row => row.symbol === symbol);
     if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
@@ -585,6 +594,13 @@ function renderSettradeOverview(data) {
     const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
     return `<tr><td>${breadthLabels[key] || escapeHtml(item.label)}</td><td>${number(item.count)}</td><td>${number(item.volumeThousand)}</td></tr>`;
   }).join('')}</tbody></table>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
+  if (data.fieldStatus?.breadth?.partial) {
+    const message = data.fieldStatus.breadth.coverageReason === 'MAI_BREADTH_LABELS_UNVERIFIED'
+      ? 'ข้อมูล mai ยังไม่ครบ: ยังไม่ยืนยันความหมายของสถานะหุ้น'
+      : 'ข้อมูล breadth ของ mai ยังไม่พร้อม';
+    $('#market-breadth-list').innerHTML += `<p class="market-empty" data-breadth-warning>${escapeHtml(message)}</p>`;
+    if (conditionNode) conditionNode.textContent += ' · ข้อมูล breadth ยังไม่ครบ';
+  }
   setText('#market-close-summary', data.closeSummary || 'ยังไม่มีสรุปภาวะตลาดรอบนี้');
   const nvdr = data.nvdr || {};
   const marketMillion = toFiniteNumber(nvdr.marketMillion), nvdrMillion = toFiniteNumber(nvdr.nvdrMillion), ratioPercent = toFiniteNumber(nvdr.ratioPercent);
@@ -592,22 +608,29 @@ function renderSettradeOverview(data) {
   const foreign = data.foreign || {};
   const net = toFiniteNumber(foreign.netMillion);
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(net)}</strong><small>${net === null ? 'ข้อมูลยังไม่พร้อม' : `ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}`}</small>`;
-  const activeRows = (Array.isArray(data.activeValue) ? data.activeValue : []).filter(item =>
+  const activeContext = activeOverviewContext(data);
+  const activeStatus = data.fieldStatus?.activeValue || {};
+  const activeRows = (activeContext.displayable && Array.isArray(data.activeValue) ? data.activeValue : []).filter(item =>
     typeof item?.symbol === 'string' && item.symbol.trim()
     && toFiniteNumber(item.rank) > 0
-    && [item.last, item.change, item.changePercent, item.turnoverMillion].every(value => toFiniteNumber(value) !== null)
-    && toFiniteNumber(item.turnoverMillion) >= 0
+    && [item.last, item.change, item.changePercent].every(value => toFiniteNumber(value) !== null)
+    && activeAmountDisplay(item, activeStatus).mode !== 'INVALID'
   );
   const activeRoot = $('#active-value-content');
   if (activeRoot) {
+    const amountsLabelled = activeRows.every(item => activeAmountDisplay(item, activeStatus).mode === 'MILLION_BAHT');
+    const amountHeading = amountsLabelled ? 'มูลค่า (ลบ.)' : 'มูลค่าจากต้นทาง';
     activeRoot.className = activeRows.length ? 'market-active-table-wrap' : 'market-live-placeholder';
     activeRoot.innerHTML = activeRows.length
-      ? `<table class="market-active-table"><thead><tr><th>หุ้น</th><th>ล่าสุด</th><th>เปลี่ยนแปลง</th><th>มูลค่า (ลบ.)</th></tr></thead><tbody>${activeRows.slice(0, 10).map(item => {
+      ? `<table class="market-active-table"><thead><tr><th>หุ้น</th><th>ล่าสุด</th><th>เปลี่ยนแปลง</th><th>${amountHeading}</th></tr></thead><tbody>${activeRows.slice(0, 10).map(item => {
           const change = toFiniteNumber(item.change);
           const trend = change > 0 ? 'up' : change < 0 ? 'down' : '';
-          return `<tr><td><b>${escapeHtml(item.symbol)}</b><small>#${number(item.rank)}</small></td><td>${number(item.last)}</td><td class="${trend}">${change > 0 ? '+' : ''}${number(change)} (${number(item.changePercent)}%)</td><td>${number(item.turnoverMillion)}</td></tr>`;
-        }).join('')}</tbody></table><small class="market-source-caption">${escapeHtml(data.activeValueStatus || 'ข้อมูลจัดอันดับจาก SETTRADE')}</small>`
-      : `<span class="market-placeholder-icon">↗</span><div><strong id="active-value-status">${escapeHtml(data.activeValueStatus || 'ตารางจัดอันดับยังโหลดไม่สำเร็จจากต้นทาง')}</strong><p>ต้นทางยังไม่ส่งข้อมูลตารางแบบอ่านได้</p></div>`;
+          const amount = activeAmountDisplay(item, activeStatus);
+          const amountText = amount.mode === 'RAW' ? escapeHtml(String(amount.value)) : amount.mode === 'MILLION_BAHT' ? number(amount.value) : '—';
+          const amountUnit = amountsLabelled ? '' : `<small>${escapeHtml(amount.label)}</small>`;
+          return `<tr><td><b>${escapeHtml(item.symbol)}</b><small>#${number(item.rank)}</small></td><td>${number(item.last)}</td><td class="${trend}">${change > 0 ? '+' : ''}${number(change)} (${number(item.changePercent)}%)</td><td>${amountText}${amountUnit}</td></tr>`;
+        }).join('')}</tbody></table><small class="market-source-caption">${escapeHtml(activeContext.caption)}</small>`
+      : `<span class="market-placeholder-icon">↗</span><div><strong id="active-value-status">${escapeHtml(activeContext.caption)}</strong><p>โปรดตรวจสถานะข้อมูลและเวลาที่ต้นทางรายงาน</p></div>`;
   }
   setText('#settrade-updated', marketOverviewStatus(data));
 }
@@ -627,6 +650,12 @@ async function getSettradeOverview(force = false) {
   } catch (error) {
     if (!isCurrentPrivateIdentity(identity)) return;
     console.warn('SETTRADE overview refresh failed', error);
+    if (latestSettradeOverview) renderSettradeOverview({ ...latestSettradeOverview,
+      tfex: { ...latestSettradeOverview.tfex, available: false, totalVolume: null, openInterest: null }, activeValue: [],
+      fieldStatus: { ...latestSettradeOverview.fieldStatus,
+        tfex: { ...latestSettradeOverview.fieldStatus?.tfex, state: 'UNAVAILABLE' },
+        activeValue: { state: 'UNAVAILABLE' } },
+      activeValueStatus: 'อัปเดตไม่สำเร็จ จึงยังไม่ยืนยันความสดของข้อมูลจัดอันดับ' });
     setText('#settrade-updated', 'อัปเดตข้อมูลไม่สำเร็จ');
   } finally {
     if (button) { button.disabled = false; button.classList.remove('is-loading'); button.textContent = '↻ อัปเดตข้อมูลตลาด'; }

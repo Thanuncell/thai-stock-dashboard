@@ -6,6 +6,83 @@ const assert = require('node:assert/strict');
 let domain;
 test.before(async () => { domain = await import('../client/domain.mjs'); });
 
+test('AOM contract UI: raw quantities carry no claimed unit or inferred normalization',()=>{
+ const row={turnoverMillion:null,volumeThousand:null,sourceQuantities:{origin:'SETTRADE_AOM',value:{sourceField:'aomValue',raw:0.001,unit:null},volume:{sourceField:'aomVolume',raw:1000,unit:null}}};
+ const display=domain.activeAmountDisplay(row,{quantityStatus:'UNVERIFIED'});
+ assert.deepEqual(display,{mode:'RAW',value:0.001,label:'ค่าดิบ · ยังไม่ยืนยันหน่วย'});
+ assert.equal(domain.activeAmountDisplay({...row,sourceQuantities:{...row.sourceQuantities,value:{...row.sourceQuantities.value,raw:0}}},{quantityStatus:'UNVERIFIED'}).value,0);
+});
+
+test('AOM contract UI: absent provenance cannot make legacy normalized numbers authoritative',()=>{
+ assert.equal(domain.activeAmountDisplay({turnoverMillion:4864.4934,volumeThousand:24004.2},{}).mode,'UNAVAILABLE');
+ assert.deepEqual(domain.activeAmountDisplay({turnoverMillion:4521.3,volumeThousand:25100.5},{quantityStatus:'HTML_LABELLED'}),{mode:'MILLION_BAHT',value:4521.3,label:'ล้านบาท'});
+});
+
+test('AOM evidence-supported UI uses normalized millions once and retains the separate raw baht/share values',()=>{
+ const row={turnoverMillion:4864.4934,volumeThousand:24004.2,sourceQuantities:{origin:'SETTRADE_AOM',basis:'SET_AOM_BAHT_SHARES',verification:'EVIDENCE_SUPPORTED',value:{sourceField:'aomValue',raw:4864493400,unit:'baht'},volume:{sourceField:'aomVolume',raw:24004200,unit:'shares'}}};
+ assert.deepEqual(domain.activeAmountDisplay(row,{quantityStatus:'EVIDENCE_SUPPORTED'}),{mode:'MILLION_BAHT',value:4864.4934,label:'ล้านบาท'});
+ assert.equal(domain.activeAmountDisplay({...row,turnoverMillion:row.turnoverMillion/1000000},{quantityStatus:'EVIDENCE_SUPPORTED'}).mode,'INVALID');
+ assert.equal(row.sourceQuantities.value.raw,4864493400);assert.equal(row.sourceQuantities.volume.raw,24004200);
+ const context=domain.activeOverviewContext({activeValue:[row],fieldStatus:{activeValue:{state:'PASS',sourceUpdatedAt:'2026-11-02T16:51:48+07:00',fetchedAt:'2026-11-02T09:52:07Z',quantityStatus:'EVIDENCE_SUPPORTED'}}});
+ assert.doesNotMatch(context.caption,/หน่วยมูลค่า\/ปริมาณยังไม่ยืนยัน/);assert.match(context.caption,/Trading Session ยังไม่ยืนยัน/);
+});
+
+test('AOM contract UI: forged normalized AOM fields or fabricated units never render as labelled money',()=>{
+ const sourceQuantities={origin:'SETTRADE_AOM',value:{sourceField:'aomValue',raw:1000000,unit:null},volume:{sourceField:'aomVolume',raw:1000,unit:null}};
+ assert.equal(domain.activeAmountDisplay({turnoverMillion:1,volumeThousand:null,sourceQuantities},{quantityStatus:'HTML_LABELLED'}).mode,'INVALID');
+ assert.equal(domain.activeAmountDisplay({turnoverMillion:null,volumeThousand:null,sourceQuantities:{...sourceQuantities,value:{...sourceQuantities.value,unit:'million_baht'}}},{quantityStatus:'HTML_LABELLED'}).mode,'INVALID');
+});
+
+test('AOM contract UI: source update and fetch time are shown without inventing a completed trading session',()=>{
+ const c=domain.activeOverviewContext({activeValue:[{}],fieldStatus:{activeValue:{state:'PASS',sourceUpdatedAt:'2026-11-02T16:51:48+07:00',reportedAsOf:'2026-11-02T16:51:48+07:00',fetchedAt:'2026-11-02T09:52:07Z',sessionContext:'SESSION_SNAPSHOT',quantityStatus:'UNVERIFIED',tradingSessionDate:null}}});
+ assert.match(c.caption,/ต้นทางรายงาน.*รับข้อมูลเมื่อ.*Trading Session ยังไม่ยืนยัน/s);
+ assert.doesNotMatch(c.caption,/อ้างอิงรอบที่สิ้นสุดแล้ว|ข้อมูลล่าสุด/);
+});
+
+test('TFEX context separates source clock, receipt and unknown effective times', () => {
+ const status={source:'TFEX',state:'LKG',sourceUpdatedAt:'2026-11-02T15:01:31+07:00',fetchedAt:'2026-11-02T08:16:34.778Z',
+  volumeEffectiveTime:null,openInterestEffectiveTime:null,openInterestReference:{daySession:'PREVIOUS_NIGHT_SESSION',nightSession:'CURRENT_AFTERNOON_SESSION'}};
+ const context=domain.tfexOverviewContext(status);
+ assert.equal(context.sourceLabel,'TFEX Official');assert.equal(context.saved,true);
+ assert.ok(context.updated.includes(domain.overviewSourceStamp(status.sourceUpdatedAt)));assert.ok(context.received.includes(domain.overviewSourceStamp(status.fetchedAt)));
+ assert.match(context.volumeEffective,/ยังไม่ยืนยัน/);assert.match(context.oiEffective,/ยังไม่ยืนยัน/);assert.match(context.oiReference,/Night Session ก่อนหน้า/);
+ assert.match(domain.marketOverviewStatus({fieldStatus:{tfex:status}}),/TFEX Official/);
+});
+
+test('P1 TFEX LKG and unverified effective time have explicit state and full source date including year', () => {
+ const status={state:'LKG',source:'TFEX',sourceUpdatedAt:'2026-10-20T22:19:18+07:00',fetchedAt:'2026-10-20T15:20:00Z'};
+ const c=domain.tfexOverviewContext(status);
+ assert.match(c.stateLabel,/ข้อมูลเก่า.*LKG/);assert.match(c.updated,/2569/);
+ assert.doesNotMatch(c.stateLabel,/ข้อมูลล่าสุด/);assert.equal(c.displayable,true);
+ assert.match(domain.tfexOverviewContext({...status,state:'PASS'}).stateLabel,/Snapshot.*ยังไม่ยืนยัน/);
+});
+
+for (const state of ['UNAVAILABLE', undefined, 'fresh']) test('P1 UI refuses TFEX numeric payload when field status is '+state,()=>{
+ assert.equal(domain.tfexOverviewContext({state,source:'TFEX',sourceUpdatedAt:'2026-10-20T22:19:18+07:00'}).displayable,false);
+});
+
+test('P1 UI refuses missing/invalid source clocks rather than using receipt time',()=>{
+ for(const clock of [undefined,'bad','2026-02-30T12:00:00+07:00']) {
+  assert.equal(domain.tfexOverviewContext({state:'PASS',source:'TFEX',sourceUpdatedAt:clock,fetchedAt:'2026-11-02T08:00:00Z'}).displayable,false);
+  assert.equal(domain.activeOverviewContext({fieldStatus:{activeValue:{state:'PASS',sourceUpdatedAt:clock}},activeValueStatus:'ข้อมูลล่าสุด'}).displayable,false);
+ }
+});
+
+test('P1 Most Active caption derives dated LKG/Snapshot from metadata, ignoring unsubstantiated latest caption',()=>{
+ const status={state:'LKG',source:'SETTRADE',sourceUpdatedAt:'2026-10-20T22:19:18+07:00',reportedAsOf:'20 ต.ค. 2569 22:19:18',sessionContext:'SESSION_SNAPSHOT'};
+ const data={activeValue:[{}],fieldStatus:{activeValue:status},activeValueStatus:'ข้อมูลล่าสุด'};
+ const c=domain.activeOverviewContext(data);assert.equal(c.displayable,true);assert.match(c.caption,/LKG.*20 ต.ค. 2569/);
+ assert.doesNotMatch(c.caption,/ข้อมูลล่าสุด/);
+ const snapshot=domain.activeOverviewContext({...data,fieldStatus:{activeValue:{...status,state:'PASS'}}});
+ assert.match(snapshot.caption,/Snapshot/);assert.doesNotMatch(snapshot.caption,/ข้อมูลล่าสุด/);
+});
+
+test('TFEX missing metadata cannot borrow the aggregate fetch clock or relabel an old source', () => {
+ const context=domain.tfexOverviewContext({source:'SETTRADE',asOf:'2026-11-02T08:16:34.778Z'});
+ assert.equal(context.sourceLabel,'SETTRADE');assert.match(context.updated,/ยังไม่ยืนยัน/);assert.match(context.received,/ยังไม่ยืนยัน/);
+ assert.match(context.oiReference,/ยังไม่ยืนยัน/);assert.equal(context.saved,false);
+});
+
 test('retained Watchlist items intersect current stocks, merge identities and drop expired/negative news',()=>{
  const time=Date.now(),item={title:'public',url:'https://www.kaohoon.com/news/shared',pubDate:new Date(time).toISOString(),matchedSymbols:['PTT','OR'],verification:{status:'VERIFIED',basis:'article',reason:'ARTICLE_IDENTITY_VERIFIED',displayPolicy:'news-display-1'}};
  const items=domain.retainWatchlistNews([item,{...item,url:item.url+'?utm_source=rss',matchedSymbols:['KBANK']},{...item,url:item.url+'expired',pubDate:new Date(time-31*86400000).toISOString()},{...item,url:item.url+'bad',verification:{status:'REJECTED'}}],[{symbol:'PTT'},{symbol:'KBANK'}],time);
@@ -303,7 +380,8 @@ test('Market Overview banner keeps truthful LKG or unavailable SETTRADE index st
   });
   assert.match(lkgStatus, /ข้อมูลที่บันทึกล่าสุด \(LKG\)$/);
   assert.ok(lkgStatus.includes(domain.stamp(savedAt)));
-  assert.ok(!lkgStatus.includes(domain.stamp(refreshedAt)));
+  assert.ok(lkgStatus.includes(`รับข้อมูลเมื่อ: ${domain.stamp(refreshedAt)}`));
+  assert.ok(lkgStatus.includes(`เวลาตลาด: ${domain.stamp(savedAt)}`));
 
   const passAt = '2026-10-23T07:59:00.000Z';
   const passStatus = domain.marketOverviewStatus({
@@ -321,7 +399,8 @@ test('Market Overview banner keeps truthful LKG or unavailable SETTRADE index st
 test('Market Overview freshness label distinguishes current, partial and LKG data', () => {
   const fetchedAt = '2026-10-21T07:16:21.000Z';
   const fresh = domain.marketOverviewStatus({ fetchedAt, dataState: 'fresh', fieldStatus: {} });
-  assert.match(fresh, /^แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: /);
+  assert.match(fresh, /^แหล่งข้อมูล SETTRADE · เวลาตลาดยังไม่ยืนยัน · รับข้อมูลเมื่อ: /);
+  assert.doesNotMatch(fresh, /อัปเดตล่าสุด/);
   assert.doesNotMatch(fresh, /LKG|บางส่วนไม่พร้อม/);
 
   const partial = domain.marketOverviewStatus({ fetchedAt, dataState: 'partial', fieldStatus: {} });
