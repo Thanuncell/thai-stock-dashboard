@@ -16,7 +16,7 @@ import {
   findPriceLevels,
   formatSearchCompanyName,
   mergeWatchlists,
-  marketOverviewStatus,
+  overviewSourceStamp,
   tfexOverviewContext,
   activeOverviewContext,
   activeAmountDisplay,
@@ -554,19 +554,16 @@ function renderSettradeOverview(data) {
   const tfexDelayMinutes = toFiniteNumber(tfex.delayMinutes) ?? 15;
   const tfexDelayLabel = Number.isInteger(tfexDelayMinutes) ? String(tfexDelayMinutes) : number(tfexDelayMinutes);
   const tfexContext = tfexOverviewContext(data.fieldStatus?.tfex);
-  const tfexProvenance = `<small class="tfex-source-label">${escapeHtml(tfexContext.sourceLabel)} · ${escapeHtml(tfexContext.stateLabel)}</small>
-    <small class="tfex-source-updated">${escapeHtml(tfexContext.updated)}</small>
-    <details class="tfex-data-context"><summary>เวลาและรอบอ้างอิงข้อมูล</summary>
-      <small>${escapeHtml(tfexContext.received)}</small><small>${escapeHtml(tfexContext.volumeEffective)}</small>
-      <small>${escapeHtml(tfexContext.oiReference)}</small><small>${escapeHtml(tfexContext.oiEffective)}</small></details>`;
+  const tfexSaved = tfexContext.saved || data.fieldStatus?.tfex?.stale;
+  const tfexLabel = `TFEX${tfexSaved ? ' <em class="market-saved-label">ข้อมูลเก่า</em>' : ''}`;
   $('#market-index-grid').innerHTML = ['SET', 'mai', 'TFEX'].map(symbol => {
     if (symbol === 'TFEX') {
-      if (!tfex.available || !tfexContext.displayable) return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>ข้อมูลยังไม่พร้อม</strong><small>ต้นทางระบุล่าช้า ${tfexDelayLabel} นาที</small>${tfexProvenance}</article>`;
+      if (!tfex.available || !tfexContext.displayable) return `<article class="market-index-card market-index-card-tfex" aria-label="${escapeHtml(tfexContext.sourceLabel)}"><span>TFEX</span><strong>ข้อมูลยังไม่พร้อม</strong><small>ข้อมูลล่าช้า ${tfexDelayLabel} นาที</small></article>`;
       const volume = toFiniteNumber(tfex.totalVolume);
       const openInterest = toFiniteNumber(tfex.openInterest);
       const primary = volume === null ? `มีข้อมูล ${tfex.topVolume?.length || 0} รายการ` : `${number(volume)} สัญญา`;
       const detail = openInterest === null ? 'สถานะคงค้างยังไม่พร้อม' : `สถานะคงค้าง ${number(openInterest)} สัญญา`;
-      return `<article class="market-index-card market-index-card-tfex"><span>TFEX</span><strong>${primary}</strong><small>${detail} · ต้นทางระบุล่าช้า ${tfexDelayLabel} นาที</small>${tfexProvenance}</article>`;
+      return `<article class="market-index-card market-index-card-tfex" aria-label="${escapeHtml(tfexContext.sourceLabel)}"><span>${tfexLabel}</span><strong>${primary}<span class="tfex-open-interest">${detail}</span></strong><small>ข้อมูลล่าช้า ${tfexDelayLabel} นาที</small></article>`;
     }
     const item = indices.find(row => row.symbol === symbol);
     if (!item) return `<article class="market-index-card"><span>${symbol}</span><strong>—</strong><small>ต้นทางยังไม่ส่งข้อมูล</small></article>`;
@@ -610,6 +607,9 @@ function renderSettradeOverview(data) {
   $('#foreign-flow').innerHTML = `<span>ซื้อสุทธิต่างชาติ (รายวัน)</span><strong class="${net > 0 ? 'up' : net < 0 ? 'down' : ''}">${net > 0 ? '+' : ''}${number(net)}</strong><small>${net === null ? 'ข้อมูลยังไม่พร้อม' : `ล้านบาท · ${escapeHtml(foreign.date || 'วันที่อัปเดตยังไม่ทราบ')}`}</small>`;
   const activeContext = activeOverviewContext(data);
   const activeStatus = data.fieldStatus?.activeValue || {};
+  const activeSaved = activeStatus.state === 'LKG' || activeStatus.stale || data.stale || data.dataState === 'stale';
+  const activeCaption = activeContext.displayable
+    ? `${activeSaved ? 'ข้อมูลเก่า' : 'อัปเดตล่าสุด'} ${overviewSourceStamp(activeStatus.sourceUpdatedAt)}` : '';
   const activeRows = (activeContext.displayable && Array.isArray(data.activeValue) ? data.activeValue : []).filter(item =>
     typeof item?.symbol === 'string' && item.symbol.trim()
     && toFiniteNumber(item.rank) > 0
@@ -622,17 +622,17 @@ function renderSettradeOverview(data) {
     const amountHeading = amountsLabelled ? 'มูลค่า (ลบ.)' : 'มูลค่าจากต้นทาง';
     activeRoot.className = activeRows.length ? 'market-active-table-wrap' : 'market-live-placeholder';
     activeRoot.innerHTML = activeRows.length
-      ? `<table class="market-active-table"><thead><tr><th>หุ้น</th><th>ล่าสุด</th><th>เปลี่ยนแปลง</th><th>${amountHeading}</th></tr></thead><tbody>${activeRows.slice(0, 10).map(item => {
+      ? `<table class="market-active-table"><thead><tr><th>หุ้น</th><th>ล่าสุด</th><th>เปลี่ยนแปลง</th><th>${amountHeading}</th></tr></thead><tbody>${activeRows.slice(0, 20).map(item => {
           const change = toFiniteNumber(item.change);
           const trend = change > 0 ? 'up' : change < 0 ? 'down' : '';
           const amount = activeAmountDisplay(item, activeStatus);
           const amountText = amount.mode === 'RAW' ? escapeHtml(String(amount.value)) : amount.mode === 'MILLION_BAHT' ? number(amount.value) : '—';
           const amountUnit = amountsLabelled ? '' : `<small>${escapeHtml(amount.label)}</small>`;
           return `<tr><td><b>${escapeHtml(item.symbol)}</b><small>#${number(item.rank)}</small></td><td>${number(item.last)}</td><td class="${trend}">${change > 0 ? '+' : ''}${number(change)} (${number(item.changePercent)}%)</td><td>${amountText}${amountUnit}</td></tr>`;
-        }).join('')}</tbody></table><small class="market-source-caption">${escapeHtml(activeContext.caption)}</small>`
-      : `<span class="market-placeholder-icon">↗</span><div><strong id="active-value-status">${escapeHtml(activeContext.caption)}</strong><p>โปรดตรวจสถานะข้อมูลและเวลาที่ต้นทางรายงาน</p></div>`;
+        }).join('')}</tbody></table>${activeCaption ? `<small class="market-source-caption">${escapeHtml(activeCaption)}</small>` : ''}`
+      : '<span class="market-placeholder-icon">↗</span><strong id="active-value-status">ข้อมูลจัดอันดับยังไม่พร้อม</strong>';
   }
-  setText('#settrade-updated', marketOverviewStatus(data));
+  setText('#settrade-updated', data.source === 'SETTRADE' ? 'แหล่งข้อมูล SETTRADE' : '');
 }
 async function getSettradeOverview(force = false) {
   const identity = capturePrivateIdentity();

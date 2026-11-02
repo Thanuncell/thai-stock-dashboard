@@ -149,7 +149,7 @@ test('Watchlist workspace search, collapse and News jump preserve membership and
 test('UI cleanup labels remain presentation-only and truthful', () => {
   assert.match(appSource, /setText\('#set-volume', wholeNumber\(resolved\.volumeThousand\)\)/);
   assert.match(appSource, /ปริมาณซื้อขาย <small>\('000\)<\/small>/);
-  assert.match(indexSource, /กำลังอัปเดตข้อมูลจาก SETTRADE\.\.\./);
+  assert.match(indexSource, /id="settrade-updated"[^>]*>แหล่งข้อมูล SETTRADE<\/p>/);
   assert.match(appSource, /อัปเดตข้อมูลไม่สำเร็จ/);
   assert.doesNotMatch(domainSource, /บางส่วนไม่พร้อม/);
 });
@@ -205,7 +205,7 @@ test('Market Overview uses the neutral route and SETscope-owned structured table
   assert.doesNotMatch(appSource, /apiFetch\(`\/api\/settrade-overview/);
   assert.match(indexSource, /id="active-value-content"/);
   assert.match(appSource, /class="market-active-table"/);
-  assert.match(appSource, /activeRows\.slice\(0, 10\)/);
+  assert.match(appSource, /activeRows\.slice\(0, 20\)/);
   assert.doesNotMatch(appSource, /data\.activeValueHtml|innerHTML\s*=\s*data\./);
   assert.ok(indexSource.indexOf('id="market-index-grid"') < indexSource.indexOf('id="market-breadth-list"'));
   assert.ok(indexSource.indexOf('id="market-breadth-list"') < indexSource.indexOf('id="active-value-content"'));
@@ -221,7 +221,7 @@ test('Market Overview display labels, units and unavailable copy remain truthful
   assert.doesNotMatch(indexSource, /SET \/ mai · สถิติขึ้น–ลง|ข้อมูลและความถี่ขึ้นกับต้นทาง/);
   assert.match(indexSource, /มูลค่าซื้อขาย SET \+ mai/);
   assert.doesNotMatch(indexSource, /มูลค่าตลาด SET \+ mai/);
-  assert.match(appSource, /ต้นทางระบุล่าช้า \$\{tfexDelayLabel\} นาที/);
+  assert.match(appSource, /ข้อมูลล่าช้า \$\{tfexDelayLabel\} นาที/);
   assert.doesNotMatch(appSource, /อ้างอิงแหล่งข้อมูลด้านล่าง|โปรดตรวจสอบจากแหล่งข้อมูลด้านล่าง/);
   assert.match(appSource, /มีข้อมูล \$\{tfex\.topVolume\?\.length \|\| 0\} รายการ/);
   assert.match(appSource, /ยังไม่มีสรุปภาวะตลาดรอบนี้/);
@@ -232,7 +232,7 @@ test('Market Overview has deterministic startup banner ownership and truthful fr
   assert.match(appSource, /function renderMarketBanner\(\)/);
   assert.match(appSource, /resolveMarketBannerFields\(overviewIndex, marketIndex\)/);
   assert.doesNotMatch(appSource, /volumeThousand \* 1000/);
-  assert.match(appSource, /marketOverviewStatus\(data\)/);
+  assert.match(appSource, /data\.source === 'SETTRADE' \? 'แหล่งข้อมูล SETTRADE' : ''/);
   assert.match(domainSource, /เวลาตลาดยังไม่ยืนยัน/);
   assert.match(domainSource, /รับข้อมูลเมื่อ:/);
   assert.doesNotMatch(domainSource, /indexAsOf \|\| data\.fetchedAt/);
