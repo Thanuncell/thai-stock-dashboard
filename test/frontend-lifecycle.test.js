@@ -10,6 +10,21 @@ const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'u
 const styleSource = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
 const domainSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'domain.mjs'), 'utf8');
 
+test('Logout is available only inside Profile and reuses the original device-local handler', () => {
+  const authSource = fs.readFileSync(path.join(__dirname, '..', 'auth.js'), 'utf8');
+  const header = indexSource.match(/<header\b[\s\S]*?<\/header>/)?.[0] || '';
+  assert.ok(header);
+  assert.doesNotMatch(header, /logout|ออกจากระบบ/i);
+  assert.doesNotMatch(indexSource, /id="logout-button"/);
+  assert.equal((indexSource.match(/id="profile-logout-button"/g) || []).length, 1);
+  assert.match(indexSource, /id="profile-page"[\s\S]*?id="profile-logout-button"/);
+  assert.doesNotMatch(authSource, /\$\('#logout-button'\)/);
+  assert.match(authSource, /\$\('#profile-logout-button'\)\?\.addEventListener\('click', logout\)/);
+  assert.equal((authSource.match(/async function logout\(/g) || []).length, 1);
+  assert.match(authSource, /authRequest\('logout\?scope=local'/);
+  for (const copy of ['พื้นที่ส่วนตัวสำหรับติดตามตลาด', 'ลงชื่อเข้าใช้เพื่อดูกราฟ ข่าว และ Watchlist ของคุณ']) assert.ok(indexSource.includes(copy));
+});
+
 test('frontend wires global UI once and initializes every authenticated owner session', () => {
   assert.equal((appSource.match(/addEventListener\('setscope:authenticated',\s*initializeAccountSession\)/g) || []).length, 1);
   assert.doesNotMatch(appSource, /addEventListener\('setscope:authenticated'[^\n]*once:\s*true/);
@@ -155,7 +170,7 @@ test('UI cleanup labels remain presentation-only and truthful', () => {
 });
 
 test('News archive page restoration survives startup rendering and browser history', () => {
-  const restoreNavigation = appSource.match(/function restoreNavigationFromLocation\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const restoreNavigation = appSource.match(/function restoreNavigationFromLocation\([^\n]*\) \{[\s\S]*?\n\}/)?.[0] || '';
   const renderNews = appSource.match(/function renderNews\(\) \{[\s\S]*?\n\}/)?.[0] || '';
 
   assert.match(restoreNavigation, /previousNewsPage = newsPage/);

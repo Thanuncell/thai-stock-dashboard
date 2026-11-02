@@ -139,8 +139,9 @@ const reply = (route, body, status = 200) => route.fulfill({ status, contentType
     });
     const [first, second] = await Promise.all(contexts.map(context => context.newPage()));
     async function logout(page) {
+      await page.locator('.nav-item[data-workspace-route="profile"]').click();
       // The form becomes visible before logout's asynchronous reload finishes.
-      await Promise.all([page.waitForEvent('load'), page.locator('#logout-button').click()]);
+      await Promise.all([page.waitForEvent('load'), page.locator('#profile-logout-button').click()]);
       await page.waitForSelector('#login-form:not([hidden])');
     }
     async function login(page, owner) {
@@ -240,11 +241,22 @@ const reply = (route, body, status = 200) => route.fulfill({ status, contentType
     assert.equal(await second.evaluate(() => sessionStorage.getItem('setscope-auth-session-v1') === null), true);
     phase = 'other-session-remains-authenticated';
     assert.equal(await first.evaluate(() => document.body.classList.contains('authenticated')), true);
+    phase = 'reverse-profile-local-logout';
+    await login(second, 'a');
+    await logout(second);
+    assert.equal(metrics.logoutScopes.at(-1), 'local');
+    await first.reload({ waitUntil: 'domcontentloaded' }); await first.waitForSelector('body.authenticated');
+    const survivingSession = await first.evaluate(async () => {
+      const refreshed = await window.setscopeAuth.refresh();
+      const response = await window.setscopeAuth.authorizedFetch('/api/watchlists');
+      return { refreshed, status: response.status };
+    });
+    assert.deepEqual(survivingSession, { refreshed: true, status: 200 });
     phase = 'credential-artifact-checks';
     assert.equal(logs.some(line => [...allSecrets].some(value => line.includes(value))), false, 'runtime logs must not contain generated credentials');
     assert.equal(metrics.unexpectedUpstream, 0);
     console.log(JSON.stringify({ mockE2E: 'PASS', simulatedContexts: contexts.length, independentLogins: 'PASS',
-      sameAccountLogoutReloadRefresh: 'PASS', accessAndRefreshRotation: 'PASS', accountABAndForgedOwner: 'PASS',
+      sameAccountLogoutReloadRefresh: 'PASS', reverseProfileLocalLogout: 'PASS', accessAndRefreshRotation: 'PASS', accountABAndForgedOwner: 'PASS',
       postLegacyGetCachePrivacy: 'PASS', clientSafeProviderErrors: 'PASS', xssRendering: 'PASS', refreshFailureClosed: 'PASS', watchlistPreserved: 'PASS',
       realSupabaseE2E: 'NOT RUN', physicalDevices: 'NOT RUN', credentialArtifacts: 0 }));
   } finally {

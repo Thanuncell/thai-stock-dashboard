@@ -245,15 +245,18 @@ const workspaceRoutes = {
   overview: { nodes: ['#market-overview', '#market-data-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย', breadcrumb: 'ภาพรวม' },
   chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ', breadcrumb: 'กราฟเทคนิค' },
   news: { nodes: ['#activity-section', '#news-section'], title: 'ข่าวและ<span>บทวิเคราะห์</span>', description: 'ติดตามข่าวหุ้นไทยจากแหล่งข่าวที่เลือกได้', breadcrumb: 'ข่าวและบทวิเคราะห์' },
-  watchlist: { nodes: ['#watchlist-page', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูข่าวของหุ้นในรายการที่เลือก', breadcrumb: 'รายการติดตาม' }
+  watchlist: { nodes: ['#watchlist-page', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูข่าวของหุ้นในรายการที่เลือก', breadcrumb: 'รายการติดตาม' },
+  profile: { nodes: ['#profile-page'], title: 'โปรไฟล์<span>ของคุณ</span>', description: 'บัญชีและการตั้งค่า SETscope', breadcrumb: 'โปรไฟล์' }
 };
 function currentNavigationState(route = document.body.dataset.workspacePage || initialNavigation.route || 'overview') {
   if (route === 'chart') return { route, symbol: activeSymbol, range: currentRange };
   if (route === 'news') return { route, query: newsQuery, source: activeSource, newsPage };
   if (route === 'watchlist') return { route, watchlistId: activeWatchlistId, watchPage: watchNewsPage };
+  if (route === 'profile') return { route };
   return { route: 'overview' };
 }
 function writeNavigation(mode = 'push', route) {
+  if (!window.setscopeAuth?.user) return;
   const state = currentNavigationState(route);
   const privateState = state.route === 'watchlist' ? { ownerId: userStorageScope, watchlistId: state.watchlistId } : null;
   const target = navigationUrl(state, location.pathname === '/login' || location.pathname === '/register' ? '/' : location.pathname);
@@ -276,12 +279,12 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   const previousPage = document.body.dataset.workspacePage;
   if (scroll && previousPage && previousPage !== page) workspaceScrollPositions.set(previousPage, window.scrollY);
   const visible = new Set(workspaceRoutes[page].nodes);
-  ['#market-overview', '#market-data-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page'].forEach(selector => {
+  ['#market-overview', '#market-data-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page', '#profile-page'].forEach(selector => {
     const node = $(selector); if (node) node.classList.toggle('workspace-hidden', !visible.has(selector));
   });
   $('#activity-section')?.classList.toggle('workspace-single', page === 'news' || page === 'watchlist');
   document.body.dataset.workspacePage = page;
-  document.querySelectorAll('.nav-item[data-workspace-route]').forEach(link => {
+  document.querySelectorAll('[data-workspace-route]').forEach(link => {
     const active = link.dataset.workspaceRoute === page;
     link.classList.toggle('active', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
@@ -297,7 +300,7 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   }
 }
 let lastRestoredLocation = '';
-function restoreNavigationFromLocation() {
+function restoreNavigationFromLocation({ load = true } = {}) {
   const stored = history.state?.setscopeWatchlist;
   const ownedList = stored?.ownerId === userStorageScope ? stored.watchlistId : '';
   const locationKey = `${userStorageScope}|${location.pathname}${location.search}${location.hash}|${ownedList}`;
@@ -324,13 +327,13 @@ function restoreNavigationFromLocation() {
   renderWatchlistPicker();
   setWorkspacePage(state.route, { historyMode: 'none', scroll: false });
   renderNews(); renderWatchlistNews(); renderWatchlist(latestMarket?.stocks || []); renderMovers(latestMarket?.stocks || []);
-  if (state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== currentRange || previousRoute !== 'chart')) getMarket();
-  if (state.route === 'news' && archiveConfigured && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousNewsQuery !== newsQuery || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
-  if (state.route === 'watchlist' && (previousWatchlist !== activeWatchlistId || previousRoute !== 'watchlist')) getWatchlistNews({ reason: 'restore' });
+  if (load && state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== currentRange || previousRoute !== 'chart')) getMarket();
+  if (load && state.route === 'news' && archiveConfigured && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousNewsQuery !== newsQuery || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
+  if (load && state.route === 'watchlist' && (previousWatchlist !== activeWatchlistId || previousRoute !== 'watchlist')) getWatchlistNews({ reason: 'restore' });
   writeNavigation('replace', state.route);
 }
 function setupWorkspaceNavigation() {
-  document.querySelectorAll('.nav-item[data-workspace-route]').forEach(link => link.addEventListener('click', event => {
+  document.querySelectorAll('[data-workspace-route]').forEach(link => link.addEventListener('click', event => {
     event.preventDefault(); setWorkspacePage(link.dataset.workspaceRoute, { historyMode: 'push' });
   }));
   $('#breadcrumb-home')?.addEventListener('click', event => { event.preventDefault(); setWorkspacePage('overview', { historyMode: 'push' }); });
@@ -993,6 +996,7 @@ function setTheme(theme) {
   setText('#theme-icon', next === 'dark' ? '☀' : '☾');
   setText('#theme-label', next === 'dark' ? 'โหมดสว่าง' : 'โหมดมืด');
   $('#theme-toggle')?.setAttribute('aria-label', next === 'dark' ? 'เปลี่ยนเป็นโหมดสว่าง' : 'เปลี่ยนเป็นโหมดมืด');
+  setText('#profile-theme-toggle', next === 'dark' ? 'เปลี่ยนเป็นโหมดสว่าง' : 'เปลี่ยนเป็นโหมดมืด');
   updateTradingViewChart();
 }
 
@@ -1852,6 +1856,7 @@ async function initializeAccountSession(event) {
   renderWatchlist();
   renderAlertSettings();
   renderAlertHistory();
+  restoreNavigationFromLocation({ load: false });
   if (!window.setscopeAuth?.markPrivateUiReady?.(identity)) return;
   getCoverageSummary(); updateTradingViewChart(); getMarket(); getSettradeOverview();
   getNews({ reason: 'startup' });
@@ -1880,12 +1885,22 @@ function setupUiEventWiring() {
   $('#watchlist').addEventListener('click', handleWatchlistClick);
   $('#watchlist-mobile').addEventListener('click', handleWatchlistClick);
   const alertsPanel = $('#alerts-panel');
+  let profileAlertsOpened = false;
   $('#alerts-toggle').addEventListener('click', () => {
     alertsPanel.hidden = !alertsPanel.hidden;
     $('#alerts-toggle').setAttribute('aria-expanded', String(!alertsPanel.hidden));
     if (!alertsPanel.hidden) { unreadAlerts = 0; renderAlertHistory(); renderAlertSettings(); }
   });
-  $('#alerts-close').addEventListener('click', () => { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); });
+  $('#alerts-close').addEventListener('click', () => {
+    alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false');
+    if (profileAlertsOpened) $('#profile-alerts-button').focus();
+    profileAlertsOpened = false;
+  });
+  $('#profile-alerts-button').addEventListener('click', () => {
+    profileAlertsOpened = true;
+    if (alertsPanel.hidden) $('#alerts-toggle').click();
+    $('#alerts-close').focus();
+  });
   $('#notification-permission').addEventListener('click', async () => {
     if (!('Notification' in window)) { updateNotificationStatus(); return; }
     try { await Notification.requestPermission(); } catch (_) {}
@@ -1906,7 +1921,7 @@ function setupUiEventWiring() {
     writeScopedLocal('setscope-alert-prefs', alertPrefs);
   });
   document.addEventListener('click', event => {
-    if (!event.target.closest('.alerts-menu') && !alertsPanel.hidden) { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); }
+    if (!event.target.closest('.alerts-menu, #profile-alerts-button') && !alertsPanel.hidden) { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); }
   });
   $('#watchlist-add-active').addEventListener('click', addActiveToWatchlist);
   ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => $(selector)?.addEventListener('change', event => switchWatchlist(event.target.value)));
@@ -1953,6 +1968,7 @@ function setupUiEventWiring() {
     if (!event.target.closest('.stock-search-wrap')) hideSuggestions();
   });
   $('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+  $('#profile-theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
   document.querySelectorAll('.range-tabs button').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.range-tabs button').forEach(item => item.classList.remove('selected'));
     button.classList.add('selected'); currentRange = button.dataset.range; writeNavigation('push', 'chart'); updateTradingViewChart(); getMarket();
@@ -1978,6 +1994,7 @@ function setupUiEventWiring() {
     updateFullscreenControl();
   });
   document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !alertsPanel.hidden) $('#alerts-close').click();
     if (event.key === 'Escape' && chartCssFullscreen) setCssChartFullscreen(false);
   });
   window.addEventListener('resize', scheduleChartRedraw, { passive: true });

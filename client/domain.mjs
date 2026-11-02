@@ -15,7 +15,7 @@ export const MAX_WATCHLISTS = 5;
 export const THAI_NAMES = Object.fromEntries(DEFAULT_WATCHLIST.map(item => [item.symbol, item.name]));
 export const NEWS_SOURCES = NEWS_FILTER_SOURCES;
 export const CHART_RANGES = Object.freeze(['1D', '1W', '1M', '3M', '1Y']);
-const ROUTES = Object.freeze(['overview', 'chart', 'news', 'watchlist']);
+const ROUTES = Object.freeze(['overview', 'chart', 'news', 'watchlist', 'profile']);
 
 // Search presentation only. Never replace source names, cached results or persisted watchlist data.
 const COMPANY_NAME_INITIALISMS = new Set(('AI AIM ALT AMR AP ARIP ASN BBGI BCPG BEC BG BGT BHO BJC BKI BPS BT BTS BYDH CAZ CH CK CL CP CPL CPR DB DCON DOD FNS GFPT GMM ICT IFS IRPC IT JCK JMT JSP KCE KCG KGI LDC MBK MC MCOT MFEC MK NFC NSL OHTL PCL PM PRG PSG PTG PTT RPCG RS SC SCB SCG SCGJWD SIS SISB SNC SPCG STP SVOA TCM TOA TPI TQM TQR TTCL TWZ UAC VGI VN WHA WP WSOL').split(' '));
@@ -276,7 +276,7 @@ export function summarizeBreadth(groups = []) {
 
 export function pageFromHash(hash = '') {
   const key = String(hash || '').replace(/^#/, '');
-  if (['overview', 'chart', 'news', 'watchlist'].includes(key)) return key;
+  if (ROUTES.includes(key)) return key;
   if (key === 'chart-section') return 'chart';
   if (key === 'news-section') return 'news';
   if (key === 'top') return 'overview';
@@ -303,7 +303,7 @@ export function parseNavigationState(value, fallback = {}) {
   try { url = new URL(String(value || ''), 'https://setscope.local/'); }
   catch (_) { url = new URL('https://setscope.local/#overview'); }
   const route = pageFromHash(url.hash);
-  if (route === 'overview') return { route };
+  if (route === 'overview' || route === 'profile') return { route };
   if (route === 'chart') {
     const range = String(url.searchParams.get('range') || fallback.range || '1D').toUpperCase();
     return {
