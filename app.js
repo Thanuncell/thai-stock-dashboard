@@ -255,6 +255,11 @@ function currentNavigationState(route = document.body.dataset.workspacePage || i
   if (route === 'profile') return { route };
   return { route: 'overview' };
 }
+function navigationLocationKey() {
+  const stored = history.state?.setscopeWatchlist;
+  const ownedList = stored?.ownerId === userStorageScope ? stored.watchlistId : '';
+  return `${userStorageScope}|${location.pathname}${location.search}${location.hash}|${ownedList}`;
+}
 function writeNavigation(mode = 'push', route) {
   if (!window.setscopeAuth?.user) return;
   const state = currentNavigationState(route);
@@ -265,6 +270,7 @@ function writeNavigation(mode = 'push', route) {
   try { sessionStorage.setItem(NAVIGATION_FALLBACK_KEY, JSON.stringify(publicState)); } catch (_) {}
   if (mode === 'none' || (target === current && JSON.stringify(history.state?.setscopeWatchlist || null) === JSON.stringify(privateState))) return;
   history[mode === 'replace' ? 'replaceState' : 'pushState'](privateState ? { setscopeWatchlist: privateState } : null, '', target);
+  lastRestoredLocation = navigationLocationKey();
 }
 function syncNavigationControls() {
   const search = $('#news-search'); if (search) search.value = newsQuery;
@@ -303,7 +309,7 @@ let lastRestoredLocation = '';
 function restoreNavigationFromLocation({ load = true } = {}) {
   const stored = history.state?.setscopeWatchlist;
   const ownedList = stored?.ownerId === userStorageScope ? stored.watchlistId : '';
-  const locationKey = `${userStorageScope}|${location.pathname}${location.search}${location.hash}|${ownedList}`;
+  const locationKey = navigationLocationKey();
   if (locationKey === lastRestoredLocation) return;
   lastRestoredLocation = locationKey;
   const state = parseNavigationState(location.href, {...currentNavigationState(),...(ownedList ? { watchlistId: ownedList } : {}),newsPage:1,watchPage:1});

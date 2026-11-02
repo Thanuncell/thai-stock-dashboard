@@ -43,7 +43,21 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    newsError=true;await page.locator('#refresh-news').click();await ready();assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),oldTitles);newsError=false;
    newsAbort=true;await page.locator('#refresh-news').click();await ready();assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),oldTitles);newsAbort=false;
    liveRows=[];archiveError=true;await page.locator('#refresh-news').click();await ready();assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),oldTitles,'no usable replacement during partial failure must retain the accepted view');liveRows=live;archiveError=false;await page.locator('#refresh-news').click();await ready();
-   const upstream=calls.news;await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#news-pager .active')?.textContent==='2'&&document.querySelector('#news-list')?.getAttribute('aria-busy')==='false');assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),archived.slice(10,20).map(x=>x.title));assert.equal(calls.news,upstream);await page.goBack();try{await page.waitForFunction(()=>document.querySelector('#news-pager .active')?.textContent==='1',{},{timeout:5000});}catch(e){console.log(JSON.stringify({backDiagnostic:await page.evaluate(()=>({url:location.href,pager:document.querySelector('#news-pager')?.textContent,count:document.querySelector('#news-count')?.textContent})),calls,responses:responses.slice(-2).map(x=>({page:x.page,total:x.total}))}));throw e;}
+   const upstream=calls.news;
+   await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();
+   const waitForNewsPage=number=>page.waitForFunction(number=>document.querySelector('#news-pager .active')?.textContent===String(number)&&document.querySelector('#news-list')?.getAttribute('aria-busy')==='false',number,{timeout:5000});
+   await waitForNewsPage(2);
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),archived.slice(10,20).map(x=>x.title));
+   assert.equal(calls.news,upstream);
+   await page.goBack();await waitForNewsPage(1);
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),archived.slice(0,10).map(x=>x.title));
+   assert.equal(new URL(page.url()).searchParams.get('newsPage'),null);
+   await page.goForward();await waitForNewsPage(2);
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),archived.slice(10,20).map(x=>x.title));
+   assert.equal(new URL(page.url()).searchParams.get('newsPage'),'2');
+   await page.goBack();await waitForNewsPage(1);
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),archived.slice(0,10).map(x=>x.title));
+   assert.equal(calls.news,upstream,'Back/Forward must not request upstream News again');
    await page.locator('.source-chip[data-source="bangkokbiznews"]').click();await page.waitForFunction(()=>!document.querySelector('#news-count').textContent.includes('กำลัง'));assert.equal(calls.news,upstream);await page.locator('.source-chip[data-source="all"]').click();await page.waitForFunction(()=>!document.querySelector('#news-count').textContent.includes('กำลัง'));
    archiveError=true;await page.locator('#refresh-news').click();await ready();assert.ok(await page.locator('#news-list .news-title-link').count()>0);assert.equal(await page.locator('#news-list').getAttribute('aria-busy'),'false');archiveError=false;
    liveRows=[];archiveRows=[];await page.locator('#refresh-news').click();await page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled&&document.querySelectorAll('#news-list .news-title-link').length===0);assert.equal(await page.locator('.news-skeleton').count(),0);assert.equal(await page.locator('#featured-news').locator('..').isHidden(),true);
@@ -60,7 +74,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    liveRows=make('B-live',30);archiveRows=make('B-archive',90);holds.archive=gate();await page.locator('#login-form input[name="email"]').fill('b@example.test');await page.locator('#login-form input[name="password"]').fill('fixture-password');await page.locator('#login-form button[type="submit"]').click();await page.waitForSelector('body.authenticated');await page.locator('.nav-item[data-workspace-route="news"]').click();for(let n=0;n<100&&!(await page.locator('#refresh-news').isDisabled());n++)await delay(10);
    holds.news.release();delete holds.news;holds.watch.release();delete holds.watch;await delay(50);assert.equal(await page.locator('#refresh-news').isDisabled(),true);assert.doesNotMatch(await page.locator('#news-section').textContent(),/OLD-A/);holds.archive.release();delete holds.archive;await ready();assert.match(await page.locator('#featured-news').textContent(),/B-live/);assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/PTT|OLD-A/);assert.equal(await page.locator('#watchlist-news-list').getAttribute('aria-busy'),'false');state.releaseLogout?.();
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);if(process.env.SETSCOPE_LOADING_EVIDENCE)await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+'-ready.png')});
-   console.log(JSON.stringify({viewport:label,theme,checks,calls,layoutShift:await page.evaluate(()=>window.newsLayoutShift),atomicPresentation:'PASS',stableAiCards:'PASS',warmRefresh:'PASS',originalPagination:'PASS',productionRequests:0}));await context.close();
+   console.log(JSON.stringify({viewport:label,theme,checks,calls,layoutShift:await page.evaluate(()=>window.newsLayoutShift),atomicPresentation:'PASS',stableAiCards:'PASS',warmRefresh:'PASS',originalPagination:'PASS',backForwardNavigation:'PASS',productionRequests:0}));await context.close();
   }
  }finally{await browser?.close();server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
