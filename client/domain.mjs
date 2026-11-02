@@ -172,7 +172,86 @@ export function marketOverviewStatus(data = {}) {
   const usesLkg = data.dataState === 'stale' || data.stale
     || fieldStates.some(field => field?.state === 'LKG' || field?.stale);
   const suffix = usesLkg ? ' · ข้อมูลที่บันทึกล่าสุด (LKG)' : '';
-  return `แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: ${stamp(indexAsOf || data.fetchedAt || data.asOf)}${suffix}`;
+  const marketTime = indexAsOf ? `เวลาตลาด: ${stamp(indexAsOf)}` : 'เวลาตลาดยังไม่ยืนยัน';
+  const receipt = data.fetchedAt ? ` · รับข้อมูลเมื่อ: ${stamp(data.fetchedAt)}` : '';
+  const sources = data.fieldStatus?.tfex?.source === 'TFEX' ? 'SETTRADE · TFEX Official' : 'SETTRADE';
+  return `แหล่งข้อมูล ${sources} · ${marketTime}${receipt}${suffix}`;
+}
+
+function validOverviewClock(value) {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match || !Number.isFinite(Date.parse(value))) return false;
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  const actual = new Date(Date.UTC(year, month - 1, day)), zone = match[7];
+  return year >= 2000 && year <= 2100 && actual.getUTCFullYear() === year && actual.getUTCMonth() + 1 === month
+    && actual.getUTCDate() === day && hour < 24 && minute < 60 && second < 60
+    && (zone === 'Z' || (Number(zone.slice(1, 3)) <= 23 && Number(zone.slice(4, 6)) < 60));
+}
+
+export function overviewSourceStamp(value) {
+  return validOverviewClock(value) ? new Date(value).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok',
+    year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+}
+
+export function activeOverviewContext(data = {}) {
+  const status = data.fieldStatus?.activeValue || {};
+  const displayable = ['PASS', 'LKG'].includes(status.state) && validOverviewClock(status.sourceUpdatedAt);
+  if (!displayable) return { displayable: false, caption: status.state === 'UNAVAILABLE' && data.activeValueStatus
+    && !/ข้อมูลล่าสุด/.test(data.activeValueStatus) ? data.activeValueStatus : 'ข้อมูลจัดอันดับยังไม่ผ่านการยืนยันเวลาและสถานะ' };
+  const prefix = status.state === 'LKG' ? 'ข้อมูลเก่าที่บันทึกล่าสุด (LKG)' : 'ข้อมูล Snapshot';
+  const received = validOverviewClock(status.fetchedAt) ? ` · รับข้อมูลเมื่อ ${overviewSourceStamp(status.fetchedAt)}` : ' · เวลารับข้อมูลยังไม่ยืนยัน';
+  const quantity = !['HTML_LABELLED', 'EVIDENCE_SUPPORTED'].includes(status.quantityStatus) ? ' · หน่วยมูลค่า/ปริมาณยังไม่ยืนยัน' : '';
+  return { displayable: true, caption: `${prefix} ${(data.activeValue || []).length} รายการจาก SETTRADE · เวลาที่ต้นทางรายงาน ${status.reportedAsOf || overviewSourceStamp(status.sourceUpdatedAt)} · เวลาตลาดยังไม่ยืนยัน${received} · Trading Session ยังไม่ยืนยัน${quantity}` };
+}
+
+export function activeAmountDisplay(row, status = {}) {
+  const valid = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const empty = mode => ({ mode, value: null, label: 'ยังไม่ยืนยันหน่วย' });
+  const q = row.sourceQuantities;
+  if (!q) return valid(row.turnoverMillion) && valid(row.volumeThousand)
+    ? status.quantityStatus === 'HTML_LABELLED' ? { mode: 'MILLION_BAHT', value: row.turnoverMillion, label: 'ล้านบาท' } : empty('UNAVAILABLE') : empty('INVALID');
+  if (!['HTML_TABLE', 'SETTRADE_AOM'].includes(q.origin)) return empty('INVALID');
+  const rawAom = q.value?.unit === null && q.volume?.unit === null;
+  const supportedAom = q.basis === 'SET_AOM_BAHT_SHARES' && q.verification === 'EVIDENCE_SUPPORTED'
+    && q.value?.unit === 'baht' && q.volume?.unit === 'shares';
+  if (q.origin === 'SETTRADE_AOM' && !rawAom && !supportedAom) return empty('INVALID');
+  for (const [key, normalized, unit, field, divisor] of [['value', 'turnoverMillion', 'million_baht', 'aomValue', 1_000_000], ['volume', 'volumeThousand', 'thousand_shares', 'aomVolume', 1_000]]) {
+    const part = q[key];
+    if (!part || !valid(part.raw) || typeof part.sourceField !== 'string') return empty('INVALID');
+    if (q.origin === 'SETTRADE_AOM') {
+      if (part.sourceField !== field || (rawAom ? row[normalized] !== null : row[normalized] !== part.raw / divisor)) return empty('INVALID');
+    } else if (part.unit === null) {
+      if (row[normalized] !== null) return empty('INVALID');
+    } else {
+      const labelled = key === 'value' ? /\(\s*(?:ล้านบาท|million\s*(?:baht|THB))\s*\)/i.test(part.sourceField) && !/พันล้านบาท/i.test(part.sourceField)
+        : /\(\s*['’]?000(?:\s*(?:หุ้น|shares))?\s*\)|พันหุ้น|thousand\s*shares/i.test(part.sourceField);
+      if (!labelled || part.unit !== unit || row[normalized] !== part.raw) return empty('INVALID');
+    }
+  }
+  return supportedAom || q.value.unit === 'million_baht' ? { mode: 'MILLION_BAHT', value: row.turnoverMillion, label: 'ล้านบาท' }
+    : { mode: 'RAW', value: q.value.raw, label: 'ค่าดิบ · ยังไม่ยืนยันหน่วย' };
+}
+
+export function tfexOverviewContext(status = {}) {
+  const sourceTime = status.sourceUpdatedAt || status.reportedAsOf;
+  const reference = status.openInterestReference;
+  const knownReference = reference?.daySession === 'PREVIOUS_NIGHT_SESSION'
+    && reference?.nightSession === 'CURRENT_AFTERNOON_SESSION';
+  return {
+    sourceLabel: status.source === 'TFEX' ? 'TFEX Official' : status.source || 'SETTRADE',
+    saved: status.state === 'LKG',
+    displayable: ['PASS', 'LKG'].includes(status.state) && validOverviewClock(sourceTime),
+    stateLabel: status.state === 'LKG' ? 'ข้อมูลเก่าที่บันทึกล่าสุด (LKG)' : status.state === 'PASS'
+      ? 'Snapshot · ความสดของข้อมูลตลาดยังไม่ยืนยัน' : 'ข้อมูลยังไม่ผ่านการยืนยันเวลาและสถานะ',
+    updated: validOverviewClock(sourceTime) ? `ต้นทางอัปเดต: ${overviewSourceStamp(sourceTime)}` : 'เวลาอัปเดตที่ต้นทางยังไม่ยืนยัน',
+    received: validOverviewClock(status.fetchedAt) ? `รับข้อมูล TFEX เมื่อ: ${overviewSourceStamp(status.fetchedAt)}` : 'เวลารับข้อมูล TFEX ยังไม่ยืนยัน',
+    volumeEffective: status.volumeEffectiveTime ? `เวลามีผลของปริมาณ: ${stamp(status.volumeEffectiveTime)}` : 'เวลามีผลของปริมาณยังไม่ยืนยัน',
+    oiEffective: status.openInterestEffectiveTime ? `เวลามีผลของ OI: ${stamp(status.openInterestEffectiveTime)}` : 'วันเวลามีผลของ OI ยังไม่ยืนยัน',
+    oiReference: knownReference
+      ? 'OI: Day Session อ้างอิง Night Session ก่อนหน้า; Night Session อ้างอิง Afternoon Session วันเดียวกัน'
+      : 'รอบอ้างอิงของ OI ยังไม่ยืนยัน'
+  };
 }
 
 export function quoteChange(last, prior) {

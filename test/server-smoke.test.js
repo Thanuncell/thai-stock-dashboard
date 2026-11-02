@@ -298,7 +298,10 @@ test('partial provider outages degrade independently without fabricating zero va
   assert.equal(settrade.nvdr.marketMillion, null);
   assert.equal(settrade.tfex.available, false);
   assert.ok(settrade.errors.some(error => error.includes('/nvdr/value')));
-  assert.ok(settrade.errors.some(error => error.includes('/derivatives/overview')));
+  assert.ok(settrade.errors.some(error => error.includes('https://www.tfex.co.th/th/home')));
+  assert.equal(settrade.fieldStatus.tfex.source, 'TFEX');
+  assert.equal(settrade.fieldStatus.tfex.sourceUrl, 'https://www.tfex.co.th/th/home');
+  assert.equal(settrade.fieldStatus.tfex.asOf, null);
   assert.ok(settrade.errors.some(error => error.includes('/most-active-value')));
   assert.equal(settrade.fieldStatus.activeValue.state, 'UNAVAILABLE');
   assert.ok(settrade.fetchedAt);
