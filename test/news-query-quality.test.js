@@ -9,7 +9,7 @@ const service = fixture => createNewsArchiveService({ env, fetchImpl: fixture.fe
 test('quality revision refuses an old clean index even when page 1 contains only accepted publishers', async () => {
   const fixture = memoryQuery(), archive = service(fixture), before = JSON.stringify([...fixture.raw.values()]);
   assert.ok(fixture.rows.every(validStoredEvidence));
-  assert.equal(fixture.rows.filter(row => reviewArchivedNewsRow(row).status === 'REJECTED').length, 18);
+  assert.equal(fixture.rows.filter(row => reviewArchivedNewsRow(row).status === 'REJECTED').length, 22);
   await assert.rejects(archive.list({ page: 1, pageSize: 2 }), /NEWS_QUERY_POLICY_NOT_READY/);
   await assert.rejects(archive.list({ page: 999, pageSize: 2 }), /NEWS_QUERY_POLICY_NOT_READY/);
   await assert.rejects(archive.refreshQueryIndex({ maxBatches: 1 }), /NEWS_QUERY_POLICY_MISMATCH/, 'incremental refresh cannot relabel the old generation');
