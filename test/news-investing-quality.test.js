@@ -116,3 +116,70 @@ test('old subject-bound positive evidence cannot bypass current quality and read
   const obsolete = issueEvidence(sparse, { status: 'VERIFIED', reason: 'NEWS_METADATA_EVIDENCE', basis: 'metadata' });
   assert.equal(reviewNewsItem(sparse, obsolete).status, 'UNVERIFIED');
 });
+
+test('Investing RSS headline-only descriptions with HTML space entities are insufficient evidence', () => {
+  const headline = 'PTT รายงานกำไรเพิ่ม หนุนตลาดหุ้นไทย';
+  const title = headline + ' - Investing.com';
+  for (const suffix of [
+    ' &nbsp;&nbsp; Investing.com',
+    ' &#160;&#xA0; Investing.com',
+    ' &amp;nbsp;&amp;nbsp; Investing.com',
+    ' - Investing.com'
+  ]) {
+    const candidate = wrapper({ id: 'headline-only', title, snippet: headline + suffix });
+    assert.equal(classifyNewsItem(candidate).decision, 'AMBIGUOUS', suffix);
+    assert.equal(reviewNewsItem(candidate).status, 'UNVERIFIED', suffix);
+    assert.equal(newsDisplayBlocked(candidate), true, suffix);
+  }
+  assert.equal(reviewNewsItem(wrapper(fixtures.articles[0])).status, 'VERIFIED',
+    'genuine Thai article excerpts must remain eligible');
+  assert.equal(reviewNewsItem(wrapper(fixtures.articles[1])).status, 'VERIFIED',
+    'genuine English article excerpts must remain eligible');
+});
+
+test('Investing Google RSS query is targeted to Thailand without extra requests or publisher changes', () => {
+  const { FEEDS } = require('../server/news-service');
+  const entry = FEEDS.find(([source, name]) => source === 'other' && name === 'Investing.com');
+  assert.ok(entry);
+  assert.ok(entry[2].startsWith('site:th.investing.com ('));
+  for (const term of ['"หุ้นไทย"', '"ตลาดหุ้นไทย"', '"เศรษฐกิจไทย"',
+    '"Thai stocks"', '"Thailand economy"', '"Bank of Thailand"']) {
+    assert.ok(entry[2].includes(term), term);
+  }
+  assert.equal(FEEDS.filter(([, name]) => name === 'Investing.com').length, 1);
+  assert.ok(FEEDS.some(([, , query]) => query === 'site:thunhoon.com'),
+    'existing publishers retain their search configuration');
+});
+
+test('Investing funnel reports only aggregate outcomes while headline-only RSS remains withheld', async () => {
+  const headline = 'PTT รายงานกำไรเพิ่ม หนุนตลาดหุ้นไทย';
+  const repeated = { id: 'rss-repeated', title: headline + ' - Investing.com',
+    url: 'https://news.google.com/rss/articles/investing-repeated',
+    snippet: headline + ' &nbsp;&nbsp; Investing.com' };
+  const legitimate = { ...fixtures.articles[0], id: 'rss-legitimate',
+    url: 'https://news.google.com/rss/articles/investing-legitimate' };
+  const events = [], queries = [];
+  const service = createNewsService({
+    env: { SETSCOPE_NEWS_EVIDENCE: 'write', SETSCOPE_P1_DISPLAY_GATE: 'off' },
+    fetchImpl: async value => {
+      const query = new URL(value).searchParams.get('q');
+      queries.push(query);
+      return new Response(query.startsWith('site:th.investing.com')
+        ? rss([repeated, legitimate]) : '<rss><channel></channel></rss>');
+    },
+    articleFetch: async () => { throw Error('No direct Investing provider requests'); },
+    logger: { info: value => events.push(value), warn: () => {} }
+  });
+  const response = await service.getNews();
+  assert.deepEqual(response.items.map(item => item.title), [legitimate.title]);
+  const reports = events.map(value => JSON.parse(value))
+    .filter(value => value.event === 'news_quality_funnel');
+  assert.equal(reports.length, 1);
+  const report = reports[0];
+  assert.deepEqual(report, { event: 'news_quality_funnel', publisher: 'investing',
+    rssCandidates: 2, metadataAccepted: 1, metadataRejected: 0,
+    metadataAmbiguous: 1, displayAccepted: 1 });
+  assert.ok(!JSON.stringify(report).includes(headline), 'diagnostics must not include article content');
+  assert.equal(queries.length, require('../server/news-service').FEEDS.length,
+    'targeted search must not increase the Google RSS request budget');
+});
