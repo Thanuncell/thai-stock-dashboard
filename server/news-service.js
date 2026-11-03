@@ -17,6 +17,10 @@ const { matchesWatchlistStock, watchlistStockQuery } = require('../lib/watchlist
 const { recordDiscovery, projectDiscovery } = require('../lib/news-discovery');
 const { issueEvidence, rememberAssessments, canonicalUrl } = require('../lib/news-evidence');
 
+// Keep a single Google RSS request for Investing.com, but require explicit
+// Thailand-market terms instead of an unrestricted publisher-wide search.
+const INVESTING_THAI_MARKET_QUERY = 'site:th.investing.com ("หุ้นไทย" OR "ตลาดหุ้นไทย" OR "เศรษฐกิจไทย" OR "เงินบาท" OR "SET50" OR "Thai stocks" OR "Thai equities" OR "Thailand economy" OR "Bank of Thailand")';
+
 const FEEDS = Object.freeze([
   ['thunhoon', 'ทันหุ้น', 'site:thunhoon.com'],
   ['kaohoon', 'ข่าวหุ้น', 'site:kaohoon.com'],
@@ -27,7 +31,7 @@ const FEEDS = Object.freeze([
   ['efinance', 'efinance', 'site:efinancethai.com'],
   ['other', 'กรุงเทพธุรกิจ', 'site:bangkokbiznews.com'],
   ['other', 'ฐานเศรษฐกิจ', 'site:thansettakij.com'],
-  ['other', 'Investing.com', 'site:th.investing.com'],
+  ['other', 'Investing.com', INVESTING_THAI_MARKET_QUERY],
   ['broker', 'โบรกเกอร์', BROKER_FIRMS.map(firm => `"${firm.companyName.replace(/^บริษัท/, '')}"`).join(' OR ')]
 ]);
 
@@ -304,6 +308,18 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
         if(onDiscovered){try{await onDiscovered(parsed.slice(0,1));}catch{logger.warn('News discovery checkpoint unavailable');}}
         const reviewed = await keepQualityItems(parsed, articleBudget);
+        if (sourceName === 'Investing.com') {
+          // Aggregate counts only: no news titles, links, snippets or account data in logs.
+          const counts = { VERIFIED: 0, UNVERIFIED: 0, REJECTED: 0 };
+          for (const assessment of reviewed.assessments) {
+            const status = assessment.verification?.status;
+            if (Object.hasOwn(counts, status)) counts[status]++;
+          }
+          logger.info?.(JSON.stringify({ event: 'news_quality_funnel', publisher: 'investing',
+            rssCandidates: parsed.length, metadataAccepted: counts.VERIFIED,
+            metadataRejected: counts.REJECTED, metadataAmbiguous: counts.UNVERIFIED,
+            displayAccepted: reviewed.length }));
+        }
         settled.push({ status: 'fulfilled', value: reviewed.slice(0, 8), uncertain: reviewed.unverifiedCount, assessments: reviewed.assessments });
       } catch (reason) {
         settled.push({ status: 'rejected', reason });
