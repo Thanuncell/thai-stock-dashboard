@@ -14,7 +14,8 @@ const englishTitle='Thailand stocks rise as PTT earnings support sentiment - Inv
 const thaiBody=('ตลาดหุ้นไทยปรับขึ้นหลัง PTT รายงานผลประกอบการและการเติบโตของรายได้ บริษัทเปิดเผยข้อมูลใหม่ด้านแผนลงทุนและกำไร ผู้ลงทุนติดตามแนวโน้มเศรษฐกิจไทยและธนาคารแห่งประเทศไทยอย่างใกล้ชิด ').repeat(3);
 const englishBody=('Thailand stocks rose as PTT earnings supported Thai equities. Investors assessed the Thai economy while the Bank of Thailand monitored investment and inflation. ').repeat(3);
 const foreignBody=('US stocks rose as technology companies released earnings. American shares rallied while the Federal Reserve discussed inflation and domestic demand in the United States. ').repeat(3);
-const rss=(title=thaiTitle)=>({source:'other',sourceName:'Investing.com',title,url:wrapper,pubDate:date,snippet:title+' &nbsp;&nbsp; Investing.com'});
+const rss=(title=thaiTitle)=>({source:'other',sourceName:'Investing.com',title,url:wrapper,pubDate:date,
+  snippet:title.replace(/ - Investing\.com$/,'')+' &nbsp;&nbsp; Investing.com'});
 function html({title=thaiTitle,articleUrl=url,canonical=articleUrl,structuredUrl=articleUrl,
   heading=title.replace(/ - Investing\.com$/,''),published=date,body=thaiBody,
   structuredType='NewsArticle',articleBody=body,includeCanonical=true,includeStructured=true}={}){
