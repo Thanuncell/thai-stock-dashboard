@@ -4,9 +4,9 @@ const {createNewsService}=require('../server/news-service');
 const date=new Date(Date.now()-60000).toUTCString();
 const entry=(name,id)=>'<item><title>PTT รายงานกำไรและแผนลงทุนใหม่ '+id+'</title><link>https://news.google.com/rss/articles/'+id+'</link><source>'+name+'</source><pubDate>'+date+'</pubDate><description>PTT รายงานข้อมูลบริษัทและผลประกอบการจากสำนักข่าวต้นทาง</description></item>';
 const rss='<rss><channel>'+entry('กรุงเทพธุรกิจ','bkk-uncovered')+entry('ฐานเศรษฐกิจ','than-uncovered')+entry('Investing.com','investing-uncovered')+'</channel></rss>';
-for(const view of ['general','watchlist'])test('both optional adapters failing preserve all three legacy RSS publishers: '+view,async()=>{
+for(const view of ['general','watchlist'])test('both optional adapters failing preserve other publishers but exclude removed outlet: '+view,async()=>{
  const service=createNewsService({env:{SETSCOPE_NEWS_EVIDENCE:'write',SETSCOPE_P1_DISPLAY_GATE:'off',SETSCOPE_NEWS_BANGKOKBIZNEWS:'on',SETSCOPE_NEWS_THANSETTAKIJ:'on'},fetchImpl:async()=>new Response(rss),articleFetch:async()=>{throw Error('optional source unavailable');}});
- const result=view==='general'?await service.getNews():await service.getWatchlistNews('PTT',{ownerId:'a'});assert.equal(result.items.length,3);assert.deepEqual(new Set(result.items.map(x=>x.sourceName)),new Set(['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ','Investing.com']));assert.ok(result.items.every(x=>x.verification.basis==='metadata'));
+ const result=view==='general'?await service.getNews():await service.getWatchlistNews('PTT',{ownerId:'a'});assert.equal(result.items.length,2);assert.deepEqual(new Set(result.items.map(x=>x.sourceName)),new Set(['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ']));assert.ok(result.items.every(x=>x.verification.basis==='metadata'));
 });
 
 const {dedupeNewsItems,newsFingerprint}=require('../lib/broker-news');
