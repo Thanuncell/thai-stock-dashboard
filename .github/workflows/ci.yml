@@ -28,6 +28,38 @@ jobs:
       - name: Run syntax checks
         run: npm run check
 
+  archive-query-quality:
+    name: Archive query quality (PostgreSQL 17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install package metadata
+        run: npm install --ignore-scripts
+      - name: Verify old index, migration and rebuilt pagination
+        env:
+          SETSCOPE_QUERY_QUALITY_PG: '{"host":"127.0.0.1","port":5432,"user":"postgres","database":"postgres"}'
+        run: npm run test:news-query-quality:postgres17
+
   security-browser:
     name: Mock security E2E
     runs-on: ubuntu-latest
