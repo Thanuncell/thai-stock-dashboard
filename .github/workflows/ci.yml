@@ -53,3 +53,6 @@ jobs:
       - name: Run News navigation and loading regression
         timeout-minutes: 3
         run: npm run test:news-loading:browser
+      - name: Run Market Breadth display regression
+        timeout-minutes: 3
+        run: npm run test:breadth:browser
