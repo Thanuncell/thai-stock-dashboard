@@ -12,7 +12,7 @@ test('WS6: multi-publisher OR includes other storage sources and ignores discove
  const d=await import('../client/domain.mjs');
  assert.deepEqual(d.selectNewsForDisplay(items,{source:'bangkokbiznews,thansettakij',featuredCount:0}).filtered.map(x=>x.title),[items[0].title,items[2].title]);
  assert.equal(d.selectNewsForDisplay([{...items[1],discoverySource:'bangkokbiznews'}],{source:'bangkokbiznews'}).filtered.length,0);
- assert.equal(d.selectNewsForDisplay(items,{source:'other,broker',featuredCount:0}).filtered.length,2);
+ assert.equal(d.selectNewsForDisplay(items,{source:'other,broker',featuredCount:0}).filtered.length,4);
  assert.equal(d.selectNewsForDisplay(items,{source:'other',featuredCount:0}).filtered.length,3);
 });
 test('WS6: multi-source navigation is canonical and old single-source URLs remain compatible',async()=>{
@@ -41,7 +41,7 @@ test('WS6: archive union, quality, dedup and featured exclusions count before pa
  const result=await archive.list({source:'bangkokbiznews,thansettakij',featuredCount:5,page:2,pageSize:10,});
  assert.equal(result.total,19);assert.equal(result.matchingTotal,24);assert.equal(result.featured.length,5);assert.equal(result.page,2);assert.equal(result.items.length,9);assert.equal(result.countExact,true);
  assert.ok([...result.featured,...result.items].every(x=>['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ'].includes(x.sourceName)));
- assert.equal((await archive.list({source:'broker,other'})).total,24);assert.equal(calls,1);assert.equal(MAX_ARCHIVE_SCAN_ROWS,20000);
+ assert.equal((await archive.list({source:'broker,other'})).total,48);assert.equal(calls,1);assert.equal(MAX_ARCHIVE_SCAN_ROWS,20000);
 });
 
 test('WS6: filtering never upgrades metadata; article-only gate counts persisted trusted articles',async()=>{
