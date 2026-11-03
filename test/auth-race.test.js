@@ -514,8 +514,42 @@ test('forgot password is bounded, uses same-origin redirect and a generic respon
   assert.equal(new URL(call.input).searchParams.get('redirect_to'), 'https://setscope.example');
   assert.equal(call.init.headers.Authorization, undefined);
   h.resolvePending('recover', {}); await sending;
-  assert.match(h.getNode('#auth-message').textContent, /หากอีเมลนี้/);
+  assert.equal(h.getNode('#auth-message').textContent, 'โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่');
   assert.equal(h.document.body.classList.contains('authenticated'), false);
+});
+
+test('recovery success uses the same approved text for existing and absent accounts without signup or lookup',async()=>{
+  const text='โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่';
+  for(const profile of [false,true])for(const exists of [false,true]){
+    const h=await createHarness({initialSession:profile?{access_token:'token-a',refresh_token:'refresh-a',expires_at:Date.now()+3600000}:null,holds:['recover']});
+    const button=h.getNode(profile?'#profile-recovery-button':'#forgot-password-form').querySelector?.('[type=submit]');
+    const sending=profile?h.getNode('#profile-recovery-button').listeners.get('click')({currentTarget:h.getNode('#profile-recovery-button')})
+      :h.submit('#forgot-password-form',{email:exists?'registered@example.test':'absent@example.test'});
+    await h.waitForPending('recover');
+    assert.notEqual(h.getNode(profile?'#profile-message':'#auth-message').textContent,text,'success is not displayed before response');
+    h.resolvePending('recover',exists?{message:'private-existing-account',user:{id:'synthetic'}}:{});await sending;
+    assert.equal(h.getNode(profile?'#profile-message':'#auth-message').textContent,text);
+    assert.equal(h.calls.filter(c=>c.key==='recover').length,1);
+    assert.equal(h.calls.some(c=>c.key.startsWith('signup:')),false);
+    if(!profile){
+      assert.equal(h.calls.some(c=>c.key.startsWith('user:')),false,'forgot flow performs no account lookup');
+      assert.equal(h.currentSession(),null);assert.equal(h.window.setscopeAuth.user,null,'successful email request never signs in or creates an account');
+    }
+    assert.equal(profile?h.getNode('#profile-recovery-button').disabled:button.disabled,false);
+  }
+});
+
+test('recovery network and server failures retain the generic error and never show success or provider details',async()=>{
+  for(const profile of [false,true])for(const failure of ['network',429,500]){
+    const h=await createHarness({initialSession:profile?{access_token:'token-a',refresh_token:'refresh-a',expires_at:Date.now()+3600000}:null,holds:['recover']});
+    const sending=profile?h.getNode('#profile-recovery-button').listeners.get('click')({currentTarget:h.getNode('#profile-recovery-button')})
+      :h.submit('#forgot-password-form',{email:'absent@example.test'});
+    await h.waitForPending('recover');
+    if(failure==='network')h.pending.get('recover')[0].reject(new TypeError('private-network-detail'));
+    else h.resolvePending('recover',{msg:'private-account-registration-detail'},failure);
+    await sending;
+    assert.equal(h.getNode(profile?'#profile-message':'#auth-message').textContent,'ส่งอีเมลไม่สำเร็จ กรุณารอสักครู่แล้วลองอีกครั้ง');
+  }
 });
 
 test('delayed Profile email responses never render into a newer account', async () => {

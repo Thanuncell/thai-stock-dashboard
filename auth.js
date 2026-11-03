@@ -330,7 +330,8 @@
         method: 'POST', body: JSON.stringify(kind === 'verification' ? { type: 'signup', email } : { email })
       });
       if (original.generation !== sessionGeneration || !isCurrentAuthOperation(original.operationGeneration)) return;
-      report('หากอีเมลนี้ใช้งานได้ ระบบจะส่งลิงก์ให้ กรุณาตรวจสอบกล่องจดหมายและสแปม');
+      report(kind === 'verification' ? 'หากอีเมลนี้ใช้งานได้ ระบบจะส่งลิงก์ให้ กรุณาตรวจสอบกล่องจดหมายและสแปม'
+        : 'โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่');
     } catch (_) {
       if (original.generation === sessionGeneration && isCurrentAuthOperation(original.operationGeneration)) report('ส่งอีเมลไม่สำเร็จ กรุณารอสักครู่แล้วลองอีกครั้ง');
     } finally {

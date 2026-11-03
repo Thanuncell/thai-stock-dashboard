@@ -3,6 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),http=require('n
 const {chromium}=require(process.env.SETSCOPE_PLAYWRIGHT_MODULE||'playwright');
 const {mockRequest}=require('./account-isolation.browser.cjs');
 let checks=0,phase='setup';
+const recoveryMessage='โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่';
 const check=(actual,expected,message)=>{assert.deepEqual(actual,expected,message);checks++;};
 (async()=>{
  const root=path.resolve(__dirname,'..'),server=http.createServer((req,res)=>{
@@ -18,13 +19,16 @@ const check=(actual,expected,message)=>{assert.deepEqual(actual,expected,message
   const stamp='2026-10-30T07:21:09.000Z',rows=Array.from({length:25},(_,i)=>({symbol:'UNIT'+(i+1),rank:i+1,last:10+i,change:0.1,changePercent:1,turnoverMillion:100-i,volumeThousand:10+i}));
   for(const width of [320,390,1366])for(const theme of ['light','dark']){
    const context=await browser.newContext({viewport:{width,height:900}}),state={getOwners:[],putOwners:[],holdNextAPut:false,holdNextLogout:false,holdNextAGet:false,holdNextAMarket:false};
-   let count=20,clock=stamp,stale=false;const errors=[],authCalls=[],overviewCalls=[];
+   let count=20,clock=stamp,stale=false,recoverMode='success';const errors=[],authCalls=[],overviewCalls=[];
    await context.route('**/*',async route=>{
     const req=route.request(),url=new URL(req.url());
     if(url.origin!==base&&url.origin!=='https://isolation-test.supabase.co')return route.abort();
     const json=body=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)});
     if(url.origin==='https://isolation-test.supabase.co'&&url.pathname==='/auth/v1/recover'){
-     authCalls.push({path:url.pathname,redirect:url.searchParams.get('redirect_to')});return json({});
+     authCalls.push({path:url.pathname,redirect:url.searchParams.get('redirect_to')});
+     if(recoverMode==='network')return route.abort('failed');
+     if(recoverMode==='server')return route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({msg:'private-provider-detail'})});
+     return json(req.postDataJSON().email.startsWith('absent@')?{}:{message:'private-existing-account'});
     }
     if(url.origin===base&&url.pathname==='/api/market-overview'){
      overviewCalls.push(url.search);
@@ -69,12 +73,23 @@ const check=(actual,expected,message)=>{assert.deepEqual(actual,expected,message
    check(await page.locator('#settrade-updated').textContent(),'แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: —');
    phase='logout';await page.locator('#user-avatar').click();await page.waitForSelector('#profile-page:not(.workspace-hidden)');
    check(await page.locator('#profile-recovery-button').textContent(),'รับรหัสผ่านใหม่');
-   await page.locator('#profile-recovery-button').click();await page.waitForFunction(()=>document.querySelector('#profile-message').textContent.includes('กล่องจดหมาย'));
+   await page.locator('#profile-recovery-button').click();await page.waitForFunction(text=>document.querySelector('#profile-message').textContent===text,recoveryMessage);
+   check(await page.locator('#profile-message').textContent(),recoveryMessage);
    check(authCalls.length,1);check(authCalls[0].redirect,base);
    await page.locator('#profile-logout-button').click();await page.waitForSelector('#login-form');
    await page.locator('#forgot-password-button').click();check(await page.locator('#forgot-password-form button[type=submit]').textContent(),'รับรหัสผ่านใหม่');
    await page.locator('#forgot-password-form input[name=email]').fill('a@example.test');await page.locator('#forgot-password-form button[type=submit]').click();
-   await page.waitForFunction(()=>document.querySelector('#auth-message').textContent.includes('กล่องจดหมาย'));check(authCalls.length,2);check(authCalls[1].redirect,base);
+   await page.waitForFunction(text=>document.querySelector('#auth-message').textContent===text,recoveryMessage);check(authCalls.length,2);check(authCalls[1].redirect,base);
+   check(await page.locator('#auth-message').textContent(),recoveryMessage,'existing email receives neutral success');
+   await page.locator('#forgot-password-form input[name=email]').fill('absent@example.test');await page.locator('#forgot-password-form button[type=submit]').click();
+   await page.waitForFunction(text=>document.querySelector('#auth-message').textContent===text&&!document.querySelector('#forgot-password-form button[type=submit]').disabled,recoveryMessage);
+   check(authCalls.length,3);check(await page.locator('#auth-message').textContent(),recoveryMessage,'absent email receives identical neutral success');
+   for(const failure of ['network','server']){
+    recoverMode=failure;await page.locator('#forgot-password-form button[type=submit]').click();
+    await page.waitForFunction(()=>document.querySelector('#auth-message').textContent==='ส่งอีเมลไม่สำเร็จ กรุณารอสักครู่แล้วลองอีกครั้ง');
+    check(await page.locator('#auth-message').textContent(),'ส่งอีเมลไม่สำเร็จ กรุณารอสักครู่แล้วลองอีกครั้ง');
+    check(await page.locator('#forgot-password-form button[type=submit]').isEnabled(),true);
+   }
    await page.locator('#auth-login-tab').click();await page.locator('#login-form input[name=email]').fill('b@example.test');await page.locator('#login-form input[name=password]').fill('synthetic-ui-fixture');
    await page.locator('#login-form button[type=submit]').click();await page.waitForSelector('body.authenticated');check(new URL(page.url()).hash,'#overview','Profile logout followed by another account starts Overview');
    check(await page.locator('#profile-email').textContent(),'b@example.test');check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);check(errors,[]);
