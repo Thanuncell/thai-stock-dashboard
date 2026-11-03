@@ -1,0 +1,15 @@
+{
+  "provenance": "Synthetic offline regressions for the approved page categories; not a transcription of the Owner's six unavailable images.",
+  "nonArticles": [
+    {"id":"quote","title":"ราคาหุ้น PTT (PTT) - Investing.com","url":"https://th.investing.com/equities/ptt-pcl","snippet":"ข้อมูลราคาหุ้น PTT ในตลาดหุ้นไทย ราคาซื้อขายล่าสุด กราฟและข้อมูลย้อนหลังของหลักทรัพย์"},
+    {"id":"futures","title":"Thailand SET50 Index Futures - Investing.com","url":"https://www.investing.com/indices/thailand-set-50-futures","snippet":"Find the latest Thailand futures prices and market data with historical charts and contract information."},
+    {"id":"bonds","title":"Thailand 10-Year Bond Yield - Investing.com","url":"https://www.investing.com/rates-bonds/thailand-10-year-bond-yield","snippet":"The Thailand bond yield page provides the latest market prices and historical data for investors."},
+    {"id":"currency","title":"USD THB Currency Quote - Investing.com","url":"https://www.investing.com/currencies/usd-thb","snippet":"View the Thai baht currency quote and the current market data with bid and ask prices."},
+    {"id":"indices","title":"Thailand Indices - Investing.com","url":"https://www.investing.com/indices/thailand-indices","snippet":"The Thailand indices page lists the current market data and stock index prices for all available indices."},
+    {"id":"listing","title":"Thailand Markets - Investing.com","url":"https://www.investing.com/markets/thailand","snippet":"Browse the Thailand markets listing and market information with prices and historical charts."}
+  ],
+  "articles": [
+    {"id":"thai","title":"PTT หนุนหุ้นไทยหลังรายงานผลประกอบการเพิ่มความเชื่อมั่น - Investing.com","snippet":"ตลาดหุ้นไทยปรับตัวขึ้นหลัง PTT รายงานผลประกอบการที่ดีขึ้น นักลงทุนติดตามแนวโน้มเศรษฐกิจไทยและการประชุมธนาคารแห่งประเทศไทย โดยบริษัทระบุว่ากำไรเพิ่มขึ้นจากธุรกิจหลัก"},
+    {"id":"english","title":"Thailand stocks rise as PTT earnings support sentiment - Investing.com","snippet":"Thailand stocks rose on Tuesday as PTT earnings improved and investors assessed the outlook for the Thai economy. The Bank of Thailand said that domestic demand remained stable while companies reported stronger revenue."}
+  ]
+}

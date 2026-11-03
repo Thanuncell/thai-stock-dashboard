@@ -12,6 +12,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   const protection=(await pool.query("select relacl::text,relrowsecurity,relforcerowsecurity from pg_class where oid='news_archive'::regclass")).rows;
   await pool.query(await fs.readFile(path.join(repo,'supabase/migrations/20261029131808_news_archive_query.sql'),'utf8'));
   await pool.query(await fs.readFile(path.join(repo,'supabase/migrations/20261029154157_news_archive_query_safeupdate.sql'),'utf8'));
+  await pool.query(await fs.readFile(path.join(repo,'supabase/migrations/20261103035737_news_archive_query_quality_policy.sql'),'utf8'));
   if(process.env.SETSCOPE_TEST_SAFEUPDATE_LIBRARY)assert.equal((await pool.query("select current_setting('safeupdate.enabled') enabled")).rows[0].enabled,'on');
   http=await require('./fixtures/news-archive-query-http.cjs')(pool,{...config,database});
   const stats={requests:0,bytes:0,paths:[]},transport=async(input,init={})=>{const u=new URL(input);assert.equal(u.origin,'https://ws7.invalid');const r=await fetch(http.base+u.pathname.slice('/rest/v1'.length)+u.search,init),body=await r.text();stats.requests++;stats.bytes+=Buffer.byteLength(body);stats.paths.push(u.pathname);return new Response(body,{status:r.status,headers:r.headers});};
@@ -20,7 +21,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   const seed=async(n,start=0)=>pool.query(`insert into news_archive(fingerprint,title,url,source,source_name,snippet,published_at,fetched_at,matched_symbols,broker_firms,analysis_mode,analysis_summary)
    select encode(sha256(convert_to('seed-'||i,'UTF8')),'hex'),'PTT ข่าวการลงทุนและผลประกอบการ '||i,'https://news.google.com/rss/articles/ws7-'||i,
    case when i%4=3 then 'infoquest' else 'other' end,(array['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ','Investing.com','InfoQuest'])[i%4+1],
-   'บริษัทเปิดเผยข้อมูลการลงทุนและผลประกอบการจากต้นทาง ข่าวจริงเกี่ยวกับกรรมการ ผู้ถือหุ้น และการสมัครงาน',now()-i*interval '1 second',now(),
+   case when i%4=2 then 'บริษัท PTT ในตลาดหุ้นไทยเปิดเผยข้อมูลการลงทุนและผลประกอบการจากต้นทาง ข่าวจริงเกี่ยวกับกรรมการ ผู้ถือหุ้น และการสมัครงาน' else 'บริษัทเปิดเผยข้อมูลการลงทุนและผลประกอบการจากต้นทาง ข่าวจริงเกี่ยวกับกรรมการ ผู้ถือหุ้น และการสมัครงาน' end,now()-i*interval '1 second',now(),
    case when i%5=0 then array['ADVANC'] else array['PTT'] end,case when i%7=0 then array['KS'] else '{}'::text[] end,
    case when i%11=0 then 'ai' else null end,case when i%11=0 then 'Stored AI '||i else null end from generate_series($2::integer+1,$1::integer) i`,[n,start]);
   await seed(125);

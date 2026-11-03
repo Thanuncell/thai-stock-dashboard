@@ -1,0 +1,23 @@
+{
+  "provenance": "Owner-supplied names and candidate URLs from six screenshots; no live acquisition. Descriptions below are synthetic test text, not article extraction. Original stored Google RSS URLs were not supplied.",
+  "cases": [
+    {"image":1,"id":"crypto","title":"GTA6CAT (thegta6cat.com) ตลาด","url":"https://th.investing.com/crypto/gta6cat","urlMatch":"owner-identified-page"},
+    {"image":2,"id":"copper","title":"บทวิเคราะห์ Copper Perpetual Futures","url":"https://th.investing.com/commodities/copper-usd-perpetual-futures-opinion?cid=1243102","urlMatch":"owner-identified-listing"},
+    {"image":2,"id":"oil-analysis","title":"บทวิเคราะห์ Crude Oil Perpetual Futures","url":"https://th.investing.com/commodities/cl-usd-perpetual-futures-opinion","urlMatch":"owner-identified-listing"},
+    {"image":3,"id":"silver-1","title":"Silver Perpetual Futures ข่าว","url":"https://th.investing.com/commodities/xag-usd-perpetual-futures-news","urlMatch":"original-stored-url-unverified"},
+    {"image":3,"id":"silver-2","title":"Silver Perpetual Futures ข่าว","url":"https://th.investing.com/commodities/xag-usd-perpetual-futures-news","urlMatch":"original-stored-url-unverified"},
+    {"image":3,"id":"oil-news","title":"Crude Oil Perpetual Futures ข่าว","url":"https://th.investing.com/commodities/cl-usd-perpetual-futures-news","urlMatch":"owner-identified-listing"},
+    {"image":3,"id":"etf","title":"AKFB floating rate bonds ข่าวกองทุนอีทีเอฟ","url":"https://th.investing.com/etfs/akfb","urlMatch":"related-fund-page-not-exact-news-url"},
+    {"image":4,"id":"broker","title":"รีวิว rewalt ในไทย ปี 2026","url":"https://www.investing.com/brokers/reviews/rewalt/","urlMatch":"english-version-thai-url-unverified"},
+    {"image":4,"id":"poland-technical","title":"การวิเคราะห์ทางเทคนิคของพันธบัตร Poland 1.48 28-Nov-2029","url":"https://th.investing.com/rates-bonds/jp561600bqb4-technical","urlMatch":"owner-identified-instrument"},
+    {"image":4,"id":"poland-price","title":"ราคาพันธบัตร Poland 3.96 25-Nov-2031","url":"https://th.investing.com/rates-bonds/pl0000113213","urlMatch":"owner-identified-instrument"},
+    {"image":5,"id":"coril","title":"Coril Instrumentos Financieros 5 (FICRPS23)","url":"https://th.investing.com/equities/coril-instrumentos-financieros-5","urlMatch":"owner-identified-instrument"},
+    {"image":5,"id":"goldcorp","title":"China Goldcorp Ltd (CAUh)","url":"https://th.investing.com/equities/china-goldcorp","urlMatch":"owner-identified-instrument"},
+    {"image":5,"id":"feralx","title":"FeralX Systems Inc (FRLX)","url":"https://th.investing.com/equities/feralx-systems","urlMatch":"owner-identified-instrument"},
+    {"image":5,"id":"canon","title":"CANON INC DRC (CANO)","url":"https://fr.investing.com/equities/canon-inc-drc","urlMatch":"french-version-thai-url-unverified"},
+    {"image":5,"id":"peso","title":"Mexican Peso 1 Day TIIE Interback Rate กราฟพันธบัตร","url":"https://www.investing.com/rates-bonds/mexican-peso-1-day-tiie-interback-streaming-chart","urlMatch":"english-version-thai-url-unverified"},
+    {"image":6,"id":"itau-advanced","title":"Itau Unibanco SA 5.35 25-May-2029 กราฟพันธบัตรขั้นสูง","url":"https://www.investing.com/rates-bonds/xs2849662957-advanced-chart","urlMatch":"owner-identified-instrument-and-page-kind"},
+    {"image":6,"id":"itau-chart","title":"Itau Unibanco SA 4.25 12-Jul-2027 กราฟพันธบัตร","url":"https://au.investing.com/rates-bonds/xs3134550840-streaming-chart","urlMatch":"owner-identified-instrument-and-page-kind"},
+    {"image":6,"id":"itau-forum","title":"Itau Unibanco SA 5.97 01-Nov-2029 กระดานสนทนา","url":"https://it.investing.com/rates-bonds/xs2951559900-commentary","urlMatch":"owner-identified-instrument-and-page-kind"}
+  ]
+}

@@ -259,7 +259,8 @@ function createNewsArchiveService({
   }
 
   const queryRow=row=>evidenceMode?row:Object.fromEntries(Object.entries(row).filter(([key])=>!EVIDENCE_FIELDS.includes(key)));
-  const queryIndex=require('./news-archive-query').createArchiveQuery({enabled:configured&&env.SETSCOPE_NEWS_ARCHIVE_QUERY==='on',request,headers,fromRow:row=>fromRow(queryRow(row)),reviewRow:row=>reviewArchivedNewsRow(queryRow(row)),displayProject,displayReview,displayOverlays,blockedUrls:()=>[...displayBlockedUrls(),...(hardGate?[...quarantine.values()].map(x=>x.url):[])],now,policy:'news-query-1:'+(evidenceMode?'read':'legacy')+':'+(hardGate?'article':'metadata')});
+  const {createArchiveQuery,NEWS_QUERY_POLICY_VERSION}=require('./news-archive-query');
+  const queryIndex=createArchiveQuery({enabled:configured&&env.SETSCOPE_NEWS_ARCHIVE_QUERY==='on',request,headers,fromRow:row=>fromRow(queryRow(row)),reviewRow:row=>reviewArchivedNewsRow(queryRow(row)),displayProject,displayReview,displayOverlays,blockedUrls:()=>[...displayBlockedUrls(),...(hardGate?[...quarantine.values()].map(x=>x.url):[])],now,policy:NEWS_QUERY_POLICY_VERSION+':'+(evidenceMode?'read':'legacy')+':'+(hardGate?'article':'metadata')});
 
   async function buildArchiveSnapshot() {
     const params = new URLSearchParams({
