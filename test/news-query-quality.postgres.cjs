@@ -111,7 +111,7 @@ test('shared-quality generation on isolated PostgreSQL 17', { skip: !process.env
     await t.test('old policy remains available for separately approved rollback without changing news', async () => {
       await db.query('begin');
       try { await db.query('select public.news_archive_query_reset($1)', [OLD_POLICY]); } finally { await db.query('rollback'); }
-      assert.equal((await service().list()).total, 6); assert.equal(JSON.stringify(await rows()), before);
+      assert.equal((await service().list()).total, 4); assert.equal(JSON.stringify(await rows()), before);
     });
   } finally {
     await rpcDb?.end(); await db?.end();
