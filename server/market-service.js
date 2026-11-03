@@ -242,8 +242,10 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       try {
         const fallback = shapeChart(await yahooChart(`${active}.BK`, fallbackRange, fallbackInterval), active, `chart:${fallbackRange}:${fallbackInterval}`);
         if (['usable', 'usable_with_warnings'].includes(fallback.historyStatus) && fallback.history.length > history.length) {
+          // Longer history may inform price levels, but technical indicators must stay
+          // on the selected chart interval: daily candles are not intraday candles.
           levelsHistory = fallback.history;
-          indicatorHistory = fallback.history;
+          if (fallbackInterval === interval) indicatorHistory = fallback.history;
         }
       } catch (error) { errors.push(publicMarketError(error, 'ข้อมูลย้อนหลังสำหรับการวิเคราะห์')); }
     }
