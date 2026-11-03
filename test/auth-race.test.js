@@ -64,7 +64,7 @@ function ownerFor(value) {
     || String(value).toLowerCase().includes('token-b') || String(value).toLowerCase().includes('refresh-b') ? 'user-b' : 'user-a';
 }
 
-async function createHarness({ initialSession = { access_token: 'token-a', refresh_token: 'refresh-a', expires_at: Date.now() + 3_600_000 }, holds = [], protectedStatuses = [], initialLocation = {} } = {}) {
+async function createHarness({ initialSession = { access_token: 'token-a', refresh_token: 'refresh-a', expires_at: Date.now() + 3_600_000 }, holds = [], protectedStatuses = [], initialLocation = {}, initialReturn = '', initialReturnIntent = '' } = {}) {
   const nodes = new Map();
   const getNode = selector => {
     if (!nodes.has(selector)) nodes.set(selector, new FakeNode());
@@ -72,6 +72,8 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
   };
   const sessionStorage = new FakeStorage();
   const localStorage = new FakeStorage();
+  if(initialReturn)sessionStorage.setItem('setscope-auth-return-v1',initialReturn);
+  if(initialReturnIntent)sessionStorage.setItem('setscope-auth-return-intent-v1',initialReturnIntent);
   if (initialSession) sessionStorage.setItem('setscope-auth-session-v1', JSON.stringify(initialSession));
   const holdKeys = new Set(holds);
   const pending = new Map();
@@ -199,6 +201,34 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
     resolvePending, sessionStorage, settle, submit, timers, waitForPending, window
   };
 }
+
+test('normal login ignores legacy Profile return state but retains explicit protected-route intent',async()=>{
+  for(const route of ['/#profile','/?tab=old#profile','https://untrusted.invalid/#profile']){
+    const h=await createHarness({initialSession:null,initialLocation:{pathname:'/login',search:'',hash:''},initialReturn:route});
+    await h.submit('#login-form',{email:'a@example.test',password:'fixture'});
+    assert.equal(h.location.hash,'#overview');assert.equal(h.sessionStorage.getItem('setscope-auth-return-v1'),null);
+  }
+  for(const [hash,search] of [['#profile',''],['#news','?source=infoquest&query=PTT&page=2'],['#chart','?symbol=CPALL&range=1y'],['#watchlist','?watchPage=2']]){
+    const h=await createHarness({initialSession:null,initialLocation:{pathname:'/',hash,search}});
+    assert.equal(h.location.pathname,'/login');
+    await h.submit('#login-form',{email:'a@example.test',password:'fixture'});
+    assert.equal(h.location.hash,hash);assert.equal(h.location.search,search);
+  }
+});
+
+test('intent survives login-page reload while explicit Profile logout starts the next account at Overview',async()=>{
+  const route='/?source=infoquest&query=PTT&page=2#news';
+  const resumed=await createHarness({initialSession:null,initialLocation:{pathname:'/login',search:'',hash:''},initialReturn:route,initialReturnIntent:route});
+  await resumed.submit('#login-form',{email:'a@example.test',password:'fixture'});
+  assert.equal(resumed.location.hash,'#news');assert.equal(resumed.location.search,'?source=infoquest&query=PTT&page=2');
+  const h=await createHarness({initialLocation:{hash:'#profile'}});
+  assert.equal(h.location.hash,'#profile','validated active session keeps the explicitly opened Profile');
+  await h.getNode('#profile-logout-button').listeners.get('click')();
+  assert.equal(h.sessionStorage.getItem('setscope-auth-return-v1'),null);
+  assert.equal(h.sessionStorage.getItem('setscope-auth-return-intent-v1'),null);
+  await h.submit('#login-form',{email:'b@example.test',password:'fixture'});
+  assert.equal(h.location.hash,'#overview');assert.equal(h.window.setscopeAuth.user.id,'user-b');
+});
 
 test('stale refresh success and failure cannot replace or clear a newer account session', async () => {
   for (const failure of [false, true]) {

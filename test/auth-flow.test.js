@@ -192,7 +192,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   loginForm.fields = { email: 'login@example.test', password: 'correct-horse' };
   await loginForm.listeners.get('submit')({ preventDefault() {}, currentTarget: loginForm });
   assert.equal(loginForm.submit.disabled, false);
-  assert.equal(`${location.pathname}${location.search}${location.hash}`, '/?s=PTT&source=infoquest&newsPage=12#news');
+  assert.equal(`${location.pathname}${location.search}${location.hash}`, '/#overview', 'new login after explicit logout starts at Overview');
   assert.ok(calls.some(call => call.url.includes('grant_type=password')));
 
   const signupForm = getNode('#signup-form');

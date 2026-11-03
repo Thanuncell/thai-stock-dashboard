@@ -78,6 +78,7 @@ let latestMarket = null;
 let latestMarketSymbol = '';
 let latestMarketRange = '';
 let latestSettradeOverview = null;
+let mostActiveExpanded = false;
 let activeSource = initialNavigation.route === 'news' ? initialNavigation.source : 'all';
 let latestNews = [];
 let latestWatchlistNews = [];
@@ -181,6 +182,7 @@ function clearPrivateDom() {
   setWatchlistSyncStatus('', '');
 }
 function clearPrivateState() {
+  mostActiveExpanded = false;
   const preserveInitialChartSelection = privateInitializationSequence === 0 && initialNavigation.route === 'chart';
   privateInitializationSequence += 1;
   privateInitializationIdentityKey = '';
@@ -614,8 +616,10 @@ function renderSettradeOverview(data) {
   const activeContext = activeOverviewContext(data);
   const activeStatus = data.fieldStatus?.activeValue || {};
   const activeSaved = activeStatus.state === 'LKG' || activeStatus.stale || data.stale || data.dataState === 'stale';
+  const sameActiveTimestamp = Date.parse(activeStatus.sourceUpdatedAt) === Date.parse(data.fetchedAt);
   const activeCaption = activeContext.displayable
-    ? `${activeSaved ? 'ข้อมูลเก่า' : 'อัปเดตล่าสุด'} ${overviewSourceStamp(activeStatus.sourceUpdatedAt)}` : '';
+    ? sameActiveTimestamp ? activeSaved ? 'ข้อมูลเก่า' : ''
+      : `${activeSaved ? 'ข้อมูลเก่า' : 'ข้อมูลอันดับ ณ'} ${overviewSourceStamp(activeStatus.sourceUpdatedAt)}` : '';
   const activeRows = (activeContext.displayable && Array.isArray(data.activeValue) ? data.activeValue : []).filter(item =>
     typeof item?.symbol === 'string' && item.symbol.trim()
     && toFiniteNumber(item.rank) > 0
@@ -623,12 +627,19 @@ function renderSettradeOverview(data) {
     && activeAmountDisplay(item, activeStatus).mode !== 'INVALID'
   );
   const activeRoot = $('#active-value-content');
+  if (activeRows.length <= 5) mostActiveExpanded = false;
+  const activeToggle = $('#toggle-active-value');
+  if (activeToggle) {
+    activeToggle.hidden = activeRows.length <= 5;
+    activeToggle.textContent = mostActiveExpanded ? 'แสดงน้อยลง' : 'แสดงทั้งหมด';
+    activeToggle.setAttribute('aria-expanded', String(mostActiveExpanded));
+  }
   if (activeRoot) {
     const amountsLabelled = activeRows.every(item => activeAmountDisplay(item, activeStatus).mode === 'MILLION_BAHT');
     const amountHeading = amountsLabelled ? 'มูลค่า (ลบ.)' : 'มูลค่าจากต้นทาง';
     activeRoot.className = activeRows.length ? 'market-active-table-wrap' : 'market-live-placeholder';
     activeRoot.innerHTML = activeRows.length
-      ? `<table class="market-active-table"><thead><tr><th>หุ้น</th><th>ล่าสุด</th><th>เปลี่ยนแปลง</th><th>${amountHeading}</th></tr></thead><tbody>${activeRows.slice(0, 20).map(item => {
+      ? `<table class="market-active-table"><thead><tr><th>หุ้น</th><th>ล่าสุด</th><th>เปลี่ยนแปลง</th><th>${amountHeading}</th></tr></thead><tbody>${activeRows.slice(0, mostActiveExpanded ? 20 : 5).map(item => {
           const change = toFiniteNumber(item.change);
           const trend = change > 0 ? 'up' : change < 0 ? 'down' : '';
           const amount = activeAmountDisplay(item, activeStatus);
@@ -638,7 +649,8 @@ function renderSettradeOverview(data) {
         }).join('')}</tbody></table>${activeCaption ? `<small class="market-source-caption">${escapeHtml(activeCaption)}</small>` : ''}`
       : '<span class="market-placeholder-icon">↗</span><strong id="active-value-status">ข้อมูลจัดอันดับยังไม่พร้อม</strong>';
   }
-  setText('#settrade-updated', data.source === 'SETTRADE' ? 'แหล่งข้อมูล SETTRADE' : '');
+  setText('#settrade-updated', data.source === 'SETTRADE'
+    ? `แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: ${overviewSourceStamp(data.fetchedAt)}${data.stale || data.dataState === 'stale' ? ' · ข้อมูลเก่า' : ''}` : '');
 }
 async function getSettradeOverview(force = false) {
   const identity = capturePrivateIdentity();
@@ -2026,6 +2038,11 @@ function setupUiEventWiring() {
   $('#refresh-watchlist-news').addEventListener('click', () => getWatchlistNews({ reason: 'manual', resetPage: true }));
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));
+  $('#toggle-active-value')?.addEventListener('click', () => {
+    if (!isCurrentPrivateIdentity() || !latestSettradeOverview) return;
+    mostActiveExpanded = !mostActiveExpanded;
+    renderSettradeOverview(latestSettradeOverview);
+  });
   setInterval(getMarket, 60000);
   setInterval(getSettradeOverview, 300000);
   setInterval(() => getNews({ reason: 'poll' }), 300000);
