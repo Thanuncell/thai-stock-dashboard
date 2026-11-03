@@ -5,7 +5,7 @@ const { allowedNewsUrl, p1DisplayGateEnabled, isSlugNewsTitle } = require('../li
 const { dedupeNewsItems, newsFingerprint } = require('../lib/broker-news');
 const { normalizeSymbol } = require('../lib/validation');
 const { annotateNewsContent, reviewNewsItem, reviewNewsForDisplay } = require('../lib/news-quality');
-const { normalizeNewsSources, newsMatchesSources, isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols } = require('../lib/news-content');
+const { normalizeNewsSources, newsMatchesSources, isRemovedNewsPublisher, isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols } = require('../lib/news-content');
 const { withNewsRulesSummary } = require('../lib/news-summary');
 const { trustedEvidence, projectEvidence, evidenceColumns, validStoredEvidence, restoreEvidence, newsAssociations, rowSubjectHash, canonicalUrl } = require('../lib/news-evidence');
 const EVIDENCE_FIELDS = ['verification_status','verification_reason','verification_basis','verification_policy_version',
@@ -45,6 +45,7 @@ function mergeRowAssociations(target, first, second) {
 }
 
 function reviewArchivedNewsRow(row) {
+  if (isRemovedNewsPublisher(rowItem(row))) return { status: 'REJECTED', reason: 'REMOVED_NEWS_PUBLISHER', basis: 'metadata' };
   if (!allowedNewsUrl(row?.url) || !Number.isFinite(Date.parse(row?.published_at))) return { status: 'REJECTED', reason: 'INVALID_ARCHIVE_IDENTITY' };
   const item = rowItem(row), metadata = reviewNewsItem(item);
   if (metadata.status === 'REJECTED') return metadata;
@@ -91,6 +92,7 @@ function createNewsArchiveService({
   }
 
   function toRow(item, verification = item?.verification, allowNegative = false) {
+    if (isRemovedNewsPublisher(item)) return null;
     const safeUrl = allowedNewsUrl(item?.url);
     const publishedAt = Date.parse(item?.pubDate);
     const timestamp = Number(now());
@@ -226,6 +228,7 @@ function createNewsArchiveService({
   }
 
   function fromRow(row) {
+    if (isRemovedNewsPublisher(rowItem(row))) return null;
     const safeUrl = allowedNewsUrl(row?.url);
     const item = {
       fingerprint: row?.fingerprint,
@@ -327,6 +330,7 @@ function createNewsArchiveService({
     const excluded = new Set((Array.isArray(excludeUrls) ? excludeUrls : []).slice(0, 10)
       .map(url => canonicalUrl(url)).filter(Boolean));
     return items.map(displayProject).filter(item => {
+      if (isRemovedNewsPublisher(item)) return false;
       if(newsDisplayBlocked(item))return false;
       const sourceMatch = newsMatchesSources(item,source);
       const identified=newsSecuritySymbols(item);
