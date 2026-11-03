@@ -76,12 +76,13 @@ test('shared-quality generation on isolated PostgreSQL 17', { skip: !process.env
       assert.deepEqual(await protectedState(), security);
       assert.deepEqual(normalize(await rpc('list_news_archive_query', listArgs)), oldIndex);
       await assert.rejects(service().refreshQueryIndex({ maxBatches: 1 }), /NEWS_QUERY_POLICY_MISMATCH/);
-      await assert.rejects(rpc('news_archive_query_reset', { p_policy: 'news-query-3:read:metadata' }), /NEWS_QUERY_POLICY_MISMATCH/);
+      await assert.rejects(rpc('news_archive_query_reset', { p_policy: 'news-query-4:read:metadata' }), /NEWS_QUERY_POLICY_MISMATCH/);
       assert.equal(JSON.stringify(await rows()), before);
       const permissions = (await db.query("select has_function_privilege('anon','public.news_archive_query_reset(text)','EXECUTE') anon, has_function_privilege('authenticated','public.news_archive_query_reset(text)','EXECUTE') authenticated,has_function_privilege('service_role','public.news_archive_query_reset(text)','EXECUTE') service")).rows[0];
       assert.deepEqual(permissions, { anon: false, authenticated: false, service: true });
     });
     await t.test('partial rebuild serves no stale data or false exact counts', async () => {
+      await db.query(await fs.readFile(path.join(__dirname, '../supabase/migrations/20261103150000_news_archive_query_remove_investing.sql'),'utf8'));
       assert.equal((await service().refreshQueryIndex({ reset: true, maxBatches: 1, batchSize: 2 })).pending, true);
       await assert.rejects(service().list(), /NEWS_QUERY_INDEX_NOT_READY/);
       await assert.rejects(rpc('list_news_archive_query', listArgs), /NEWS_QUERY_POLICY_NOT_READY/);
@@ -99,12 +100,12 @@ test('shared-quality generation on isolated PostgreSQL 17', { skip: !process.env
         for (const field of ['total', 'matchingTotal', 'countExact', 'page', 'pageSize']) assert.equal(actual[field], expected[field], field);
       }
       const result = await archive.list({ pageSize: 2, featuredCount: 2 });
-      assert.equal(result.total, 4); assert.equal(result.matchingTotal, 6); assert.equal(result.rejected, 18);
-      assert.equal(result.quarantined, 1); assert.equal(result.qualityFiltered, 19); assert.equal(result.deduplicated, 1);
-      const keys = await rpc('list_news_archive_query', { ...listArgs, p_policy: 'news-query-2:read:metadata', p_featured: 2 });
+      assert.equal(result.total, 2); assert.equal(result.matchingTotal, 4); assert.equal(result.rejected, 22);
+      assert.equal(result.quarantined, 0); assert.equal(result.qualityFiltered, 22); assert.equal(result.deduplicated, 0);
+      const keys = await rpc('list_news_archive_query', { ...listArgs, p_policy: 'news-query-3:read:metadata', p_featured: 2 });
       assert.equal(keys.pageKeys.length, 2); assert.equal(keys.featuredKeys.length, 2); assert.equal(new Set([...keys.pageKeys, ...keys.featuredKeys]).size, 4);
-      const excluded = await archive.list({ excludeUrls: [result.items[0].url] }); assert.equal(excluded.total, 5);
-      assert.equal((await service().list()).total, 6, 'restart retains the complete projection');
+      const excluded = await archive.list({ excludeUrls: [result.items[0].url] }); assert.equal(excluded.total, 3);
+      assert.equal((await service().list()).total, 4, 'restart retains only allowed publishers');
       assert.equal(JSON.stringify(await rows()), before);
     });
     await t.test('old policy remains available for separately approved rollback without changing news', async () => {
