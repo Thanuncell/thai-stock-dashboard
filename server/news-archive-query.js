@@ -8,7 +8,7 @@ const timestampRank=value=>BigInt(Date.parse(value))*1000n+BigInt((String(value)
 const TIERS={official:4,settrade:3,infoquest:2,efinance:2,thunhoon:2,kaohoon:2,broker:1};
 // A quality-policy change invalidates the entire derived generation, including
 // totals for entries not selected on the requested page. Rebuild stays manual.
-const NEWS_QUERY_POLICY_VERSION = 'news-query-2';
+const NEWS_QUERY_POLICY_VERSION = 'news-query-3';
 function createArchiveQuery({enabled,request,headers,fromRow,reviewRow,displayProject,displayReview,blockedUrls=()=>[],displayOverlays=()=>[],policy,now=Date.now}){
  let pending=null,lastReviewAt=null;
  const rpc=async(name,args={})=>{const response=await request('rpc/'+name,{method:'POST',headers:headers({'content-type':'application/json'}),body:JSON.stringify(args)});return response.json();};
