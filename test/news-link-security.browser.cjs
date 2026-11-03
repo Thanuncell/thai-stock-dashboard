@@ -46,8 +46,7 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   assert.equal(await page.locator('#news-section .news-document-tag').count(),0);
   assert.doesNotMatch(await page.locator('#news-section').textContent(),/news-discovery-1|google-news-rss[/]general/);
   assert.equal((await page.locator('#news-section').textContent()).includes('INVESTING_RSS'),false);
-  if(!hardGate)assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).locator('.news-title').first().getAttribute('href'),investing.url);
-  else assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).count(),0);
+  assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).count(),0);
   await page.waitForFunction(()=>document.querySelector('#news-list')?.textContent.includes('SET_LATEST'));
   await page.locator('#news-search').fill('PTTEP');await page.waitForFunction(()=>document.querySelector('#news-list')?.textContent.includes('SET_LATEST'));
   assert.equal(await page.locator('#news-list .news-item').filter({hasText:'SET_LATEST'}).locator('.news-relevance').textContent(),'PTT, PTTEP');
