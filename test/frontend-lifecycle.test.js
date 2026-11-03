@@ -262,7 +262,7 @@ test('Market Overview uses the neutral route and SETscope-owned structured table
   assert.doesNotMatch(appSource, /apiFetch\(`\/api\/settrade-overview/);
   assert.match(indexSource, /id="active-value-content"/);
   assert.match(appSource, /class="market-active-table"/);
-  assert.match(appSource, /activeRows\.slice\(0, 20\)/);
+  assert.match(appSource, /activeRows\.slice\(0, mostActiveExpanded \? 20 : 5\)/);
   assert.doesNotMatch(appSource, /data\.activeValueHtml|innerHTML\s*=\s*data\./);
   assert.ok(indexSource.indexOf('id="market-index-grid"') < indexSource.indexOf('id="market-breadth-list"'));
   assert.ok(indexSource.indexOf('id="market-breadth-list"') < indexSource.indexOf('id="active-value-content"'));
@@ -289,7 +289,7 @@ test('Market Overview has deterministic startup banner ownership and truthful fr
   assert.match(appSource, /function renderMarketBanner\(\)/);
   assert.match(appSource, /resolveMarketBannerFields\(overviewIndex, marketIndex\)/);
   assert.doesNotMatch(appSource, /volumeThousand \* 1000/);
-  assert.match(appSource, /data\.source === 'SETTRADE' \? 'แหล่งข้อมูล SETTRADE' : ''/);
+  assert.match(appSource, /แหล่งข้อมูล SETTRADE · อัปเดตล่าสุด: \$\{overviewSourceStamp\(data\.fetchedAt\)\}/);
   assert.match(domainSource, /เวลาตลาดยังไม่ยืนยัน/);
   assert.match(domainSource, /รับข้อมูลเมื่อ:/);
   assert.doesNotMatch(domainSource, /indexAsOf \|\| data\.fetchedAt/);

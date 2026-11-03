@@ -64,7 +64,7 @@ function ownerFor(value) {
     || String(value).toLowerCase().includes('token-b') || String(value).toLowerCase().includes('refresh-b') ? 'user-b' : 'user-a';
 }
 
-async function createHarness({ initialSession = { access_token: 'token-a', refresh_token: 'refresh-a', expires_at: Date.now() + 3_600_000 }, holds = [], protectedStatuses = [], initialLocation = {} } = {}) {
+async function createHarness({ initialSession = { access_token: 'token-a', refresh_token: 'refresh-a', expires_at: Date.now() + 3_600_000 }, holds = [], protectedStatuses = [], initialLocation = {}, initialReturn = '', initialReturnIntent = '' } = {}) {
   const nodes = new Map();
   const getNode = selector => {
     if (!nodes.has(selector)) nodes.set(selector, new FakeNode());
@@ -72,6 +72,8 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
   };
   const sessionStorage = new FakeStorage();
   const localStorage = new FakeStorage();
+  if(initialReturn)sessionStorage.setItem('setscope-auth-return-v1',initialReturn);
+  if(initialReturnIntent)sessionStorage.setItem('setscope-auth-return-intent-v1',initialReturnIntent);
   if (initialSession) sessionStorage.setItem('setscope-auth-session-v1', JSON.stringify(initialSession));
   const holdKeys = new Set(holds);
   const pending = new Map();
@@ -199,6 +201,34 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
     resolvePending, sessionStorage, settle, submit, timers, waitForPending, window
   };
 }
+
+test('normal login ignores legacy Profile return state but retains explicit protected-route intent',async()=>{
+  for(const route of ['/#profile','/?tab=old#profile','https://untrusted.invalid/#profile']){
+    const h=await createHarness({initialSession:null,initialLocation:{pathname:'/login',search:'',hash:''},initialReturn:route});
+    await h.submit('#login-form',{email:'a@example.test',password:'fixture'});
+    assert.equal(h.location.hash,'#overview');assert.equal(h.sessionStorage.getItem('setscope-auth-return-v1'),null);
+  }
+  for(const [hash,search] of [['#profile',''],['#news','?source=infoquest&query=PTT&page=2'],['#chart','?symbol=CPALL&range=1y'],['#watchlist','?watchPage=2']]){
+    const h=await createHarness({initialSession:null,initialLocation:{pathname:'/',hash,search}});
+    assert.equal(h.location.pathname,'/login');
+    await h.submit('#login-form',{email:'a@example.test',password:'fixture'});
+    assert.equal(h.location.hash,hash);assert.equal(h.location.search,search);
+  }
+});
+
+test('intent survives login-page reload while explicit Profile logout starts the next account at Overview',async()=>{
+  const route='/?source=infoquest&query=PTT&page=2#news';
+  const resumed=await createHarness({initialSession:null,initialLocation:{pathname:'/login',search:'',hash:''},initialReturn:route,initialReturnIntent:route});
+  await resumed.submit('#login-form',{email:'a@example.test',password:'fixture'});
+  assert.equal(resumed.location.hash,'#news');assert.equal(resumed.location.search,'?source=infoquest&query=PTT&page=2');
+  const h=await createHarness({initialLocation:{hash:'#profile'}});
+  assert.equal(h.location.hash,'#profile','validated active session keeps the explicitly opened Profile');
+  await h.getNode('#profile-logout-button').listeners.get('click')();
+  assert.equal(h.sessionStorage.getItem('setscope-auth-return-v1'),null);
+  assert.equal(h.sessionStorage.getItem('setscope-auth-return-intent-v1'),null);
+  await h.submit('#login-form',{email:'b@example.test',password:'fixture'});
+  assert.equal(h.location.hash,'#overview');assert.equal(h.window.setscopeAuth.user.id,'user-b');
+});
 
 test('stale refresh success and failure cannot replace or clear a newer account session', async () => {
   for (const failure of [false, true]) {
@@ -484,8 +514,42 @@ test('forgot password is bounded, uses same-origin redirect and a generic respon
   assert.equal(new URL(call.input).searchParams.get('redirect_to'), 'https://setscope.example');
   assert.equal(call.init.headers.Authorization, undefined);
   h.resolvePending('recover', {}); await sending;
-  assert.match(h.getNode('#auth-message').textContent, /หากอีเมลนี้/);
+  assert.equal(h.getNode('#auth-message').textContent, 'โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่');
   assert.equal(h.document.body.classList.contains('authenticated'), false);
+});
+
+test('recovery success uses the same approved text for existing and absent accounts without signup or lookup',async()=>{
+  const text='โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่';
+  for(const profile of [false,true])for(const exists of [false,true]){
+    const h=await createHarness({initialSession:profile?{access_token:'token-a',refresh_token:'refresh-a',expires_at:Date.now()+3600000}:null,holds:['recover']});
+    const button=h.getNode(profile?'#profile-recovery-button':'#forgot-password-form').querySelector?.('[type=submit]');
+    const sending=profile?h.getNode('#profile-recovery-button').listeners.get('click')({currentTarget:h.getNode('#profile-recovery-button')})
+      :h.submit('#forgot-password-form',{email:exists?'registered@example.test':'absent@example.test'});
+    await h.waitForPending('recover');
+    assert.notEqual(h.getNode(profile?'#profile-message':'#auth-message').textContent,text,'success is not displayed before response');
+    h.resolvePending('recover',exists?{message:'private-existing-account',user:{id:'synthetic'}}:{});await sending;
+    assert.equal(h.getNode(profile?'#profile-message':'#auth-message').textContent,text);
+    assert.equal(h.calls.filter(c=>c.key==='recover').length,1);
+    assert.equal(h.calls.some(c=>c.key.startsWith('signup:')),false);
+    if(!profile){
+      assert.equal(h.calls.some(c=>c.key.startsWith('user:')),false,'forgot flow performs no account lookup');
+      assert.equal(h.currentSession(),null);assert.equal(h.window.setscopeAuth.user,null,'successful email request never signs in or creates an account');
+    }
+    assert.equal(profile?h.getNode('#profile-recovery-button').disabled:button.disabled,false);
+  }
+});
+
+test('recovery network and server failures retain the generic error and never show success or provider details',async()=>{
+  for(const profile of [false,true])for(const failure of ['network',429,500]){
+    const h=await createHarness({initialSession:profile?{access_token:'token-a',refresh_token:'refresh-a',expires_at:Date.now()+3600000}:null,holds:['recover']});
+    const sending=profile?h.getNode('#profile-recovery-button').listeners.get('click')({currentTarget:h.getNode('#profile-recovery-button')})
+      :h.submit('#forgot-password-form',{email:'absent@example.test'});
+    await h.waitForPending('recover');
+    if(failure==='network')h.pending.get('recover')[0].reject(new TypeError('private-network-detail'));
+    else h.resolvePending('recover',{msg:'private-account-registration-detail'},failure);
+    await sending;
+    assert.equal(h.getNode(profile?'#profile-message':'#auth-message').textContent,'ส่งอีเมลไม่สำเร็จ กรุณารอสักครู่แล้วลองอีกครั้ง');
+  }
 });
 
 test('delayed Profile email responses never render into a newer account', async () => {

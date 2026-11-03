@@ -11,6 +11,7 @@
   const THEME_KEY = 'setscope-theme';
   const APP_TITLE = 'SETscope — หุ้นไทยและกราฟเทคนิค';
   const APP_RETURN_KEY = 'setscope-auth-return-v1';
+  const APP_RETURN_INTENT_KEY = 'setscope-auth-return-intent-v1';
   const RECOVERY_KEY = 'setscope-auth-recovery-v1';
   let recoveryPending = authCallback?.type === 'recovery' || sessionStorage.getItem(RECOVERY_KEY) === '1';
   let config = null;
@@ -35,12 +36,18 @@
   }
   function rememberAppRoute() {
     const route = appRouteFromLocation();
-    if (route) sessionStorage.setItem(APP_RETURN_KEY, route);
+    if (route) {
+      sessionStorage.setItem(APP_RETURN_KEY, route);
+      sessionStorage.setItem(APP_RETURN_INTENT_KEY, route);
+    }
   }
   function restoreAppRoute() {
     const route = sessionStorage.getItem(APP_RETURN_KEY);
-    if (!route || !/^\/(?:\?[^#]*)?#(?:overview|chart|news|watchlist|profile)$/.test(route)) return false;
+    const intentional = sessionStorage.getItem(APP_RETURN_INTENT_KEY) === route;
     sessionStorage.removeItem(APP_RETURN_KEY);
+    sessionStorage.removeItem(APP_RETURN_INTENT_KEY);
+    if (!route || !/^\/(?:\?[^#]*)?#(?:overview|chart|news|watchlist|profile)$/.test(route)
+      || !intentional && route.endsWith('#profile')) return false;
     history.replaceState(null, '', route);
     return true;
   }
@@ -145,6 +152,11 @@
     window.dispatchEvent(new CustomEvent('setscope:session-boundary', {
       detail: { ownerId: previousOwnerId, generation: authGeneration, reason }
     }));
+    if (reason === 'logout') {
+      sessionStorage.removeItem(APP_RETURN_KEY);
+      sessionStorage.removeItem(APP_RETURN_INTENT_KEY);
+      history.replaceState(null, '', AUTH_ROUTES.login);
+    }
     showLogin(text, reason === 'logout' ? '' : 'error');
     if (reload) window.location.reload();
   }
@@ -318,7 +330,8 @@
         method: 'POST', body: JSON.stringify(kind === 'verification' ? { type: 'signup', email } : { email })
       });
       if (original.generation !== sessionGeneration || !isCurrentAuthOperation(original.operationGeneration)) return;
-      report('หากอีเมลนี้ใช้งานได้ ระบบจะส่งลิงก์ให้ กรุณาตรวจสอบกล่องจดหมายและสแปม');
+      report(kind === 'verification' ? 'หากอีเมลนี้ใช้งานได้ ระบบจะส่งลิงก์ให้ กรุณาตรวจสอบกล่องจดหมายและสแปม'
+        : 'โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่');
     } catch (_) {
       if (original.generation === sessionGeneration && isCurrentAuthOperation(original.operationGeneration)) report('ส่งอีเมลไม่สำเร็จ กรุณารอสักครู่แล้วลองอีกครั้ง');
     } finally {
@@ -414,7 +427,6 @@
     }
   }
   async function logout() {
-    rememberAppRoute();
     const accessToken = session?.access_token || '';
     endPrivateSession('logout', { broadcast: true, text: '' });
     const operationGeneration = authOperationGeneration;

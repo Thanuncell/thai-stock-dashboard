@@ -23,7 +23,7 @@ const historyRows = symbol => Array.from({ length: 30 }, (_, i) => ({ title: `${
 async function makeContext(width) {
   const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: width <= 790, hasTouch: width <= 790 });
   const state = { owner: 'a', verified: true, expired: false, recoverStatus: 200, updateStatus: 200, holdEmail: null, releaseEmail: null,
-    archiveGate: null, archiveMode: 'unavailable', watchRows: [] };
+    archiveGate: null, archiveMode: 'unavailable', watchRows: [], watchGate: null };
   const user = () => ({ id: `user-${state.owner}`, email: `${state.owner}@example.test`, email_confirmed_at: state.verified ? '2026-01-01T00:00:00Z' : null });
   await context.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
@@ -66,7 +66,10 @@ async function makeContext(width) {
       }
       return reply(route, { configured: false, items: [], featured: [], total: 0, dataState: 'unavailable' });
     }
-    if (url.pathname === '/api/watchlist-news') return reply(route, { items: state.watchRows, dataState: 'fresh' });
+    if (url.pathname === '/api/watchlist-news') {
+      if(state.watchGate)await state.watchGate;
+      return reply(route, { items: state.watchRows, dataState: 'fresh' });
+    }
     return reply(route, { items: [], dataState: 'unavailable' });
   });
   const page = await context.newPage();
@@ -255,12 +258,24 @@ async function makeContext(width) {
     const expectWatchlist = async () => {
       await expectNavigation(watchlistUrl, 'watchlist');
       await page.waitForFunction(() => document.querySelector('#watchlist-news-pager .active')?.textContent === '2');
+      await page.waitForFunction(expected => document.querySelector('#watchlist-news-list')?.getAttribute('aria-busy') === 'false'
+        && JSON.stringify([...document.querySelectorAll('#watchlist-news-list .news-title-link')].map(node=>node.textContent)) === JSON.stringify(expected), state.watchRows.slice(10,20).map(row=>row.title));
       check(await page.locator('#watchlist-select-mobile').inputValue(), 'list-2', 'restored owner watchlist');
       check(new URL(page.url()).search, '?watchPage=2', 'private watchlist identity stays out of URL');
       check(await page.locator('#watchlist-news-list .news-title-link').allTextContents(), state.watchRows.slice(10, 20).map(row => row.title), 'restored Watchlist page 2 content');
     };
     await page.locator('#user-avatar').click(); await expectNavigation(`${base}/#profile`, 'profile');
-    await page.goBack(); await expectWatchlist();
+    const cachedWatchRows=state.watchRows;
+    state.watchRows=cachedWatchRows.map(row=>({...row,title:row.title+' อัปเดต'}));
+    let releaseWatch;
+    state.watchGate=new Promise(resolve=>{releaseWatch=resolve;});
+    const watchRequested=page.waitForRequest(request=>new URL(request.url()).pathname==='/api/watchlist-news');
+    await page.goBack();await watchRequested;
+    await page.waitForFunction(()=>document.querySelector('#watchlist-news-list').getAttribute('aria-busy')==='true');
+    check(await page.locator('#watchlist-news-pager .active').textContent(),'2','pager can restore before the fresh response');
+    check(await page.locator('#watchlist-news-list .news-title-link').allTextContents(),cachedWatchRows.slice(10,20).map(row=>row.title),'cached rows remain visible while refresh is pending');
+    releaseWatch();state.watchGate=null;
+    await expectWatchlist();
     await page.goForward(); await expectNavigation(`${base}/#profile`, 'profile');
     await page.goBack(); await expectWatchlist();
     await page.goBack(); await expectNavigation(`${base}/#watchlist`, 'watchlist');
@@ -268,7 +283,7 @@ async function makeContext(width) {
     await page.goForward(); await expectWatchlist();
     await page.locator('#user-avatar').click();
     await page.locator('#profile-recovery-button').click();
-    await page.waitForFunction(() => document.querySelector('#profile-message').textContent.includes('หากอีเมลนี้'));
+    await page.waitForFunction(() => document.querySelector('#profile-message').textContent === 'โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่');
     check(requests.at(-1).path, '/auth/v1/recover');
     state.verified = false;
     await page.reload(); await page.waitForSelector('body.authenticated');
@@ -307,7 +322,7 @@ async function makeContext(width) {
     await page.locator('#forgot-password-button').click();
     await page.locator('#forgot-password-form input').fill('a@example.test');
     await page.locator('#forgot-password-form button[type="submit"]').click();
-    await page.waitForFunction(() => document.querySelector('#auth-message').textContent.includes('หากอีเมลนี้'));
+    await page.waitForFunction(() => document.querySelector('#auth-message').textContent === 'โปรดตรวจสอบอีเมลของคุณ หากมีบัญชีอยู่แล้ว คุณจะได้รับคำแนะนำในการตั้งรหัสผ่านใหม่');
     check(await page.locator('#app-shell').isVisible(), false);
     state.expired = true;
     await page.goto(`${base}/#access_token=${token}&refresh_token=${token}&type=recovery`);

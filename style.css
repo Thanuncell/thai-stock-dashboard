@@ -203,6 +203,8 @@ body:not(.authenticated) .app-shell{display:none}body.authenticated .app-shell{d
 .market-data-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:3px 2px}
 .market-data-heading h2{margin:2px 0;font-size:16px;font-weight:600}
 .market-data-heading p{margin:3px 0 0;color:var(--muted);font-size:10px}
+#settrade-updated{white-space:nowrap}
+@media(max-width:470px){.market-data-heading{flex-wrap:wrap}.market-data-heading>div{flex-basis:100%}.market-data-heading>.news-refresh-btn{margin-left:auto}}
 .market-condition{display:inline-block;margin-top:6px;padding:3px 8px;border-radius:5px;background:var(--bg);color:var(--muted);font-size:9px}
 .market-condition.up{background:#eaf5f0;color:#25866d}.market-condition.down{background:#fbefef;color:#bd6063}
 .market-index-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}

@@ -72,7 +72,7 @@ const cases = [
         await page.goto(base + '/#profile', { waitUntil: 'domcontentloaded' });
         await page.waitForSelector('body.authenticated');
         check(await page.locator('#profile-recovery-button').textContent(), 'รับรหัสผ่านใหม่');
-        check(await page.locator('#forgot-password-form button[type="submit"]').textContent(), 'ส่งลิงก์ตั้งรหัสผ่านใหม่');
+        check(await page.locator('#forgot-password-form button[type="submit"]').textContent(), 'รับรหัสผ่านใหม่');
         console.log(JSON.stringify({ viewport: viewportName, theme, scenarios: cases.length, result: 'PASS' }));
         await context.close();
       }
