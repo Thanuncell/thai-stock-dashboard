@@ -13,7 +13,7 @@ test('WS7 read and write evidence modes share the same compatible query policy',
  const policies=[];for(const mode of ['read','write']){
   const service=createNewsArchiveService({env:{SUPABASE_URL:'https://fixture.invalid',SUPABASE_SECRET_KEY:'synthetic',SETSCOPE_NEWS_ARCHIVE_QUERY:'on',SETSCOPE_NEWS_EVIDENCE:mode},fetchImpl:async(_u,init)=>{policies.push(JSON.parse(init.body).p_policy);return Response.json({});}});
   await assert.rejects(service.list(),/NEWS_QUERY_RESPONSE_INVALID/);
- }assert.deepEqual(policies,['news-query-2:read:metadata','news-query-2:read:metadata']);
+ }assert.deepEqual(policies,['news-query-3:read:metadata','news-query-3:read:metadata']);
 });
 test('WS7 rejects missing totals instead of claiming success or zero news',async()=>{
  const service=createNewsArchiveService({env:{SUPABASE_URL:'https://fixture.invalid',SUPABASE_SECRET_KEY:'synthetic',SETSCOPE_NEWS_ARCHIVE_QUERY:'on'},fetchImpl:async()=>Response.json({groups:[],pageKeys:[],featuredKeys:[],page:1,pageSize:10,countExact:true})});
