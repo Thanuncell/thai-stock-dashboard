@@ -1449,7 +1449,8 @@ async function getArchiveNews({ page = newsPage } = {}) {
     archiveTotal = Number.isFinite(Number(data.total)) ? Number(data.total) : archiveNews.length;
     archiveCountTotal = data.countExact!==false&&Number.isSafeInteger(data.total)&&data.total>=0 ? data.total : null;
     const totalPages = Math.max(1, Math.ceil(archiveTotal / PAGE_SIZE));
-    if (newsPage > totalPages) {
+    // An unavailable archive cannot establish that a deep-linked page is out of range.
+    if (archiveConfigured && newsPage > totalPages) {
       newsPage = totalPages;
       if (document.body.dataset.workspacePage === 'news') writeNavigation('replace', 'news');
       return getArchiveNews({ page: newsPage });

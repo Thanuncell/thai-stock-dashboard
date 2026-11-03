@@ -16,10 +16,14 @@ let phase = 'setup', server, browser, base, checks = 0;
 const pageErrors = [], requests = [];
 const check = (value, expected, description) => { assert.deepEqual(value, expected, description); checks++; };
 const reply = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+const historyRows = symbol => Array.from({ length: 30 }, (_, i) => ({ title: `${symbol} ข่าวทดสอบ ${i + 1}`,
+  url: `https://www.infoquest.co.th/2026/profile-history-${symbol}-${i + 1}`, pubDate: new Date().toISOString(),
+  source: 'infoquest', matchedSymbols: [symbol], verification: { status: 'VERIFIED', basis: 'metadata' } }));
 
 async function makeContext(width) {
   const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: width <= 790, hasTouch: width <= 790 });
-  const state = { owner: 'a', verified: true, expired: false, recoverStatus: 200, updateStatus: 200, holdEmail: null, releaseEmail: null };
+  const state = { owner: 'a', verified: true, expired: false, recoverStatus: 200, updateStatus: 200, holdEmail: null, releaseEmail: null,
+    archiveGate: null, archiveMode: 'unavailable', watchRows: [] };
   const user = () => ({ id: `user-${state.owner}`, email: `${state.owner}@example.test`, email_confirmed_at: state.verified ? '2026-01-01T00:00:00Z' : null });
   await context.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
@@ -53,7 +57,16 @@ async function makeContext(width) {
     ], active_watchlist_id: 'list-1' } });
     if (url.pathname === '/api/market') return reply(route, { stocks: [], indices: [], history: [], indicatorHistory: [], levelsHistory: [], errors: [], dataState: 'unavailable' });
     if (url.pathname === '/api/market-overview') return reply(route, { indices: [], breadth: [], fieldStatus: {}, sourceStatus: {}, links: {}, dataState: 'unavailable' });
-    if (url.pathname === '/api/news-archive') return reply(route, { configured: false, items: [], featured: [], total: 0, dataState: 'unavailable' });
+    if (url.pathname === '/api/news-archive') {
+      if (state.archiveGate) await state.archiveGate;
+      if (state.archiveMode !== 'unavailable') {
+        const rows = state.archiveMode === 'available' ? historyRows('PTT') : [], page = Number(url.searchParams.get('page') || 1);
+        return reply(route, { configured: true, items: rows.slice((page - 1) * 10, page * 10), featured: [],
+          total: rows.length, page, countExact: true, dataState: 'fresh' });
+      }
+      return reply(route, { configured: false, items: [], featured: [], total: 0, dataState: 'unavailable' });
+    }
+    if (url.pathname === '/api/watchlist-news') return reply(route, { items: state.watchRows, dataState: 'fresh' });
     return reply(route, { items: [], dataState: 'unavailable' });
   });
   const page = await context.newPage();
@@ -173,21 +186,86 @@ async function makeContext(width) {
     }
     phase = 'history-and-account-switch';
     const { context, page, state, login } = await makeContext(390);
+    const expectNavigation = async (url, route) => {
+      await page.waitForURL(url);
+      await page.waitForFunction(route => document.body.dataset.workspacePage === route, route);
+      check(page.url(), url, 'exact history URL');
+      check(await page.locator('body').getAttribute('data-workspace-page'), route, 'restored workspace');
+    };
+    const expectNews = async url => {
+      await expectNavigation(url, 'news');
+      check(await page.locator('#news-search').inputValue(), 'PTT', 'restored News query');
+      check(await page.locator('.source-chip[aria-pressed="true"]').evaluateAll(nodes => nodes.map(node => node.dataset.source)), ['infoquest'], 'restored News source');
+    };
+    const newsSettled = () => page.waitForFunction(() => !document.querySelector('#refresh-news').disabled && document.querySelector('#news-list').getAttribute('aria-busy') === 'false');
     await page.goto(`${base}/?symbol=CPALL&range=1M#chart`); await login();
     const chartUrl = page.url();
-    check(await page.locator('#stock-search').inputValue(), 'CPALL');
-    check(await page.locator('.range-tabs .selected').getAttribute('data-range'), '1M');
+    const expectChart = async (url, range) => {
+      await expectNavigation(url, 'chart');
+      check(await page.locator('#stock-search').inputValue(), 'CPALL', 'restored chart symbol');
+      check(await page.locator('.range-tabs .selected').getAttribute('data-range'), range, 'restored chart range');
+    };
+    await expectChart(chartUrl, '1M');
+    await page.locator('.range-tabs [data-range="3M"]').click();
+    const changedChartUrl = `${base}/?symbol=CPALL&range=3M#chart`;
+    await expectChart(changedChartUrl, '3M');
     await page.locator('#user-avatar').click();
     check(new URL(page.url()).search, '');
-    await page.goBack(); check(page.url(), chartUrl);
-    await page.goForward(); check(new URL(page.url()).hash, '#profile');
+    await page.goBack(); await expectChart(changedChartUrl, '3M');
+    await page.goBack(); await expectChart(chartUrl, '1M');
+    await page.goForward(); await expectChart(changedChartUrl, '3M');
+    await page.goForward(); await expectNavigation(`${base}/#profile`, 'profile');
+    let releaseArchive;
+    state.archiveGate = new Promise(resolve => { releaseArchive = resolve; });
+    const archiveRequested = page.waitForRequest(request => new URL(request.url()).pathname === '/api/news-archive');
     await page.goto(`${base}/?s=PTT&source=infoquest&newsPage=3#news`); await page.waitForSelector('body.authenticated');
+    await archiveRequested;
     const newsUrl = page.url();
-    await page.locator('#user-avatar').click(); await page.goBack(); check(page.url(), newsUrl);
+    await page.locator('#user-avatar').click(); await expectNavigation(`${base}/#profile`, 'profile');
+    await page.goBack(); await expectNews(newsUrl);
+    releaseArchive(); state.archiveGate = null;
+    await newsSettled();
+    await expectNews(newsUrl); // Unavailable is not evidence that page 3 is out of range.
+    await page.goForward(); await expectNavigation(`${base}/#profile`, 'profile');
+    await page.goBack(); await expectNews(newsUrl);
+    state.archiveMode = 'available';
+    await page.reload(); await page.waitForSelector('body.authenticated'); await newsSettled();
+    const expectThirdPage = async () => {
+      await expectNews(newsUrl);
+      await page.waitForFunction(() => document.querySelector('#news-pager .active')?.textContent === '3' && document.querySelector('#news-list')?.getAttribute('aria-busy') === 'false');
+      check(await page.locator('#news-list .news-title-link').allTextContents(), historyRows('PTT').slice(20).map(row => row.title), 'restored News page 3 content');
+    };
+    await expectThirdPage();
+    await page.locator('#user-avatar').click(); await expectNavigation(`${base}/#profile`, 'profile');
+    await page.goBack(); await expectThirdPage();
+    await page.goForward(); await expectNavigation(`${base}/#profile`, 'profile');
+    await page.goBack(); await expectThirdPage();
+    await page.goBack(); await expectNavigation(`${base}/#profile`, 'profile');
+    await page.goForward(); await expectThirdPage();
+    state.archiveMode = 'empty';
+    await page.reload(); await page.waitForSelector('body.authenticated'); await newsSettled();
+    await expectNews(`${base}/?s=PTT&source=infoquest#news`);
+    check(await page.locator('#news-list .news-title-link').count(), 0, 'confirmed empty archive still clamps an out-of-range page');
+    state.watchRows = historyRows('CPALL');
     await page.locator('.side-nav [data-workspace-route="watchlist"]').click();
     await page.locator('#watchlist-select-mobile').selectOption('list-2');
-    await page.locator('#user-avatar').click(); await page.goBack();
-    check(await page.locator('#watchlist-select-mobile').inputValue(), 'list-2');
+    await page.waitForFunction(() => document.querySelector('#watchlist-news-list')?.textContent.includes('CPALL'));
+    await page.locator('#watchlist-news-pager').getByRole('button', { name: '2', exact: true }).click();
+    const watchlistUrl = page.url();
+    const expectWatchlist = async () => {
+      await expectNavigation(watchlistUrl, 'watchlist');
+      await page.waitForFunction(() => document.querySelector('#watchlist-news-pager .active')?.textContent === '2');
+      check(await page.locator('#watchlist-select-mobile').inputValue(), 'list-2', 'restored owner watchlist');
+      check(new URL(page.url()).search, '?watchPage=2', 'private watchlist identity stays out of URL');
+      check(await page.locator('#watchlist-news-list .news-title-link').allTextContents(), state.watchRows.slice(10, 20).map(row => row.title), 'restored Watchlist page 2 content');
+    };
+    await page.locator('#user-avatar').click(); await expectNavigation(`${base}/#profile`, 'profile');
+    await page.goBack(); await expectWatchlist();
+    await page.goForward(); await expectNavigation(`${base}/#profile`, 'profile');
+    await page.goBack(); await expectWatchlist();
+    await page.goBack(); await expectNavigation(`${base}/#watchlist`, 'watchlist');
+    check(await page.locator('#watchlist-select-mobile').inputValue(), 'list-2', 'Back keeps the selected owner watchlist on page 1');
+    await page.goForward(); await expectWatchlist();
     await page.locator('#user-avatar').click();
     await page.locator('#profile-recovery-button').click();
     await page.waitForFunction(() => document.querySelector('#profile-message').textContent.includes('หากอีเมลนี้'));
