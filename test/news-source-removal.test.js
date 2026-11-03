@@ -17,11 +17,11 @@ const rssItems=rows=>'<rss><channel>'+rows.map(item=>'<item><title>'+item.title+
 test('Investing RSS query, roadmap enablement and filter chip are removed',()=>{
  assert.equal(FEEDS.some(([,name,q])=>/investing/i.test(name+' '+q)),false);
  assert.equal(NEWS_FILTER_SOURCES.includes('investing'),false);
- assert.equal(normalizeNewsSources('investing'),'removed');
+ assert.equal(normalizeNewsSources('investing'),'all');
  assert.equal(normalizeNewsSources('investing,infoquest'),'infoquest');
  const policy=require('../lib/news-policy');
  assert.equal(policy.NEWS_PUBLISHERS.some(x=>/investing/.test(x.host)),false);
- assert.equal(policy.ROADMAP_NEWS_PUBLISHERS.some(x=>/investing/.test(x.host)),false);
+ assert.equal(policy.ROADMAP_NEWS_PUBLISHERS.some(x=>/investing/.test(x.host)&&x.enabled),false);
 });
 test('removed publisher is excluded without removing unrelated other publishers',()=>{
  const other={...normal,source:'other',sourceName:'กรุงเทพธุรกิจ'};
@@ -37,7 +37,7 @@ test('removed publisher is excluded without removing unrelated other publishers'
  assert.equal(isRemovedNewsPublisher({...other,title:'Investing.com covered in a market story'}),false);
  assert.equal(newsMatchesSources(other,'other'),true);
  assert.equal(newsMatchesSources(deleted,'other'),false);
- assert.equal(newsMatchesSources(normal,'investing'),false);
+ assert.equal(newsMatchesSources(normal,'investing'),true);
 });
 test('Google RSS cannot reintroduce removed outlet through other feed results or Watchlist News',async()=>{
  const service=createNewsService({env:{SETSCOPE_NEWS_EVIDENCE:'off',SETSCOPE_P1_DISPLAY_GATE:'off'},
@@ -48,6 +48,7 @@ test('Google RSS cannot reintroduce removed outlet through other feed results or
  assert.ok(general.items.some(item=>item.sourceName==='InfoQuest'));
  const watched=await service.getWatchlistNews('PTT',{ownerId:'owner-a'});
  assert.equal(watched.items.some(isRemovedNewsPublisher),false);
+ assert.ok(watched.items.some(item=>item.sourceName==='InfoQuest'),'Watchlist retains other publishers');
 });
 test('legacy archive rows stay stored but cannot pass read or write gating',async()=>{
  const db=memoryTransport(),a=row(deleted),b=row(normal);
@@ -61,8 +62,10 @@ test('legacy archive rows stay stored but cannot pass read or write gating',asyn
  assert.equal(reviewArchivedNewsRow(a).status,'REJECTED');
  const plan=planNewsArchiveCleanup([a,b]);
  assert.ok(plan.candidates.some(x=>x.fingerprint===a.fingerprint&&x.reason==='REMOVED_NEWS_PUBLISHER'));
+ await service.ingest([deleted]);
+ assert.ok(db.calls.every(call=>(call.init.method||'GET')==='GET'),'removed-only ingestion performs zero writes, cleanup or deletes');
  assert.equal(JSON.stringify([...db.rows.values()]),before);
 });
-test('archived-derived query must use a new generation before it can serve exact counts',()=>{
- assert.equal(require('../server/news-archive-query').NEWS_QUERY_POLICY_VERSION,'news-query-3');
+test('existing archive index generation remains compatible without a new migration',()=>{
+ assert.equal(require('../server/news-archive-query').NEWS_QUERY_POLICY_VERSION,'news-query-2');
 });

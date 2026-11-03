@@ -38,13 +38,13 @@ function fixtureRows() {
   return rows;
 }
 
-function legacyGroups(rows) {
+function legacyGroups(rows, policy = OLD_POLICY) {
   const ordered = rows.slice().sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at) || b.id - a.id);
   const items = ordered.map(row => { const item = rowItem(row); return { ...item, verification: restoreEvidence(item, row) }; });
   const raw = new Map(rows.map(row => [row.fingerprint, row]));
   return dedupeNewsGroups(items).map(group => {
     const item = group.item, first = raw.get(group.first.fingerprint);
-    const key = digest(OLD_POLICY + '\0' + group.contributors.map(value => value.fingerprint).sort().join('\0'));
+    const key = digest(policy + '\0' + group.contributors.map(value => value.fingerprint).sort().join('\0'));
     return { projection: { group_key: key, aliases: group.aliases, order_published_at: first.published_at, order_id: String(first.id),
       winner_published_at: new Date(item.pubDate).toISOString(), winner_fingerprint: item.fingerprint, source: item.source, publisher: newsPublisherKey(item),
       blocked: false, broker: item.brokerCategory, symbols: item.matchedSymbols,
@@ -54,11 +54,11 @@ function legacyGroups(rows) {
   });
 }
 
-function memoryQuery(rows = fixtureRows()) {
+function memoryQuery(rows = fixtureRows(), initialPolicy = OLD_POLICY) {
   const raw = new Map(rows.map(row => [row.fingerprint, structuredClone(row)]));
   const groups = new Map(), indexed = new Map(), dirty = new Set(), calls = [];
-  let policy = OLD_POLICY, sourceRevision = 1, indexRevision = 1;
-  for (const group of legacyGroups(rows)) {
+  let policy = initialPolicy, sourceRevision = 1, indexRevision = 1;
+  for (const group of legacyGroups(rows, policy)) {
     groups.set(group.projection.group_key, group.projection);
     for (const fingerprint of group.fingerprints) indexed.set(fingerprint, { fingerprint, group_key: group.projection.group_key, quality_status: 'VERIFIED' });
   }
@@ -102,7 +102,14 @@ function memoryQuery(rows = fixtureRows()) {
   };
   const fetchImpl = async (value, init) => {
     const url = new URL(value); if (url.origin !== 'https://query-quality.invalid') throw Error('Fixture origin required');
-    if (!url.pathname.startsWith('/rest/v1/rpc/')) throw Error('Only derived-index RPCs are permitted');
+    if (url.pathname === '/rest/v1/news_archive') {
+      if(init.method&&init.method!=='GET')throw Error('Original rows are read-only');
+      const selected=[...raw.values()].filter(row=>!url.searchParams.has('or')||/investing|อินเวสติ้ง/i.test([row.source,row.source_name,row.title,row.url,row.canonical_url].join(' ')));
+      const [start,end]=String(init.headers?.Range||'0-410').split('-').map(Number);
+      calls.push({name:'read_news_archive',args:Object.fromEntries(url.searchParams)});
+      return Response.json(selected.slice(start,end+1),{headers:{'content-range':start+'-'+Math.max(start,Math.min(end,selected.length-1))+'/'+selected.length}});
+    }
+    if (!url.pathname.startsWith('/rest/v1/rpc/')) throw Error('Unexpected fixture operation');
     const name = url.pathname.split('/').at(-1), args = JSON.parse(init.body); calls.push({ name, args });
     try { return Response.json(rpc(name, args)); } catch (error) { throw error; }
   };

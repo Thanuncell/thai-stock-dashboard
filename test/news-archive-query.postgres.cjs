@@ -20,7 +20,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   const service=(extra={},options={})=>createNewsArchiveService({env:{...env,...extra},fetchImpl:transport,...options});
   const seed=async(n,start=0)=>pool.query(`insert into news_archive(fingerprint,title,url,source,source_name,snippet,published_at,fetched_at,matched_symbols,broker_firms,analysis_mode,analysis_summary)
    select encode(sha256(convert_to('seed-'||i,'UTF8')),'hex'),'PTT ข่าวการลงทุนและผลประกอบการ '||i,'https://news.google.com/rss/articles/ws7-'||i,
-   case when i%4=3 then 'infoquest' else 'other' end,(array['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ','Other Publisher','InfoQuest'])[i%4+1],
+   case when i%4=3 then 'infoquest' else 'other' end,(array['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ','Investing.com','InfoQuest'])[i%4+1],
    case when i%4=2 then 'บริษัท PTT ในตลาดหุ้นไทยเปิดเผยข้อมูลการลงทุนและผลประกอบการจากต้นทาง ข่าวจริงเกี่ยวกับกรรมการ ผู้ถือหุ้น และการสมัครงาน' else 'บริษัทเปิดเผยข้อมูลการลงทุนและผลประกอบการจากต้นทาง ข่าวจริงเกี่ยวกับกรรมการ ผู้ถือหุ้น และการสมัครงาน' end,now()-i*interval '1 second',now(),
    case when i%5=0 then array['ADVANC'] else array['PTT'] end,case when i%7=0 then array['KS'] else '{}'::text[] end,
    case when i%11=0 then 'ai' else null end,case when i%11=0 then 'Stored AI '||i else null end from generate_series($2::integer+1,$1::integer) i`,[n,start]);
@@ -44,7 +44,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   await t.test('bounded bootstrap and actual named RPC payload/response',async()=>{const r=await service().refreshQueryIndex({maxBatches:10,batchSize:50});assert.equal(r.pending,0);assert.equal((await service().list()).total,125);});
   await t.test('query matches legacy order/count/search/OR/broker/symbol/featured and overflow contract',async()=>{
    const old=service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'}),indexed=service();
-   for(const args of [{},{page:2},{page:3},{page:999},{source:'bangkokbiznews,thansettakij'},{source:'other,broker',query:'การลงทุน'},{symbol:'PTT'},{symbol:'ADVANC'},{query:'Stored AI'},{query:'%_'},{featuredCount:5},{source:'other',featuredCount:5,page:2}]){
+   for(const args of [{},{page:2},{page:3},{page:999},{source:'bangkokbiznews,thansettakij'},{source:'investing,broker',query:'การลงทุน'},{symbol:'PTT'},{symbol:'ADVANC'},{query:'Stored AI'},{query:'%_'},{featuredCount:5},{source:'other',featuredCount:5,page:2}]){
     const a=await old.list(args),b=await indexed.list(args);assert.equal(b.total,a.total,JSON.stringify(args));assert.equal(b.matchingTotal,a.matchingTotal);assert.deepEqual(b.items,a.items);assert.deepEqual(b.featured,a.featured);assert.equal(b.page,a.page);
    }
    assert.equal((await indexed.list({page:999})).items.length,0);
