@@ -533,18 +533,16 @@ export function createRequestSequence() {
 }
 
 export function alignIndicatorSeries(sourceRows, values, visibleRows) {
-  const byTime = new Map(), byDay = new Map();
+  // An intraday candle must never inherit a daily value simply because the UTC date matches.
+  // Only identical source candle timestamps are safe to align without a completed-bar contract.
+  const byTime = new Map();
   sourceRows.forEach((row, index) => {
-    const value = values[index];
-    byTime.set(Number(row.time), value);
-    const date = new Date(Number(row.time));
-    if (!Number.isNaN(+date)) byDay.set(date.toISOString().slice(0, 10), value);
+    const time = Number(row?.time);
+    if (Number.isFinite(time) && time > 0) byTime.set(time, values[index] ?? null);
   });
   return visibleRows.map(row => {
-    const exact = byTime.get(Number(row.time));
-    if (exact !== undefined) return exact;
-    const date = new Date(Number(row.time));
-    return Number.isNaN(+date) ? null : (byDay.get(date.toISOString().slice(0, 10)) ?? null);
+    const time = Number(row?.time);
+    return Number.isFinite(time) && byTime.has(time) ? byTime.get(time) : null;
   });
 }
 
