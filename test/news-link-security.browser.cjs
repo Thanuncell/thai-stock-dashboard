@@ -45,7 +45,7 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   else{const link=page.locator('#news-section .news-item').filter({hasText:'SET_RESOLVED'}).locator('.news-title');assert.equal(await link.getAttribute('href'),resolved.displayUrl);}
   assert.equal(await page.locator('#news-section .news-document-tag').count(),0);
   assert.doesNotMatch(await page.locator('#news-section').textContent(),/news-discovery-1|google-news-rss[/]general/);
-  assert.equal((await page.locator('#news-section').textContent()).includes('INVESTING_RSS'),!hardGate);
+  assert.equal((await page.locator('#news-section').textContent()).includes('INVESTING_RSS'),false);
   if(!hardGate)assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).locator('.news-title').first().getAttribute('href'),investing.url);
   else assert.equal(await page.locator('#news-section .news-item').filter({hasText:'INVESTING_RSS'}).count(),0);
   await page.waitForFunction(()=>document.querySelector('#news-list')?.textContent.includes('SET_LATEST'));
@@ -55,7 +55,7 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
   await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('SET_MULTI'));
   assert.equal(await page.locator('#watchlist-news-list .news-item').filter({hasText:'SET_MULTI'}).locator('.news-relevance').textContent(),'PTT, PTTEP');
   assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/BLOCKED_PDF|BLOCKED_LISTING/);
-  assert.equal((await page.locator('#watchlist-news-list').textContent()).includes('INVESTING_RSS'),!hardGate);
+  assert.equal((await page.locator('#watchlist-news-list').textContent()).includes('INVESTING_RSS'),false);
   await page.locator('#refresh-watchlist-news').click();assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/BLOCKED_PDF|BLOCKED_LISTING/);
   assert.match(await page.locator('#watchlist-news-list').textContent(),/BANGKOK_ARTICLE/);
   assert.match(await page.locator('#watchlist-news-list').textContent(),/THANSETTAKIJ_ARTICLE/);
