@@ -16,6 +16,7 @@ import {
   findPriceLevels,
   formatSearchCompanyName,
   mergeWatchlists,
+  marketBreadthRows,
   overviewSourceStamp,
   tfexOverviewContext,
   activeOverviewContext,
@@ -555,6 +556,14 @@ function renderMarketBanner() {
     ? 'มูลค่าซื้อขายจาก Market Overview · หน่วยล้านบาท'
     : resolved.sources.turnover === 'market' ? 'มูลค่าซื้อขายสำรองจากข้อมูลตลาด · หน่วยล้านบาท' : 'ข้อมูลมูลค่าซื้อขายยังไม่พร้อม';
 }
+function renderMarketBreadth(groups) {
+  const labels = { Gainers: 'ปรับขึ้น', Unchanges: 'ไม่เปลี่ยนแปลง', Losers: 'ปรับลง' };
+  const breadth = marketBreadthRows(groups);
+  $('#market-breadth-list').innerHTML = breadth.map(group => `<table class="market-breadth-group"><caption>${group.market}</caption><thead><tr><th scope="col">สถานะ</th><th scope="col">จำนวนหุ้น</th><th scope="col">ปริมาณซื้อขาย <small>('000)</small></th></tr></thead><tbody>${group.items.map(item =>
+    `<tr><td>${labels[item.label]}</td><td>${number(item.count)}</td><td>${number(item.volumeThousand)}</td></tr>`
+  ).join('')}</tbody></table>`).join('');
+  return breadth;
+}
 function renderSettradeOverview(data) {
   latestSettradeOverview = data;
   renderMarketBanner();
@@ -584,8 +593,7 @@ function renderSettradeOverview(data) {
     if (turnover !== null && turnover >= 0) details.push(`มูลค่า ${number(turnover)} ลบ.`);
     return `<article class="market-index-card"><span>${symbol}</span><strong>${number(last)}</strong><small>${details.join(' · ') || 'รายละเอียดตลาดยังไม่พร้อม'}</small></article>`;
   }).join('');
-  const breadthLabels = { Gainers: 'ปรับขึ้น', Unchanges: 'ไม่เปลี่ยนแปลง', Losers: 'ปรับลง' };
-  const breadth = data.breadth || [];
+  const breadth = renderMarketBreadth(data.breadth);
   const breadthTotals = summarizeBreadth(breadth);
   const condition = breadthTotals.comparable
     ? breadthTotals.up > breadthTotals.down ? 'หุ้นปรับขึ้นมากกว่าปรับลง' : breadthTotals.up < breadthTotals.down ? 'หุ้นปรับลงมากกว่าปรับขึ้น' : 'หุ้นปรับขึ้นและลงใกล้เคียงกัน'
@@ -595,17 +603,6 @@ function renderSettradeOverview(data) {
     const direction = breadthTotals.comparable ? (breadthTotals.up > breadthTotals.down ? 'up' : breadthTotals.up < breadthTotals.down ? 'down' : '') : '';
     conditionNode.textContent = `ภาวะตลาด: ${condition}`;
     conditionNode.className = `market-condition ${direction}`;
-  }
-  $('#market-breadth-list').innerHTML = breadth.length ? breadth.map(group => `<table class="market-breadth-group"><caption>${escapeHtml(group.market)}</caption><thead><tr><th scope="col">สถานะ</th><th scope="col">จำนวนหุ้น</th><th scope="col">ปริมาณซื้อขาย <small>('000)</small></th></tr></thead><tbody>${(group.items || []).map(item => {
-    const key = Object.keys(breadthLabels).find(label => item.label?.toLowerCase().includes(label.toLowerCase()));
-    return `<tr><td>${breadthLabels[key] || escapeHtml(item.label)}</td><td>${number(item.count)}</td><td>${number(item.volumeThousand)}</td></tr>`;
-  }).join('')}</tbody></table>`).join('') : '<p class="market-empty">หน้า SETTRADE ยังไม่มีสถิติหุ้นขึ้น–ลงรอบนี้</p>';
-  if (data.fieldStatus?.breadth?.partial) {
-    const message = data.fieldStatus.breadth.coverageReason === 'MAI_BREADTH_LABELS_UNVERIFIED'
-      ? 'ข้อมูล mai ยังไม่ครบ: ยังไม่ยืนยันความหมายของสถานะหุ้น'
-      : 'ข้อมูล breadth ของ mai ยังไม่พร้อม';
-    $('#market-breadth-list').innerHTML += `<p class="market-empty" data-breadth-warning>${escapeHtml(message)}</p>`;
-    if (conditionNode) conditionNode.textContent += ' · ข้อมูล breadth ยังไม่ครบ';
   }
   setText('#market-close-summary', data.closeSummary || 'ยังไม่มีสรุปภาวะตลาดรอบนี้');
   const nvdr = data.nvdr || {};
@@ -2033,6 +2030,7 @@ function setupUiEventWiring() {
   setInterval(() => getNews({ reason: 'poll' }), 300000);
   setInterval(() => getWatchlistNews({ reason: 'poll' }), 300000);
 }
+renderMarketBreadth([]);
 setupUiEventWiring();
 window.addEventListener('setscope:authenticated', initializeAccountSession);
 if (window.setscopeAuth?.user) initializeAccountSession();

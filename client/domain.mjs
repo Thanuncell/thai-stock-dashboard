@@ -262,6 +262,18 @@ export function quoteChange(last, prior) {
   return { change, percent: previous === 0 ? null : change / previous * 100 };
 }
 
+export function marketBreadthRows(groups = []) {
+  const source = Array.isArray(groups) ? groups : [];
+  return ['SET', 'mai'].map(market => ({ market, items: ['Gainers', 'Unchanges', 'Losers'].map(label => {
+    const matches = source.filter(group => group?.market === market).flatMap(group => Array.isArray(group.items) ? group.items : [])
+      .filter(item => typeof item?.label === 'string' && item.label.toLowerCase() === label.toLowerCase());
+    const item = matches.length === 1 ? matches[0] : {};
+    const valid = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+    return { label, count: valid(item.count) && Number.isSafeInteger(item.count) ? item.count : null,
+      volumeThousand: valid(item.volumeThousand) ? item.volumeThousand : null };
+  }) }));
+}
+
 export function summarizeBreadth(groups = []) {
   let up = null;
   let down = null;

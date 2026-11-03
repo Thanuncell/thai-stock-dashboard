@@ -103,7 +103,28 @@ async function makeContext(width) {
       check(await page.locator('#market-overview').isVisible(), false);
       check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'no horizontal overflow');
       const avatar = await page.locator('#user-avatar').boundingBox();
-      check(Boolean(avatar && avatar.width >= 40 && avatar.x + avatar.width <= width), true, 'avatar remains reachable');
+      check(Boolean(avatar && avatar.width === 29 && avatar.height === 29 && avatar.x + avatar.width <= width), true, '29px avatar remains reachable');
+      check(await page.locator('#user-avatar').evaluate(node => ({ radius: getComputedStyle(node).borderRadius, font: getComputedStyle(node).fontSize, weight: getComputedStyle(node).fontWeight })), { radius: '50%', font: '12px', weight: '600' }, 'original avatar shape and type');
+      const headerLayout = () => page.locator('.topbar').evaluate(header => {
+        const selectors = ['#theme-toggle', '#alerts-toggle', '#user-avatar'];
+        return { height: header.getBoundingClientRect().height, controls: selectors.map(selector => {
+          const box = header.querySelector(selector).getBoundingClientRect();
+          return { x: box.x, y: box.y, width: box.width, height: box.height };
+        }) };
+      });
+      const originalHeader = await headerLayout();
+      check(originalHeader.controls.every((box, i, boxes) => box.x >= 0 && box.x + box.width <= width && (i === 0 || box.x >= boxes[i - 1].x + boxes[i - 1].width)), true, 'header controls do not overlap');
+      await page.locator('#theme-toggle').click();
+      check(await page.locator('html').getAttribute('data-theme'), 'dark');
+      const darkHeader = await headerLayout();
+      check({ height: darkHeader.height, controls: darkHeader.controls.slice(1) }, { height: originalHeader.height, controls: originalHeader.controls.slice(1) }, 'theme preserves notification and avatar positions');
+      check(darkHeader.controls[0].x + darkHeader.controls[0].width <= darkHeader.controls[1].x, true, 'theme label fits without overlap');
+      await page.locator('#theme-toggle').click();
+      await page.locator('#alerts-toggle').click();
+      check(await page.locator('#alerts-panel').isVisible(), true, 'header notification button works');
+      check(await headerLayout(), originalHeader, 'notification preserves header positions');
+      await page.keyboard.press('Escape');
+      check(await page.locator('#profile-recovery-button').textContent(), 'รับรหัสผ่านใหม่');
       if (width <= 790) {
         const nav = await page.locator('.sidebar').boundingBox();
         check(Math.round(nav.width), width, 'bottom navigation fills viewport');
@@ -124,7 +145,12 @@ async function makeContext(width) {
       check(await page.locator('#profile-alerts-button').evaluate(node => node === document.activeElement), true);
       check(await page.locator('.profile-legal a').evaluateAll(nodes => nodes.map(node => node.getAttribute('href'))), ['/privacy.html', '/terms.html']);
       await page.locator('.side-nav [data-workspace-route="overview"]').click();
+      await page.locator('#user-avatar').click();
+      check(await page.locator('body').getAttribute('data-workspace-page'), 'profile', 'avatar click opens Profile');
+      await page.locator('.side-nav [data-workspace-route="overview"]').click();
+      await page.keyboard.press('Tab');
       await page.locator('#user-avatar').focus();
+      check(await page.locator('#user-avatar').evaluate(node => node.matches(':focus-visible')), true, 'keyboard focus is visible');
       await page.keyboard.press('Enter');
       check(await page.locator('body').getAttribute('data-workspace-page'), 'profile');
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

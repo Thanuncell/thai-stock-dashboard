@@ -449,8 +449,8 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 .profile-setting+ .profile-setting{border-top:1px solid var(--line)}
 .profile-setting p{margin:4px 0 0}
 .profile-page :focus-visible,.avatar:focus-visible,.nav-item:focus-visible,.auth-text-button:focus-visible{outline:3px solid var(--green);outline-offset:3px}
-.avatar{text-decoration:none;min-width:44px;min-height:44px;flex-shrink:0}
+.avatar{text-decoration:none;min-width:29px;min-height:29px;flex-shrink:0}
 @media(max-width:790px){.side-nav .nav-item{white-space:normal;overflow-wrap:anywhere}.profile-card button{max-width:100%}}
-@media(max-width:470px){.topbar .avatar{display:grid;min-width:40px;min-height:40px}.breadcrumb{min-width:0;overflow:hidden;text-overflow:ellipsis}.top-actions{flex-shrink:0}.profile-setting{align-items:flex-start}}
+@media(max-width:470px){.topbar .avatar{display:grid}.breadcrumb{min-width:0;overflow:hidden;text-overflow:ellipsis}.top-actions{flex-shrink:0}.profile-setting{align-items:flex-start}}
 
 .profile-page .logout-button{font:500 12px var(--font)}.profile-page .logout-button:after{content:none}

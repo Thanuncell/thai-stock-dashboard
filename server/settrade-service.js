@@ -143,6 +143,7 @@ function createSettradeService({
       state, source: 'SETTRADE', asOf: record.asOf, delayed: true,
       ...(state === 'LKG' ? { stale: true } : {}), reason: failure,
       ...(record.reportedAsOf ? { reportedAsOf: record.reportedAsOf } : {}),
+      ...(name === 'breadth' && record.marketCoverage ? { marketCoverage: record.marketCoverage } : {}),
       ...(name === 'activeValue' ? { fetchedAt: record.fetchedAt || null,
         sourceUpdatedAt: sourceMarketTime(record.reportedAsOf), sessionContext: record.sessionContext || null,
         sessionContextBasis: 'SNAPSHOT_ELIGIBILITY_GUARD',
@@ -159,7 +160,8 @@ function createSettradeService({
         fetchedAt: new Date(now()).toISOString(), sessionContext: details.sessionContext || null,
         sourceRankingPeriod: details.sourceRankingPeriod ?? null, quantityStatus: details.quantityStatus || null,
         quantityBasis: details.quantityBasis || null,
-        partial: details.partial === true, coverageReason: details.coverageReason || null };
+        partial: details.partial === true, coverageReason: details.coverageReason || null,
+        ...(name === 'breadth' ? { marketCoverage: details.marketCoverage } : {}) };
       lastKnownGood.set(name, record);
       return { value, status: status('PASS', record) };
     }
@@ -174,7 +176,7 @@ function createSettradeService({
     }
     return {
       value,
-      status: status('UNAVAILABLE', { asOf: null, reportedAsOf: details.reportedAsOf }, reason)
+      status: status('UNAVAILABLE', { asOf: null, reportedAsOf: details.reportedAsOf, marketCoverage: details.marketCoverage }, reason)
     };
   }
 
@@ -241,9 +243,13 @@ function createSettradeService({
     // validated source dates populate asOf; reported snapshot time is separate.
     const indicesField = field('indices', overview.indices, overview.indices.some(item => item.symbol === 'SET' && Number.isFinite(item.last)), null, reason(0, 'indices', overview));
     const maiCoverage = overview.__diagnostics?.breadthCoverage?.mai;
+    const marketCoverage = overview.__diagnostics?.breadthCoverage;
+    const invalidBreadth = Object.values(marketCoverage || {}).includes('INVALID_DATA');
     const breadthField = field('breadth', overview.breadth, overview.breadth.some(group => group.items?.some(item => Number.isFinite(item.count) || Number.isFinite(item.volumeThousand))), null, reason(0, 'breadth', overview), {
-      partial: Boolean(maiCoverage && maiCoverage !== 'ACCEPT'),
-      coverageReason: maiCoverage === 'PARSER_MISMATCH' ? 'MAI_BREADTH_LABELS_UNVERIFIED' : 'MAI_BREADTH_UNAVAILABLE'
+      marketCoverage,
+      partial: Object.values(marketCoverage || {}).some(outcome => outcome !== 'ACCEPT'),
+      coverageReason: invalidBreadth ? 'BREADTH_INVALID_DATA' : maiCoverage === 'PARSER_MISMATCH' ? 'MAI_BREADTH_LABELS_UNVERIFIED'
+        : maiCoverage && maiCoverage !== 'ACCEPT' ? 'MAI_BREADTH_UNAVAILABLE' : 'SET_BREADTH_UNAVAILABLE'
     });
     const closeField = field('closeSummary', overview.closeSummary, Boolean(overview.closeSummary), null, reason(0, 'closeSummary', overview));
     const nvdrField = field('nvdr', nvdr, hasNumber(nvdr), null, reason(1, 'nvdr', nvdr));
