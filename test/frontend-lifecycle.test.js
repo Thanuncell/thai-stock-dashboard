@@ -4,11 +4,68 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const vm = require('node:vm');
 
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const styleSource = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
 const domainSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'domain.mjs'), 'utf8');
+
+test('history writes advance restore identity and retain owner-scoped Watchlist state', async () => {
+  const { navigationUrl } = await import('../client/domain.mjs');
+  const writes = [], persisted = [];
+  const location = { pathname: '/', search: '', hash: '#news' };
+  const history = { state: null };
+  for (const method of ['pushState', 'replaceState']) history[method] = (state, _title, target) => {
+    history.state = state;
+    const url = new URL(target, 'https://setscope.test');
+    Object.assign(location, { pathname: url.pathname, search: url.search, hash: url.hash });
+    writes.push({ method, target });
+  };
+  let next = { route: 'news', newsPage: 2 };
+  const context = vm.createContext({
+    window: { setscopeAuth: { user: { id: 'user-a' } } }, location, history, navigationUrl,
+    currentNavigationState: () => next, userStorageScope: 'user-a',
+    NAVIGATION_FALLBACK_KEY: 'fixture-navigation',
+    sessionStorage: { setItem: (_key, value) => persisted.push(JSON.parse(value)) },
+    lastRestoredLocation: 'user-a|/#news|'
+  });
+  const helper = appSource.match(/function navigationLocationKey\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const write = appSource.match(/function writeNavigation\([^\n]*\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(write);
+  vm.runInContext(`${helper}\n${write}`, context);
+  context.writeNavigation('push', 'news');
+  assert.equal(context.lastRestoredLocation, 'user-a|/?newsPage=2#news|', 'Back to the initial News URL must not match the latest rendered location');
+  next = { route: 'watchlist', watchlistId: 'list-2', watchPage: 1 };
+  context.writeNavigation('push', 'watchlist');
+  assert.equal(context.lastRestoredLocation, 'user-a|/#watchlist|list-2');
+  assert.equal(history.state.setscopeWatchlist.ownerId, 'user-a');
+  assert.equal(history.state.setscopeWatchlist.watchlistId, 'list-2');
+  context.userStorageScope = 'user-b';
+  next = { route: 'watchlist', watchlistId: 'list-1', watchPage: 1 };
+  context.writeNavigation('replace', 'watchlist');
+  assert.equal(context.lastRestoredLocation, 'user-b|/#watchlist|list-1');
+  assert.equal(history.state.setscopeWatchlist.ownerId, 'user-b');
+  assert.equal(persisted.some(state => Object.hasOwn(state, 'watchlistId')), false);
+  const before = writes.length;
+  context.writeNavigation('push', 'watchlist');
+  assert.equal(writes.length, before, 'an unchanged location and owned history state must not create a duplicate entry');
+});
+
+test('Logout is available only inside Profile and reuses the original device-local handler', () => {
+  const authSource = fs.readFileSync(path.join(__dirname, '..', 'auth.js'), 'utf8');
+  const header = indexSource.match(/<header\b[\s\S]*?<\/header>/)?.[0] || '';
+  assert.ok(header);
+  assert.doesNotMatch(header, /logout|ออกจากระบบ/i);
+  assert.doesNotMatch(indexSource, /id="logout-button"/);
+  assert.equal((indexSource.match(/id="profile-logout-button"/g) || []).length, 1);
+  assert.match(indexSource, /id="profile-page"[\s\S]*?id="profile-logout-button"/);
+  assert.doesNotMatch(authSource, /\$\('#logout-button'\)/);
+  assert.match(authSource, /\$\('#profile-logout-button'\)\?\.addEventListener\('click', logout\)/);
+  assert.equal((authSource.match(/async function logout\(/g) || []).length, 1);
+  assert.match(authSource, /authRequest\('logout\?scope=local'/);
+  for (const copy of ['พื้นที่ส่วนตัวสำหรับติดตามตลาด', 'ลงชื่อเข้าใช้เพื่อดูกราฟ ข่าว และ Watchlist ของคุณ']) assert.ok(indexSource.includes(copy));
+});
 
 test('frontend wires global UI once and initializes every authenticated owner session', () => {
   assert.equal((appSource.match(/addEventListener\('setscope:authenticated',\s*initializeAccountSession\)/g) || []).length, 1);
@@ -155,7 +212,7 @@ test('UI cleanup labels remain presentation-only and truthful', () => {
 });
 
 test('News archive page restoration survives startup rendering and browser history', () => {
-  const restoreNavigation = appSource.match(/function restoreNavigationFromLocation\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const restoreNavigation = appSource.match(/function restoreNavigationFromLocation\([^\n]*\) \{[\s\S]*?\n\}/)?.[0] || '';
   const renderNews = appSource.match(/function renderNews\(\) \{[\s\S]*?\n\}/)?.[0] || '';
 
   assert.match(restoreNavigation, /previousNewsPage = newsPage/);

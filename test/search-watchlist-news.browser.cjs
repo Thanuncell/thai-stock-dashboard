@@ -71,7 +71,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    state.newsError=false;await page.locator('#refresh-watchlist-news').click();await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.dataset.state==='fresh');
    state.newsHold='THANI';state.releaseNews=null;await page.locator('#refresh-watchlist-news').click();while(!state.releaseNews)await pause(20);
    const releaseOldNews=state.releaseNews;
-   await page.locator('#logout-button').click();await page.waitForSelector('#login-form:not([hidden])');
+   await page.locator('.nav-item[data-workspace-route="profile"]').click();await page.locator('#profile-logout-button').click();await page.waitForSelector('#login-form:not([hidden])');
    await page.locator('#login-form input[name="email"]').fill('b@example.test');await page.locator('#login-form input[name="password"]').fill('fixture-password');
    await page.locator('#login-form button[type="submit"]').click();await page.waitForSelector('body.authenticated');
    await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('CPALL ข่าว'));

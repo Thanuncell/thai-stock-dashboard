@@ -1,15 +1,18 @@
 (() => {
-  let authCallback = (() => {
+  function readAuthCallback() {
     const params = new URLSearchParams(location.hash.slice(1));
-    if (!['access_token', 'refresh_token', 'provider_token', 'provider_refresh_token'].some(key => params.has(key))) return null;
+    if (!['access_token', 'refresh_token', 'provider_token', 'provider_refresh_token', 'error'].some(key => params.has(key))) return null;
     history.replaceState(null, '', location.pathname + location.search);
-    return { access_token: params.get('access_token'), refresh_token: params.get('refresh_token'), expires_in: params.get('expires_in') ?? 3600 };
-  })();
+    return { access_token: params.get('access_token'), refresh_token: params.get('refresh_token'), expires_in: params.get('expires_in') ?? 3600, type: params.get('type'), error: params.has('error') };
+  }
+  let authCallback = readAuthCallback();
   const STORAGE_KEY = 'setscope-auth-session-v1';
   const AUTH_BOUNDARY_KEY = 'setscope-auth-boundary-v1';
   const THEME_KEY = 'setscope-theme';
   const APP_TITLE = 'SETscope — หุ้นไทยและกราฟเทคนิค';
   const APP_RETURN_KEY = 'setscope-auth-return-v1';
+  const RECOVERY_KEY = 'setscope-auth-recovery-v1';
+  let recoveryPending = authCallback?.type === 'recovery' || sessionStorage.getItem(RECOVERY_KEY) === '1';
   let config = null;
   let session = readSession();
   let user = null;
@@ -26,7 +29,7 @@
   function appRouteFromLocation() {
     if (location.hash.includes('access_token=')) return '';
     const route = location.hash.replace(/^#/, '');
-    if (!['overview', 'chart', 'news', 'watchlist'].includes(route)) return '';
+    if (!['overview', 'chart', 'news', 'watchlist', 'profile'].includes(route)) return '';
     const pathname = location.pathname === AUTH_ROUTES.login || location.pathname === AUTH_ROUTES.signup ? '/' : location.pathname;
     return `${pathname || '/'}${location.search}${location.hash}`;
   }
@@ -36,7 +39,7 @@
   }
   function restoreAppRoute() {
     const route = sessionStorage.getItem(APP_RETURN_KEY);
-    if (!route || !/^\/(?:\?[^#]*)?#(?:overview|chart|news|watchlist)$/.test(route)) return false;
+    if (!route || !/^\/(?:\?[^#]*)?#(?:overview|chart|news|watchlist|profile)$/.test(route)) return false;
     sessionStorage.removeItem(APP_RETURN_KEY);
     history.replaceState(null, '', route);
     return true;
@@ -134,6 +137,11 @@
     privateUiReadyGeneration = -1;
     replaceSession(null);
     user = null;
+    recoveryPending = false;
+    sessionStorage.removeItem(RECOVERY_KEY);
+    renderProfile();
+    $('#recovery-form')?.reset();
+    $('#forgot-password-form')?.reset();
     window.dispatchEvent(new CustomEvent('setscope:session-boundary', {
       detail: { ownerId: previousOwnerId, generation: authGeneration, reason }
     }));
@@ -197,6 +205,7 @@
     }
   }
   function showDashboard() {
+    if (recoveryPending) { showRecoveryForm(); return; }
     const nextOwnerId = String(user?.id || '');
     if (!nextOwnerId) { showLogin('ไม่สามารถยืนยันเจ้าของบัญชีได้', 'error'); return; }
     if (activeOwnerId !== nextOwnerId) {
@@ -209,6 +218,7 @@
       if (!restoreAppRoute()) history.replaceState(null, '', '/#overview');
     }
     const identity = captureIdentity();
+    renderProfile();
     if (privateUiReadyGeneration === identity.generation && document.body.classList.contains('authenticated')) return;
     document.body.classList.remove('authenticated');
     document.body.classList.add('auth-checking');
@@ -220,7 +230,7 @@
     }));
   }
   function markPrivateUiReady(identity) {
-    if (!isCurrentIdentity(identity)) return false;
+    if (recoveryPending || !isCurrentIdentity(identity)) return false;
     privateUiReadyGeneration = identity.generation;
     document.body.classList.remove('auth-checking');
     $('#auth-gate').removeAttribute('aria-busy');
@@ -234,6 +244,7 @@
     return true;
   }
   function showLogin(text = '', type = '') {
+    if (!session) { recoveryPending = false; sessionStorage.removeItem(RECOVERY_KEY); }
     document.body.classList.remove('auth-checking');
     $('#auth-gate').removeAttribute('aria-busy');
     document.body.classList.remove('authenticated');
@@ -249,17 +260,88 @@
     return (location.pathname.replace(/\/+$/, '') || '/') === AUTH_ROUTES.signup ? 'signup' : 'login';
   }
   function setMode(mode, { updateUrl = true, replace = false } = {}) {
+    if (recoveryPending && session?.access_token) { showRecoveryForm(); return; }
     const signup = mode === 'signup';
-    $('#login-form').hidden = signup; $('#signup-form').hidden = !signup;
+    const forgot = mode === 'forgot';
+    $('#login-form').hidden = signup || forgot; $('#signup-form').hidden = !signup;
+    if ($('#forgot-password-form')) $('#forgot-password-form').hidden = !forgot;
+    if ($('#recovery-form')) $('#recovery-form').hidden = true;
+    if ($('#forgot-password-button')) $('#forgot-password-button').hidden = signup || forgot;
     $('#auth-login-tab').classList.toggle('selected', !signup); $('#auth-signup-tab').classList.toggle('selected', signup);
     $('#auth-login-tab').setAttribute('aria-selected', String(!signup)); $('#auth-signup-tab').setAttribute('aria-selected', String(signup));
-    $('#auth-title').textContent = signup ? 'สร้างบัญชี SETscope' : 'เข้าสู่ระบบ SETscope';
+    $('#auth-title').textContent = forgot ? 'ตั้งรหัสผ่านใหม่' : signup ? 'สร้างบัญชี SETscope' : 'เข้าสู่ระบบ SETscope';
     document.title = signup ? 'สมัครสมาชิก — SETscope' : 'เข้าสู่ระบบ — SETscope';
     if (updateUrl) {
       const route = signup ? AUTH_ROUTES.signup : AUTH_ROUTES.login;
       if (location.pathname !== route || location.search || location.hash) history[replace ? 'replaceState' : 'pushState'](null, '', route);
     }
     message('');
+  }
+  function renderProfile() {
+    const email = typeof user?.email === 'string' ? user.email : '';
+    const verified = Boolean(email && user?.email_confirmed_at && Number.isFinite(Date.parse(user.email_confirmed_at)));
+    const setText = (selector, text) => { const node = $(selector); if (node) node.textContent = text; };
+    setText('#profile-email', email || '—');
+    setText('#profile-verification', email ? verified ? 'ยืนยันอีเมลแล้ว' : 'ยังไม่ยืนยันอีเมล' : '—');
+    setText('#profile-message', '');
+    const resend = $('#profile-verification-button');
+    if (resend) { resend.hidden = !email || verified; resend.disabled = !email; }
+    const recovery = $('#profile-recovery-button'); if (recovery) recovery.disabled = !email;
+    const avatar = $('#user-avatar');
+    if (avatar) { avatar.textContent = email.slice(0, 1).toUpperCase() || 'ก'; avatar.title = email; }
+  }
+  function showRecoveryForm() {
+    document.body.classList.remove('authenticated', 'auth-checking');
+    $('#auth-gate').hidden = false;
+    $('#auth-gate').removeAttribute('aria-busy');
+    $('#app-shell').setAttribute('aria-hidden', 'true');
+    $('#login-form').hidden = true; $('#signup-form').hidden = true;
+    if ($('#forgot-password-form')) $('#forgot-password-form').hidden = true;
+    if ($('#forgot-password-button')) $('#forgot-password-button').hidden = true;
+    if ($('#recovery-form')) $('#recovery-form').hidden = false;
+    $('#auth-title').textContent = 'ตั้งรหัสผ่านใหม่';
+    document.title = 'ตั้งรหัสผ่านใหม่ — SETscope';
+    sessionStorage.setItem(RECOVERY_KEY, '1');
+    history.replaceState(null, '', '/login');
+    message('');
+  }
+  async function sendAccountEmail(kind, button, email) {
+    if (!config?.configured || !email || button.disabled) return;
+    const original = captureSession();
+    button.disabled = true;
+    const profile = kind !== 'forgot';
+    const report = text => { if (profile) $('#profile-message').textContent = text; else message(text); };
+    report('กำลังส่งอีเมล…');
+    try {
+      const endpoint = kind === 'verification' ? 'resend' : 'recover';
+      await authRequest(`${endpoint}?redirect_to=${encodeURIComponent(window.location.origin)}`, {
+        method: 'POST', body: JSON.stringify(kind === 'verification' ? { type: 'signup', email } : { email })
+      });
+      if (original.generation !== sessionGeneration || !isCurrentAuthOperation(original.operationGeneration)) return;
+      report('หากอีเมลนี้ใช้งานได้ ระบบจะส่งลิงก์ให้ กรุณาตรวจสอบกล่องจดหมายและสแปม');
+    } catch (_) {
+      if (original.generation === sessionGeneration && isCurrentAuthOperation(original.operationGeneration)) report('ส่งอีเมลไม่สำเร็จ กรุณารอสักครู่แล้วลองอีกครั้ง');
+    } finally {
+      if (original.generation === sessionGeneration && isCurrentAuthOperation(original.operationGeneration)) button.disabled = false;
+    }
+  }
+  async function onRecovery(event) {
+    event.preventDefault();
+    const form = event.currentTarget, values = new FormData(form), password = String(values.get('password') || '');
+    const submit = form.querySelector('[type=submit]');
+    if (submit.disabled || !recoveryPending || !user?.id || !session?.access_token) return;
+    if (password.length < 8 || password !== values.get('confirmPassword')) { message('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร และตรงกันทั้งสองช่อง', 'error'); return; }
+    const original = captureSession();
+    submit.disabled = true;
+    try {
+      if (!await ensureFresh() || !isCurrentSession(original)) throw staleSessionError();
+      await authRequest('user', { method: 'PUT', headers: { Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ password }) });
+      if (!isCurrentSession(original)) return;
+      form.reset();
+      await logout();
+    } catch (_) {
+      if (isCurrentSession(original)) message('ตั้งรหัสผ่านไม่สำเร็จ ลิงก์อาจหมดอายุ กรุณาขอลิงก์ใหม่หรือลองอีกครั้ง', 'error');
+    } finally { if (isCurrentSession(original)) submit.disabled = false; }
   }
   function scheduleRefresh() {
     clearTimeout(refreshTimer);
@@ -276,6 +358,16 @@
     const valid = await validateSession(operationGeneration);
     if (!valid || !isCurrentAuthOperation(operationGeneration) || user !== valid) return false;
     scheduleRefresh(); showDashboard(); return true;
+  }
+  async function consumeAuthCallback(callback) {
+    if (callback.error || !callback.access_token) {
+      endPrivateSession('invalid-callback', { text: 'ลิงก์ยืนยันหมดอายุหรือไม่ถูกต้อง กรุณาขอลิงก์ใหม่' }); return;
+    }
+    beginAuthOperation();
+    recoveryPending = callback.type === 'recovery';
+    replaceSession(sessionFrom(callback));
+    const operationGeneration = authOperationGeneration;
+    if (!await openDashboardIfValid(operationGeneration) && isCurrentAuthOperation(operationGeneration)) showLogin('ลิงก์ยืนยันหมดอายุหรือไม่ถูกต้อง กรุณาขอลิงก์ใหม่', 'error');
   }
   async function onLogin(event) {
     event.preventDefault(); const form = new FormData(event.currentTarget); const submit = event.currentTarget.querySelector('[type=submit]');
@@ -382,7 +474,7 @@
     }
   }
   window.setscopeAuth = {
-    get user() { return user; },
+    get user() { return recoveryPending ? null : user; },
     captureIdentity,
     isCurrentIdentity,
     markPrivateUiReady,
@@ -395,7 +487,30 @@
   $('#auth-signup-tab').addEventListener('click', () => setMode('signup'));
   $('#login-form').addEventListener('submit', onLogin);
   $('#signup-form').addEventListener('submit', onSignup);
-  $('#logout-button').addEventListener('click', logout);
+  $('#profile-logout-button')?.addEventListener('click', logout);
+  $('#profile-recovery-button')?.addEventListener('click', event => sendAccountEmail('recovery', event.currentTarget, user?.email));
+  $('#profile-verification-button')?.addEventListener('click', event => sendAccountEmail('verification', event.currentTarget, user?.email));
+  $('#forgot-password-button')?.addEventListener('click', () => setMode('forgot'));
+  $('#recovery-back-button')?.addEventListener('click', () => setMode('login'));
+  $('#recovery-cancel-button')?.addEventListener('click', logout);
+  $('#forgot-password-form')?.addEventListener('submit', event => {
+    event.preventDefault();
+    return sendAccountEmail('forgot', event.currentTarget.querySelector('[type=submit]'), String(new FormData(event.currentTarget).get('email') || '').trim());
+  });
+  $('#recovery-form')?.addEventListener('submit', onRecovery);
+  function handleLocationCallback() {
+    const callback = readAuthCallback();
+    if (!callback) return false;
+    endPrivateSession('auth-callback', { text: '' });
+    if (!config?.configured) { authCallback = callback; return true; }
+    const pending = consumeAuthCallback(callback);
+    const operationGeneration = authOperationGeneration;
+    void pending.catch(() => {
+      if (isCurrentAuthOperation(operationGeneration)) endPrivateSession('invalid-callback', { text: 'ลิงก์ยืนยันไม่ถูกต้อง กรุณาขอลิงก์ใหม่' });
+    });
+    return true;
+  }
+  window.addEventListener('hashchange', handleLocationCallback);
   window.addEventListener('storage', event => {
     if (event.key !== AUTH_BOUNDARY_KEY || !event.newValue || !activeOwnerId) return;
     try {
@@ -404,6 +519,7 @@
     } catch (_) {}
   });
   window.addEventListener('popstate', () => {
+    if (handleLocationCallback()) return;
     if (document.body.classList.contains('authenticated')) showDashboard();
     else setMode(modeFromPath(), { updateUrl: false });
   });
@@ -428,10 +544,7 @@
       document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = false; });
       if (authCallback) {
         const callback = authCallback; authCallback = null;
-        if (callback.access_token) {
-          beginAuthOperation();
-          replaceSession(sessionFrom(callback));
-        }
+        await consumeAuthCallback(callback); return;
       }
       const operationGeneration = authOperationGeneration;
       if (!await openDashboardIfValid(operationGeneration) && isCurrentAuthOperation(operationGeneration)) showLogin();

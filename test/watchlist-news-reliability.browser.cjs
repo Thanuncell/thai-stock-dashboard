@@ -67,7 +67,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
    state.failure=true;await page.locator('#refresh-watchlist-news').click();await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.dataset.state==='stale');assert.match(await news.textContent(),/PTT รายงาน/);
    state.failure=false;state.time+=31000;state.holdA=true;await page.locator('#refresh-watchlist-news').click();
    for(let i=0;i<100&&!state.releaseA;i++)await pause(20);assert.ok(state.releaseA);
-   await page.locator('#logout-button').click();await page.waitForSelector('#login-form:not([hidden])');
+   await page.locator('.nav-item[data-workspace-route="profile"]').click();await page.locator('#profile-logout-button').click();await page.waitForSelector('#login-form:not([hidden])');
    await page.locator('#login-form input[name="email"]').fill('b@example.test');await page.locator('#login-form input[name="password"]').fill('fixture-password');await page.locator('#login-form button[type="submit"]').click();await page.waitForSelector('body.authenticated');
    await page.locator('.nav-item[data-workspace-route="watchlist"]').click();await page.waitForFunction(()=>document.querySelector('#watchlist-news-list')?.textContent.includes('KKP รายงาน'));
    state.releaseA();await pause(150);

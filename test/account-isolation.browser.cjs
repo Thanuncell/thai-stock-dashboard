@@ -215,7 +215,7 @@ if(require.main===module)(async () => {
     for (let attempt = 0; attempt < 30 && !state.releaseAPut; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
     assert.ok(state.releaseAPut, 'fixture must observe the pending A PUT');
 
-    await pageA1.locator('#logout-button').click();
+    await pageA1.locator('.nav-item[data-workspace-route="profile"]').click();await pageA1.locator('#profile-logout-button').click();
     await pageA2.waitForFunction(() => !document.body.classList.contains('authenticated'));
     state.releaseAPut();
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -235,7 +235,7 @@ if(require.main===module)(async () => {
     await pageA1.waitForFunction(() => document.querySelector('#watchlist-sync-status')?.dataset.state === 'synced');
     assert.match(await pageA1.locator('#watchlist-page').textContent(), /B Private Stock/);
 
-    await pageA1.locator('#logout-button').click();
+    await pageA1.locator('.nav-item[data-workspace-route="profile"]').click();await pageA1.locator('#profile-logout-button').click();
     await pageB.waitForFunction(() => !document.body.classList.contains('authenticated'));
     await pageA1.waitForSelector('#login-form:not([hidden])');
     await pageA1.locator('#login-form input[name="email"]').fill('a@example.test');
@@ -258,7 +258,7 @@ if(require.main===module)(async () => {
     await racePage.locator('#mover-list [data-mover-symbol="CPALL"]').dispatchEvent('click');
     await racePage.waitForFunction(() => document.querySelector('#stock-search')?.value === 'CPALL');
 
-    await racePage.locator('#logout-button').click();
+    await racePage.locator('.nav-item[data-workspace-route="profile"]').click();await racePage.locator('#profile-logout-button').click();
     await racePage.waitForSelector('#login-form:not([hidden])');
     for (let attempt = 0; attempt < 30 && !raceState.releaseLogout; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
     assert.ok(raceState.releaseLogout, 'fixture must hold the B logout response');
@@ -277,6 +277,8 @@ if(require.main===module)(async () => {
     for (let attempt = 0; attempt < 30 && !raceState.releaseAGet; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
     assert.ok(raceState.releaseAGet, 'new A session must start a fresh owner-scoped cloud GET');
     raceState.releaseAGet();
+    await racePage.waitForSelector('body.authenticated');
+    await racePage.locator('.nav-item[data-workspace-route="watchlist"]').click();
     await racePage.waitForSelector('body.authenticated #watchlist-mobile .watch-item');
     assert.match(await racePage.locator('#watchlist-page').textContent(), /A Private Stock/);
     assert.doesNotMatch(await racePage.locator('#app-shell').textContent(), /B Private Stock/);

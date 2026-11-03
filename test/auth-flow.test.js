@@ -182,7 +182,7 @@ test('login, signup and refresh flows keep session behavior without refresh loop
   assert.equal(refreshCount, 2);
   assert.deepEqual(window.setscopeAuth.captureIdentity(), identityBeforeRefresh);
 
-  await getNode('#logout-button').listeners.get('click')();
+  await getNode('#profile-logout-button').listeners.get('click')();
   assert.equal(calls.filter(call => call.url.includes('/auth/v1/logout')).length, 1);
   assert.ok(calls.some(call => call.url.endsWith('/auth/v1/logout?scope=local')));
   assert.equal(location.pathname, '/login');

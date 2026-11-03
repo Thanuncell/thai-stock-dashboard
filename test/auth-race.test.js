@@ -83,6 +83,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
     const url = String(input);
     if (url === '/api/auth-config') return 'config';
     if (url.endsWith('/auth/v1/user')) {
+      if (init.method === 'PUT') return 'password-update';
       const token = String(init.headers?.Authorization || init.headers?.authorization || '').replace(/^Bearer\s+/i, '');
       return `user:${token}`;
     }
@@ -90,6 +91,8 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
     if (url.includes('/auth/v1/token?grant_type=password')) return `login:${JSON.parse(init.body).email}`;
     if (url.includes('/auth/v1/signup?')) return `signup:${JSON.parse(init.body).email}`;
     if (url.endsWith('/auth/v1/logout?scope=local')) return 'logout';
+    if (url.includes('/auth/v1/recover?')) return 'recover';
+    if (url.includes('/auth/v1/resend?')) return 'resend';
     if (url === '/api/protected') return 'protected';
     return url;
   }
@@ -113,6 +116,7 @@ async function createHarness({ initialSession = { access_token: 'token-a', refre
       return jsonResponse({ access_token: `token-${owner}`, refresh_token: `refresh-${owner}`, expires_in: 3600, user: { id: owner, email: `${owner}@example.test` } });
     }
     if (key === 'logout') return new Response(null, { status: 204 });
+    if (['recover', 'resend', 'password-update'].includes(key)) return jsonResponse({});
     if (key === 'protected') return new Response('', { status: protectedStatuses.shift() ?? 200 });
     throw new Error(`Unexpected request ${key}`);
   }
@@ -203,7 +207,7 @@ test('stale refresh success and failure cannot replace or clear a newer account 
     const refresh = harness.window.setscopeAuth.refresh();
     await harness.waitForPending('refresh:refresh-a');
 
-    await harness.getNode('#logout-button').listeners.get('click')();
+    await harness.getNode('#profile-logout-button').listeners.get('click')();
     await harness.submit('#login-form', { email: 'b@example.test', password: 'secret' });
     assert.equal(harness.window.setscopeAuth.user.id, 'user-b');
 
@@ -257,7 +261,7 @@ test('pending login and signup responses cannot restore a session after logout',
       : harness.submit('#signup-form', { email: 'a@example.test', password: 'secret', confirmPassword: 'secret' });
     await harness.waitForPending(pendingKind);
 
-    await harness.getNode('#logout-button').listeners.get('click')();
+    await harness.getNode('#profile-logout-button').listeners.get('click')();
     harness.resolvePending(pendingKind, { access_token: 'stale-a-access', refresh_token: 'stale-a-refresh', expires_in: 3600, user: { id: 'user-a', email: 'a@example.test' } });
     await pendingAuth;
     await harness.settle();
@@ -270,7 +274,7 @@ test('pending login and signup responses cannot restore a session after logout',
 
 test('stale logout completion cannot replace or reload a newer account session', async () => {
   const harness = await createHarness({ holds: ['logout'] });
-  const logout = harness.getNode('#logout-button').listeners.get('click')();
+  const logout = harness.getNode('#profile-logout-button').listeners.get('click')();
   await harness.waitForPending('logout');
   assert.equal(harness.currentSession(), null);
   assert.equal(harness.window.reloadCount, 0);
@@ -290,7 +294,7 @@ test('stale logout completion cannot replace or reload a newer account session',
 
 test('ordinary logout still clears the active session and reloads the login route', async () => {
   const harness = await createHarness();
-  await harness.getNode('#logout-button').listeners.get('click')();
+  await harness.getNode('#profile-logout-button').listeners.get('click')();
   await harness.settle();
   assert.equal(harness.window.setscopeAuth.user, null);
   assert.equal(harness.currentSession(), null);
@@ -301,7 +305,7 @@ test('ordinary logout still clears the active session and reloads the login rout
 test('logout is scoped to this device and preserves an independent device session', async () => {
   const firstDevice = await createHarness();
   const secondDevice = await createHarness({ protectedStatuses: [401, 200] });
-  await firstDevice.getNode('#logout-button').listeners.get('click')();
+  await firstDevice.getNode('#profile-logout-button').listeners.get('click')();
   await firstDevice.settle();
 
   const revoke = firstDevice.calls.find(call => call.key === 'logout');
@@ -435,4 +439,104 @@ test('malformed refresh expiry cannot overwrite valid stored tokens', async () =
     assert.equal(await refresh, false);
     assert.deepEqual(harness.currentSession(), before);
   }
+});
+
+test('Profile renders only current validated email and email verification, then clears on logout', async () => {
+  const h = await createHarness({ holds: ['user:token-a'] });
+  assert.equal(h.getNode('#profile-email').textContent, '');
+  h.resolvePending('user:token-a', { id: 'user-a', email: '<a>@example.test', confirmed_at: '2026-01-01T00:00:00Z' });
+  await h.settle();
+  assert.equal(h.getNode('#profile-email').textContent, '<a>@example.test');
+  assert.equal(h.getNode('#profile-verification').textContent, 'ยังไม่ยืนยันอีเมล');
+  assert.equal(h.getNode('#profile-verification-button').hidden, false);
+  await h.getNode('#profile-logout-button').listeners.get('click')();
+  assert.equal(h.getNode('#profile-email').textContent, '—');
+  assert.equal(h.getNode('#profile-verification').textContent, '—');
+  assert.equal(h.getNode('#user-avatar').title, '');
+  await h.submit('#login-form', { email: 'b@example.test', password: 'fixture' });
+  assert.equal(h.getNode('#profile-email').textContent, 'user-b@example.test');
+});
+
+test('Profile verification comes from email_confirmed_at, never user metadata', async () => {
+  for (const email_confirmed_at of [null, 'invalid', '2026-01-01T00:00:00Z']) {
+    const h = await createHarness({ holds: ['user:token-a'] });
+    h.resolvePending('user:token-a', { id: 'user-a', email: 'a@example.test', email_confirmed_at, user_metadata: { email_verified: true } });
+    await h.settle();
+    assert.equal(h.getNode('#profile-verification').textContent, email_confirmed_at?.startsWith('2026') ? 'ยืนยันอีเมลแล้ว' : 'ยังไม่ยืนยันอีเมล');
+  }
+});
+
+test('Profile deep link survives mandatory login through the existing safe return route', async () => {
+  const h = await createHarness({ initialSession: null, initialLocation: { pathname: '/', search: '', hash: '#profile' } });
+  assert.equal(h.document.body.classList.contains('authenticated'), false);
+  assert.equal(h.location.pathname, '/login');
+  await h.submit('#login-form', { email: 'a@example.test', password: 'fixture' });
+  assert.equal(h.location.hash, '#profile');
+});
+
+test('forgot password is bounded, uses same-origin redirect and a generic response', async () => {
+  const h = await createHarness({ initialSession: null, holds: ['recover'] });
+  const sending = h.submit('#forgot-password-form', { email: 'nobody@example.test' });
+  await h.waitForPending('recover');
+  await h.submit('#forgot-password-form', { email: 'nobody@example.test' });
+  assert.equal(h.calls.filter(c => c.key === 'recover').length, 1);
+  const call = h.calls.at(-1);
+  assert.equal(new URL(call.input).searchParams.get('redirect_to'), 'https://setscope.example');
+  assert.equal(call.init.headers.Authorization, undefined);
+  h.resolvePending('recover', {}); await sending;
+  assert.match(h.getNode('#auth-message').textContent, /หากอีเมลนี้/);
+  assert.equal(h.document.body.classList.contains('authenticated'), false);
+});
+
+test('delayed Profile email responses never render into a newer account', async () => {
+  for (const [selector, key] of [['#profile-recovery-button', 'recover'], ['#profile-verification-button', 'resend']]) {
+    const h = await createHarness({ holds: [key] });
+    const button = h.getNode(selector);
+    const sending = button.listeners.get('click')({ currentTarget: button });
+    await h.waitForPending(key);
+    assert.equal(JSON.parse(h.calls.at(-1).init.body).email, 'user-a@example.test');
+    await h.getNode('#profile-logout-button').listeners.get('click')();
+    await h.submit('#login-form', { email: 'b@example.test', password: 'fixture' });
+    h.resolvePending(key, { message: 'private-provider-error' }, 429); await sending;
+    assert.equal(h.getNode('#profile-email').textContent, 'user-b@example.test');
+    assert.equal(h.getNode('#profile-message').textContent, '');
+  }
+});
+
+test('recovery callback is scrubbed and validated before accepting a matching password', async () => {
+  const h = await createHarness({ initialSession: null, initialLocation: { hash: '#access_token=token-a&refresh_token=refresh-a&type=recovery&expires_in=3600' } });
+  assert.equal(h.location.hash, '');
+  assert.equal(h.getNode('#recovery-form').hidden, false);
+  assert.equal(h.window.setscopeAuth.user, null);
+  assert.equal(h.document.body.classList.contains('authenticated'), false);
+  assert.equal(h.events.some(e => e.type === 'setscope:authenticated'), false);
+  await h.submit('#recovery-form', { password: 'long-fixture-value', confirmPassword: 'different-fixture-value' });
+  assert.equal(h.calls.some(c => c.key === 'password-update'), false);
+  await h.submit('#recovery-form', { password: 'long-fixture-value', confirmPassword: 'long-fixture-value' });
+  assert.equal(h.calls.filter(c => c.key === 'password-update').length, 1);
+  assert.equal(h.calls.find(c => c.key === 'password-update').init.method, 'PUT');
+  assert.equal(h.calls.filter(c => c.key === 'logout').length, 1);
+  assert.equal(h.currentSession(), null);
+  assert.equal(h.getNode('#recovery-form').resetCalled, true);
+});
+
+test('invalid recovery callback never opens the workspace or permits password updates', async () => {
+  const h = await createHarness({ initialSession: null, holds: ['user:token-a'], initialLocation: { hash: '#access_token=token-a&refresh_token=refresh-a&type=recovery' } });
+  await h.submit('#recovery-form', { password: 'long-fixture-value', confirmPassword: 'long-fixture-value' });
+  assert.equal(h.calls.some(c => c.key === 'password-update'), false);
+  h.resolvePending('user:token-a', { error: 'expired' }, 401); await h.settle();
+  assert.equal(h.currentSession(), null);
+  assert.equal(h.getNode('#recovery-form').hidden, true);
+  assert.equal(h.document.body.classList.contains('authenticated'), false);
+});
+
+test('delayed password update cannot log out a later login', async () => {
+  const h = await createHarness({ initialSession: null, holds: ['password-update'], initialLocation: { hash: '#access_token=token-a&refresh_token=refresh-a&type=recovery' } });
+  const updating = h.submit('#recovery-form', { password: 'long-fixture-value', confirmPassword: 'long-fixture-value' });
+  await h.waitForPending('password-update');
+  await h.getNode('#recovery-cancel-button').listeners.get('click')();
+  await h.submit('#login-form', { email: 'b@example.test', password: 'fixture' });
+  h.resolvePending('password-update', {}); await updating;
+  assert.equal(h.window.setscopeAuth.user.id, 'user-b');
+  assert.equal(h.calls.filter(c => c.key === 'logout').length, 1);
 });
