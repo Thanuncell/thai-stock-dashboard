@@ -172,7 +172,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     const cached = lastValidated.get(key);
     if (!cached || Number(now()) - cached.storedAt > NEWS_STALE_FALLBACK_MS) return null;
     const errors = [...new Set([...(Array.isArray(cached.value.errors) ? cached.value.errors : []), error?.status ? `google-rss-${error.status}` : 'google-rss-unavailable'])];
-    return { ...cached.value, items: cached.value.items.filter(item => !quarantine.has(newsFingerprint(item)) && (!hardGate || reviewNewsForDisplay(item, {now:Number(now())}).status === 'VERIFIED')),
+    return { ...cached.value, items: cached.value.items.filter(item => !newsDisplayBlocked(item) && !quarantine.has(newsFingerprint(item)) && (!hardGate || reviewNewsForDisplay(item, {now:Number(now())}).status === 'VERIFIED')),
       errors, stale: true, partial: true, dataState: 'stale' };
   }
 

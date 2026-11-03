@@ -7,7 +7,7 @@ const items=[
  {title:'PTT ข่าวลงทุน B',source:'other',sourceName:'Investing.com',url:'https://news.google.com/rss/articles/ws6-b'},
  {title:'PTT ข่าวลงทุน C',source:'other',sourceName:'ฐานเศรษฐกิจ',url:'https://news.google.com/rss/articles/ws6-c'},
  {title:'PTT ข่าวลงทุน D',source:'infoquest',sourceName:'InfoQuest',url:'https://news.google.com/rss/articles/ws6-d',brokerCategory:true}
-].map(x=>({...x,pubDate:date,snippet:'บริษัทเผยรายละเอียดผลประกอบการและการลงทุนตามข่าวต้นทาง',verification:{status:'VERIFIED',basis:'metadata'}}));
+].map(x=>({...x,pubDate:date,snippet:x.sourceName==='Investing.com'?'บริษัท PTT ในตลาดหุ้นไทยเผยรายละเอียดผลประกอบการและการลงทุนตามข่าวต้นทาง':'บริษัทเผยรายละเอียดผลประกอบการและการลงทุนตามข่าวต้นทาง',verification:{status:'VERIFIED',basis:'metadata'}}));
 test('WS6: multi-publisher OR includes other storage sources and ignores discovery pathway',async()=>{
  const d=await import('../client/domain.mjs');
  assert.deepEqual(d.selectNewsForDisplay(items,{source:'bangkokbiznews,thansettakij',featuredCount:0}).filtered.map(x=>x.title),[items[0].title,items[2].title]);
