@@ -342,7 +342,7 @@ test('malformed Google RSS cannot replace validated news or renew fallback age',
  }});
  const first=await service.getNews();assert.equal(first.items.length,1);
  mode='malformed';time+=1000;let before=calls;const retained=await service.getNews();
- assert.equal(retained.dataState,'stale');assert.deepEqual(retained.items,first.items);assert.equal(retained.fetchedAt,first.fetchedAt);assert.equal(calls-before,11,'no retries or additional acquisition');
+ assert.equal(retained.dataState,'stale');assert.deepEqual(retained.items,first.items);assert.equal(retained.fetchedAt,first.fetchedAt);assert.equal(calls-before,10,'no retries or additional acquisition');
  mode='not-modified';before=seen.length;const conditional=await service.getNews();assert.equal(conditional.items.length,1);assert.ok(seen.slice(before).every(tag=>tag==='validated-feed'),'malformed payload must not poison conditional cache');
  mode='truncated';time+=1000;assert.equal((await service.getNews()).dataState,'stale');
  time+=31*60000;const expired=await service.getNews();assert.equal(expired.items.length,0);assert.equal(expired.dataState,'unavailable');
@@ -355,7 +355,7 @@ test('a malformed RSS path does not hide healthy publisher results',async()=>{
  let mode='fresh',calls=0;
  const service=createNewsService({env:{},fetchImpl:async value=>{calls++;const query=decodeURIComponent(String(value));return new Response(query.includes('site:kaohoon.com')?rss([good]):mode==='fresh'?rss([]):'<rss><channel><item>truncated');}});
  await service.getNews();mode='partial';const before=calls,result=await service.getNews();
- assert.equal(result.items.length,1);assert.equal(result.dataState,'partial');assert.ok(result.errors.length);assert.equal(calls-before,11);
+ assert.equal(result.items.length,1);assert.equal(result.dataState,'partial');assert.ok(result.errors.length);assert.equal(calls-before,10);
 });
 
 test('General and Watchlist discovery agree on invalid and future publication dates',async()=>{

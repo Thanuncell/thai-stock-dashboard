@@ -4,9 +4,9 @@ const {createNewsService}=require('../server/news-service');
 const date=new Date(Date.now()-60000).toUTCString();
 const entry=(name,id)=>'<item><title>PTT รายงานกำไรและแผนลงทุนใหม่ '+id+'</title><link>https://news.google.com/rss/articles/'+id+'</link><source>'+name+'</source><pubDate>'+date+'</pubDate><description>PTT รายงานข้อมูลบริษัทและผลประกอบการจากสำนักข่าวต้นทาง</description></item>';
 const rss='<rss><channel>'+entry('กรุงเทพธุรกิจ','bkk-uncovered')+entry('ฐานเศรษฐกิจ','than-uncovered')+entry('Investing.com','investing-uncovered')+'</channel></rss>';
-for(const view of ['general','watchlist'])test('both optional adapters failing preserve all three legacy RSS publishers: '+view,async()=>{
+for(const view of ['general','watchlist'])test('both optional adapters failing preserve other publishers but exclude removed outlet: '+view,async()=>{
  const service=createNewsService({env:{SETSCOPE_NEWS_EVIDENCE:'write',SETSCOPE_P1_DISPLAY_GATE:'off',SETSCOPE_NEWS_BANGKOKBIZNEWS:'on',SETSCOPE_NEWS_THANSETTAKIJ:'on'},fetchImpl:async()=>new Response(rss),articleFetch:async()=>{throw Error('optional source unavailable');}});
- const result=view==='general'?await service.getNews():await service.getWatchlistNews('PTT',{ownerId:'a'});assert.equal(result.items.length,3);assert.deepEqual(new Set(result.items.map(x=>x.sourceName)),new Set(['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ','Investing.com']));assert.ok(result.items.every(x=>x.verification.basis==='metadata'));
+ const result=view==='general'?await service.getNews():await service.getWatchlistNews('PTT',{ownerId:'a'});assert.equal(result.items.length,2);assert.deepEqual(new Set(result.items.map(x=>x.sourceName)),new Set(['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ']));assert.ok(result.items.every(x=>x.verification.basis==='metadata'));
 });
 
 const {dedupeNewsItems,newsFingerprint}=require('../lib/broker-news');
@@ -44,8 +44,8 @@ for(const hardGate of [false,true])for(const view of ['general','watchlist'])tes
  const map='<urlset><url><loc>'+native.url+'</loc><news:news><news:publication><news:name>Bangkokbiznews</news:name></news:publication><news:title>'+native.title+'</news:title><news:publication_date>'+native.pubDate+'</news:publication_date></news:news></url></urlset>';
  const html='<link rel="canonical" href="'+native.url+'"><script type="application/ld+json">'+JSON.stringify({'@type':'NewsArticle',url:native.url,headline:native.title,datePublished:native.pubDate})+'</script><h1>'+native.title+'</h1><div id="paragraph-1" data-news-content="company" class="content-detail"><p>'+('บริษัท PTT รายงานแผนลงทุนและผลประกอบการตามต้นฉบับ '.repeat(6))+'</p></div>';
  const calls=[];const service=createNewsService({env:{SETSCOPE_NEWS_BANGKOKBIZNEWS:'on',SETSCOPE_NEWS_THANSETTAKIJ:'on',SETSCOPE_NEWS_EVIDENCE:'write',SETSCOPE_P1_DISPLAY_GATE:hardGate?'on':'off',SETSCOPE_GOOGLE_NEWS_RPC:'off'},fetchImpl:async()=>new Response(rss),articleFetch:async value=>{const url=String(value);calls.push(url);if(url===bkkMap)return new Response(map,{headers:{'content-type':'text/xml'}});if(url===thanMap)throw Error('optional unavailable');if(url===native.url)return new Response(html,{headers:{'content-type':'text/html'}});return new Response('<html>Unresolved wrapper</html>',{headers:{'content-type':'text/html'}});}});
- const result=view==='general'?await service.getNews():await service.getWatchlistNews('PTT',{ownerId:'coverage-owner'});assert.equal(result.items.length,hardGate?1:4);assert.equal(result.items.filter(x=>reviewNewsForDisplay(x).status==='VERIFIED').length,1);assert.equal(result.items.filter(x=>x.verification.basis==='metadata').length,hardGate?0:3);
- assert.equal(calls.filter(x=>new URL(x).hostname==='news.google.com').length,hardGate?3:0);assert.ok(calls.length<=6);
+ const result=view==='general'?await service.getNews():await service.getWatchlistNews('PTT',{ownerId:'coverage-owner'});assert.equal(result.items.length,hardGate?1:3);assert.equal(result.items.filter(x=>reviewNewsForDisplay(x).status==='VERIFIED').length,1);assert.equal(result.items.filter(x=>x.verification.basis==='metadata').length,hardGate?0:2);
+ assert.equal(calls.filter(x=>new URL(x).hostname==='news.google.com').length,hardGate?2:0);assert.ok(calls.length<=6);
 });
 test('canonical grouping happens before archive totals/pages and preserves stored AI and first seen',async()=>{
  const db=memoryTransport(),one=article({matchedSymbols:['PTT']}),two={...one,url:one.url.replace('https://','https://www.')+'?utm_source=fixture'};
@@ -63,5 +63,5 @@ test('watchlist RSS starts independently while both optional adapters are pendin
  let release;const held=new Promise(resolve=>{release=resolve;}),calls=[];let googleCalls=0;
  const service=createNewsService({env:{SETSCOPE_NEWS_BANGKOKBIZNEWS:'on',SETSCOPE_NEWS_THANSETTAKIJ:'on'},fetchImpl:async()=>{googleCalls++;return new Response(rss);},articleFetch:async value=>{calls.push(String(value));await held;return new Response('unavailable',{status:503});}});
  const pending=service.getWatchlistNews('PTT',{ownerId:'independent-owner'});try{await new Promise(resolve=>setImmediate(resolve));assert.equal(googleCalls,1,'Google RSS must not wait for an adapter response');assert.equal(calls.length,2,'optional discovery waits run concurrently');}finally{release();}
- assert.equal((await pending).items.length,3);
+ assert.equal((await pending).items.length,2);
 });

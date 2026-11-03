@@ -9,7 +9,7 @@ const TIERS={official:4,settrade:3,infoquest:2,efinance:2,thunhoon:2,kaohoon:2,b
 // A quality-policy change invalidates the entire derived generation, including
 // totals for entries not selected on the requested page. Rebuild stays manual.
 const NEWS_QUERY_POLICY_VERSION = 'news-query-2';
-function createArchiveQuery({enabled,request,headers,fromRow,reviewRow,displayProject,displayReview,blockedUrls=()=>[],displayOverlays=()=>[],policy,now=Date.now}){
+function createArchiveQuery({enabled,request,headers,fromRow,reviewRow,displayProject,displayReview,blockedUrls=()=>[],displayOverlays=()=>[],removedPublisherUrls=async()=>[],policy,now=Date.now}){
  let pending=null,lastReviewAt=null;
  const rpc=async(name,args={})=>{const response=await request('rpc/'+name,{method:'POST',headers:headers({'content-type':'application/json'}),body:JSON.stringify(args)});return response.json();};
  const projection=(group,raw)=>{
@@ -49,16 +49,22 @@ function createArchiveQuery({enabled,request,headers,fromRow,reviewRow,displayPr
   })();pending=task;
   try{return await task;}finally{if(pending===task)pending=null;}
  }
- async function list(options,recheck=true,extraExcluded=[]){
+ async function list(options,recheck=true,extraExcluded=[],publishersChecked=false){
   const page=Math.max(1,Math.min(100000,Number.parseInt(options.page,10)||1)),pageSize=Math.max(1,Math.min(50,Number.parseInt(options.pageSize,10)||10));
   const exclude=[...new Set([...(options.excludeUrls||[]).slice(0,10),...blockedUrls().slice(0,400),...extraExcluded].map(canonicalUrl).filter(Boolean))];
-  if(exclude.length>410)throw Error('NEWS_QUERY_EXCLUSION_LIMIT');
+  if(exclude.length>410)throw Error(publishersChecked?'NEWS_QUERY_REMOVED_EXCLUSION_LIMIT':'NEWS_QUERY_EXCLUSION_LIMIT');
   const overlays=displayOverlays().slice(0,200);
   const result=await rpc('list_news_archive_query',{p_overlays:overlays,p_policy:policy,p_page:page,p_page_size:pageSize,p_sources:normalizeNewsSources(options.source).split(','),p_symbol:normalizeSymbol(options.symbol)||'',p_query:String(options.query||'').trim().slice(0,80).toLocaleLowerCase('th'),p_exclude:exclude,p_featured:Math.max(0,Math.min(5,Number.parseInt(options.featuredCount,10)||0)),p_now:new Date(Number(now())).toISOString()});
   if(!result||!Array.isArray(result.groups)||!Array.isArray(result.pageKeys)||!Array.isArray(result.featuredKeys)||!Number.isSafeInteger(result.total)||result.total<0||result.countExact!==true||result.page!==page||result.pageSize!==pageSize)throw Error('NEWS_QUERY_RESPONSE_INVALID');
   if(result.groups.length>pageSize+5)throw Error('NEWS_QUERY_RESPONSE_LIMIT');
   const keys=[...result.pageKeys,...result.featuredKeys];
   if(result.pageKeys.length>pageSize||result.featuredKeys.length>Math.max(0,Math.min(5,Number.parseInt(options.featuredCount,10)||0))||new Set(keys).size!==keys.length||keys.length!==result.groups.length||!Number.isSafeInteger(result.matchingTotal)||result.matchingTotal!==result.total+result.featuredKeys.length)throw Error('NEWS_QUERY_RESPONSE_INVALID');
+  // Exclude legacy publisher identities inside the existing RPC, before totals,
+  // featured selection and pagination. Never return a page-only corrected count.
+  if(!publishersChecked&&result.matchingTotal>0){
+   const removed=await removedPublisherUrls();
+   if(removed.length)return list(options,recheck,[...extraExcluded,...removed],true);
+  }
   const items=new Map();
   for(const record of result.groups){
    if(!Array.isArray(record.rows)||record.rows.length>2000)throw Error('NEWS_QUERY_RESPONSE_LIMIT');
@@ -73,7 +79,7 @@ function createArchiveQuery({enabled,request,headers,fromRow,reviewRow,displayPr
    const reviewed=await displayReview([...items.values()]);
    if(!Array.isArray(reviewed)||reviewed.length!==items.size)throw Error('NEWS_QUERY_REVIEW_POLICY_CHANGED');
    const blocked=reviewed.filter(newsDisplayBlocked).map(item=>item.url);
-   if(blocked.length||JSON.stringify(overlays)!==JSON.stringify(displayOverlays().slice(0,200)))return list(options,false,[...extraExcluded,...blocked]);
+   if(blocked.length||JSON.stringify(overlays)!==JSON.stringify(displayOverlays().slice(0,200)))return list(options,false,[...extraExcluded,...blocked],publishersChecked);
    for(const item of reviewed){const entry=[...items].find(([,old])=>old.fingerprint===item.fingerprint);if(entry)items.set(entry[0],displayProject(item));}
   }
   const select=keys=>keys.map(key=>{if(!items.has(key))throw Error('NEWS_QUERY_RESPONSE_INCOMPLETE');return items.get(key);});

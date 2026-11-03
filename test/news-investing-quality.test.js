@@ -30,11 +30,11 @@ for (const row of owner.cases) test('Owner screenshot ' + row.image + ' non-arti
   }
 });
 
-for (const row of fixtures.articles) test('shared gate retains relevant Investing article content: ' + row.id, () => {
+for (const row of fixtures.articles) test('removed publisher blocks even relevant article content: ' + row.id, () => {
   const candidate = wrapper(row);
-  assert.equal(classifyNewsItem(candidate).decision, 'ACCEPT');
-  assert.equal(reviewNewsItem(candidate).status, 'VERIFIED');
-  assert.equal(newsDisplayBlocked(candidate), false);
+  assert.equal(classifyNewsItem(candidate).decision, 'REJECT');
+  assert.equal(reviewNewsItem(candidate).status, 'REJECTED');
+  assert.equal(newsDisplayBlocked(candidate), true);
 });
 
 test('content language and market evidence cannot be replaced by RSS locale or symbols', () => {
@@ -43,22 +43,22 @@ test('content language and market evidence cannot be replaced by RSS locale or s
   const sparse = wrapper({ id: 'sparse', title: fixtures.articles[1].title, snippet: 'Thailand stocks' });
   assert.equal(reviewNewsItem({ ...irrelevant, language: 'th', matchedSymbols: ['PTT'] }).status, 'REJECTED');
   assert.equal(reviewNewsItem({ ...foreign, language: 'en' }).status, 'REJECTED');
-  assert.equal(reviewNewsItem(sparse).status, 'UNVERIFIED');
-  assert.match(reviewNewsItem(sparse).reason, /CONTENT|EVIDENCE/);
+  assert.equal(reviewNewsItem(sparse).status, 'REJECTED');
+  assert.match(reviewNewsItem(sparse).reason, /REMOVED_NEWS_PUBLISHER/);
   const noMarket = wrapper({ id: 'no-market', title: 'PTT ข่าวลงทุน B', snippet: 'บริษัทเผยรายละเอียดผลประกอบการและการลงทุนตามข่าวต้นทาง' });
-  assert.equal(reviewNewsItem(noMarket).status, 'UNVERIFIED', 'a headline or ticker alone cannot establish market relevance');
+  assert.equal(reviewNewsItem(noMarket).status, 'REJECTED', 'retired publisher stays blocked regardless of headline');
   const thaiQuotation = wrapper({ ...fixtures.articles[0], snippet: fixtures.articles[0].snippet + ' โดยมีข้อความอ้างอิงภาษาฝรั่งเศสว่า les des une' });
-  assert.equal(reviewNewsItem(thaiQuotation).status, 'VERIFIED', 'foreign quoted words do not replace the dominant Thai content language');
+  assert.equal(reviewNewsItem(thaiQuotation).status, 'REJECTED', 'retired publisher stays blocked regardless of language');
 });
 
-test('real article routes are evaluated as content rather than blanket-blocked by category words', () => {
+test('removed publisher cannot return through real article routes or instrument narratives', () => {
   for (const path of ['/news/stock-market-news/thailand-outlook-123456', '/analysis/thailand-outlook-123456', '/commodities/news/thailand-outlook-123456', '/rates-bonds/articles/thailand-outlook-123456']) {
     const candidate = item({ ...fixtures.articles[1], url: 'https://www.investing.com' + path });
-    assert.equal(classifyNewsItem(candidate).decision, 'ACCEPT');
-    assert.equal(newsDisplayBlocked(candidate), false);
+    assert.equal(classifyNewsItem(candidate).decision, 'REJECT');
+    assert.equal(newsDisplayBlocked(candidate), true);
   }
   const narrative = wrapper({ ...fixtures.articles[1], title: 'Thailand manufacturers assess Copper Perpetual Futures - Investing.com' });
-  assert.equal(reviewNewsItem(narrative).status, 'VERIFIED', 'real news may discuss instruments without becoming a listing');
+  assert.equal(reviewNewsItem(narrative).status, 'REJECTED', 'retired publisher stays blocked for real article narratives');
 });
 
 test('RSS Feed, Watchlist, persistence, archive reads and analysis share the same gate', async () => {
@@ -68,18 +68,18 @@ test('RSS Feed, Watchlist, persistence, archive reads and analysis share the sam
     fetchImpl: async value => { const url = new URL(value); if (url.hostname !== 'news.google.com') { aiCalls++; throw Error('Unexpected analysis request'); } return new Response(rss(candidates)); },
     articleFetch: async () => { articleCalls++; throw Error('Direct acquisition remains disabled'); } });
   const feed = await service.getNews();
-  assert.equal(feed.items.length, 2);
+  assert.equal(feed.items.length, 0);
   const watched = await service.getWatchlistNews('PTT', { ownerId: 'a' });
-  assert.equal(watched.items.length, 2);
+  assert.equal(watched.items.length, 0);
   assert.ok(watched.items.every(value => value.matchedSymbols.includes('PTT')));
   const db = memoryTransport(), archive = createNewsArchiveService({ env: { ...archiveEnv, SETSCOPE_P1_DISPLAY_GATE: 'off' }, fetchImpl: db.fetchImpl });
   await archive.ingest(candidates);
-  assert.equal(db.rows.size, 2);
+  assert.equal(db.rows.size, 0);
   const legacy = fixtures.nonArticles.map(wrapper).map((candidate, index) => ({ fingerprint: 'legacy-' + index, title: candidate.title, url: candidate.url, source: candidate.source,
     source_name: candidate.sourceName, snippet: candidate.snippet, published_at: date, fetched_at: date, first_seen_at: date, matched_symbols: ['PTT'], broker_firms: [] }));
   for (const row of legacy) db.rows.set(row.fingerprint, row);
   const read = await createNewsArchiveService({ env: { ...archiveEnv, SETSCOPE_NEWS_EVIDENCE: 'off', SETSCOPE_P1_DISPLAY_GATE: 'off' }, fetchImpl: db.fetchImpl }).list();
-  assert.equal(read.items.length, 2); assert.equal(db.rows.size, 8, 'read-time exclusion never deletes historical rows');
+  assert.equal(read.items.length, 0); assert.equal(db.rows.size, 6, 'read-time exclusion never deletes historical rows');
   const summaries = await service.analyse(fixtures.nonArticles.map(wrapper));
   assert.ok(summaries.items.every(result => result.mode === 'unavailable' && result.summary === ''));
   for (let offset = 0; offset < owner.cases.length; offset += 8) {
@@ -89,7 +89,7 @@ test('RSS Feed, Watchlist, persistence, archive reads and analysis share the sam
   assert.equal(articleCalls, 0); assert.equal(aiCalls, 0);
   const positive = await createNewsService({ env: {}, fetchImpl: async () => { throw Error('No provider IO for rules summaries'); } }).analyse(fixtures.articles.map(wrapper));
   assert.equal(positive.items.length, 2);
-  assert.ok(positive.items.every(result => result.mode === 'rules' && result.summary.length > 0), 'accepted Thai and English articles retain normal analysis');
+  assert.ok(positive.items.every(result => result.mode === 'unavailable' && result.summary === ''), 'retired Thai and English articles never reach analysis');
 });
 
 test('canonical URL dedup preserves distinct stories and language editions despite identical titles', () => {
@@ -114,5 +114,5 @@ test('old subject-bound positive evidence cannot bypass current quality and read
   assert.equal(JSON.stringify([...db.rows.values()]), before);
   const sparse = wrapper({ ...fixtures.articles[1], snippet: 'Thailand stocks' });
   const obsolete = issueEvidence(sparse, { status: 'VERIFIED', reason: 'NEWS_METADATA_EVIDENCE', basis: 'metadata' });
-  assert.equal(reviewNewsItem(sparse, obsolete).status, 'UNVERIFIED');
+  assert.equal(reviewNewsItem(sparse, obsolete).status, 'REJECTED');
 });

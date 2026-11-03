@@ -4,15 +4,15 @@ const {createNewsArchiveService,MAX_ARCHIVE_SCAN_ROWS}=require('../server/news-a
 const date=new Date(Date.now()-60000).toISOString();
 const items=[
  {title:'PTT ข่าวลงทุน A',source:'other',sourceName:'กรุงเทพธุรกิจ',url:'https://news.google.com/rss/articles/ws6-a'},
- {title:'PTT ข่าวลงทุน B',source:'other',sourceName:'Investing.com',url:'https://news.google.com/rss/articles/ws6-b'},
+ {title:'PTT ข่าวลงทุน B',source:'other',sourceName:'Other Publisher',url:'https://news.google.com/rss/articles/ws6-b'},
  {title:'PTT ข่าวลงทุน C',source:'other',sourceName:'ฐานเศรษฐกิจ',url:'https://news.google.com/rss/articles/ws6-c'},
  {title:'PTT ข่าวลงทุน D',source:'infoquest',sourceName:'InfoQuest',url:'https://news.google.com/rss/articles/ws6-d',brokerCategory:true}
-].map(x=>({...x,pubDate:date,snippet:x.sourceName==='Investing.com'?'บริษัท PTT ในตลาดหุ้นไทยเผยรายละเอียดผลประกอบการและการลงทุนตามข่าวต้นทาง':'บริษัทเผยรายละเอียดผลประกอบการและการลงทุนตามข่าวต้นทาง',verification:{status:'VERIFIED',basis:'metadata'}}));
+].map(x=>({...x,pubDate:date,snippet:x.sourceName==='Other Publisher'?'บริษัท PTT ในตลาดหุ้นไทยเผยรายละเอียดผลประกอบการและการลงทุนตามข่าวต้นทาง':'บริษัทเผยรายละเอียดผลประกอบการและการลงทุนตามข่าวต้นทาง',verification:{status:'VERIFIED',basis:'metadata'}}));
 test('WS6: multi-publisher OR includes other storage sources and ignores discovery pathway',async()=>{
  const d=await import('../client/domain.mjs');
  assert.deepEqual(d.selectNewsForDisplay(items,{source:'bangkokbiznews,thansettakij',featuredCount:0}).filtered.map(x=>x.title),[items[0].title,items[2].title]);
  assert.equal(d.selectNewsForDisplay([{...items[1],discoverySource:'bangkokbiznews'}],{source:'bangkokbiznews'}).filtered.length,0);
- assert.equal(d.selectNewsForDisplay(items,{source:'investing,broker',featuredCount:0}).filtered.length,2);
+ assert.equal(d.selectNewsForDisplay(items,{source:'other,broker',featuredCount:0}).filtered.length,4);
  assert.equal(d.selectNewsForDisplay(items,{source:'other',featuredCount:0}).filtered.length,3);
 });
 test('WS6: multi-source navigation is canonical and old single-source URLs remain compatible',async()=>{
@@ -41,12 +41,12 @@ test('WS6: archive union, quality, dedup and featured exclusions count before pa
  const result=await archive.list({source:'bangkokbiznews,thansettakij',featuredCount:5,page:2,pageSize:10,});
  assert.equal(result.total,19);assert.equal(result.matchingTotal,24);assert.equal(result.featured.length,5);assert.equal(result.page,2);assert.equal(result.items.length,9);assert.equal(result.countExact,true);
  assert.ok([...result.featured,...result.items].every(x=>['กรุงเทพธุรกิจ','ฐานเศรษฐกิจ'].includes(x.sourceName)));
- assert.equal((await archive.list({source:'broker,investing'})).total,24);assert.equal(calls,1);assert.equal(MAX_ARCHIVE_SCAN_ROWS,20000);
+ assert.equal((await archive.list({source:'broker,other'})).total,48);assert.equal(calls,1);assert.equal(MAX_ARCHIVE_SCAN_ROWS,20000);
 });
 
 test('WS6: filtering never upgrades metadata; article-only gate counts persisted trusted articles',async()=>{
  const d=await import('../client/domain.mjs'),{article,memoryTransport}=require('./fixtures/news-evidence.cjs');
- assert.equal(d.selectNewsForDisplay(items,{source:'bangkokbiznews,investing,thansettakij',hardGate:true}).filtered.length,0);
+ assert.equal(d.selectNewsForDisplay(items,{source:'bangkokbiznews,thansettakij',hardGate:true}).filtered.length,0);
  const db=memoryTransport(),archive=db.service(),verified=[article({title:'PTT ข่าวจริงที่ตรวจบทความแล้ว',source:'infoquest',sourceName:'InfoQuest',url:'https://www.infoquest.co.th/news/123'}),article({title:'PTT ข่าวอีกบทความที่ตรวจแล้ว',url:'https://thunhoon.com/article-ws6-verified'})];
  await archive.ingest(verified);const before=JSON.stringify([...db.rows.values()]);
  const result=await archive.list({source:'infoquest,thunhoon',featuredCount:1});assert.equal(result.total,1);assert.equal(result.matchingTotal,2);assert.equal(result.countExact,true);

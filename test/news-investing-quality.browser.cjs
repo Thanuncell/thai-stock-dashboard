@@ -32,7 +32,8 @@ const check = (actual, expected, message) => { assert.deepEqual(actual, expected
       bad.push(legacy({ title: quality.articles[1].title, url: 'https://news.google.com/rss/articles/sparse', snippet: 'Thailand stocks' }));
       bad.push(legacy({ title: 'US stocks rise as earnings improve - Investing.com', url: 'https://news.google.com/rss/articles/irrelevant', snippet: 'US stocks rose as the technology sector reported stronger earnings and investors assessed the outlook for American companies. The Federal Reserve said that domestic inflation remained elevated.' }));
       const good = quality.articles.map(row => legacy({ ...row, url: 'https://news.google.com/rss/articles/quality-' + row.id }));
-      const candidates = mode === 'mixed' ? [...bad, ...good] : bad;
+      const retained = quality.articles.map(row => ({...legacy(row),title:row.title.replace(/\s+-\s+Investing\.com$/i,''),sourceName:'กรุงเทพธุรกิจ',url:'https://news.google.com/rss/articles/retained-'+row.id}));
+      const candidates = mode === 'mixed' ? [...bad, ...good, ...retained] : [...bad,...good];
       const state = { getOwners: [], putOwners: [], holdNextAPut: false, holdNextLogout: false, holdNextAGet: false, holdNextAMarket: false };
       await context.route('**/*', async route => {
         const request = route.request(), url = new URL(request.url());
@@ -52,18 +53,18 @@ const check = (actual, expected, message) => { assert.deepEqual(actual, expected
       });
       const page = await context.newPage(); page.on('pageerror', error => pageErrors.push(error.name));
       await seedPage(page, 'token-a'); await page.addInitScript(value => localStorage.setItem('setscope-theme', value), theme);
-      await page.goto(base + '/#news'); await page.waitForSelector('body.authenticated');
+      await page.goto(base + '/?source=investing#news'); await page.waitForSelector('body.authenticated');
       await page.waitForFunction(() => !document.querySelector('#refresh-news').disabled && document.querySelector('#news-list')?.getAttribute('aria-busy') === 'false');
-      const expected = mode === 'mixed' ? good.map(row => row.title).sort() : [];
+      const expected = mode==='mixed'?retained.map(row=>row.title).sort():[];
       const visible = () => page.locator('#featured-news .news-title-link, #news-list .news-title-link').allTextContents();
       check((await visible()).sort(), expected, 'Feed and legacy Archive hide all Owner examples');
-      await page.locator('.source-chip[data-source="investing"]').click();
-      await page.waitForFunction(() => document.querySelector('#news-list')?.getAttribute('aria-busy') === 'false');
-      check((await visible()).sort(), expected, 'Investing source filter retains valid Thai and English articles');
+      check(await page.locator('.source-chip[data-source="investing"]').count(), 0, 'Investing filter chip removed');
+      check(await page.locator('.source-chip[data-source="all"]').getAttribute('aria-pressed'), 'true', 'retired source URL defaults to all remaining publishers');
       await page.locator('.nav-item[data-workspace-route="watchlist"]').click();
       await page.waitForFunction(() => document.querySelector('#watchlist-news-list')?.getAttribute('aria-busy') === 'false');
       check((await page.locator('#watchlist-news-list .news-title-link').allTextContents()).sort(), expected, 'Watchlist uses the same quality predicate');
-      check(analysed.every(row => good.some(value => value.url === row.url)), true, 'rejected/uncertain articles never reach analysis');
+      check(analysed.every(item=>item.sourceName!=='Investing.com'), true, 'removed publisher never reaches analysis');
+      if(mode==='mixed')check(analysed.length>0,true,'other publishers retain normal analysis requests');
       if (mode === 'rejected') check(analysed.length, 0, 'all-rejected view makes zero sentiment requests');
       check(pageErrors, []);
       check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
