@@ -10,7 +10,7 @@ const { createNewsArticleLoader } = require('../lib/news-resolver');
 const { createNewsTransport } = require('../lib/news-fetch');
 const { newsAnalysisRequest, parseNewsAnalysis, safeAiDiagnostic } = require('../lib/news-analysis');
 const { createWatchlistNewsCacheKey } = require('./reliability');
-const { isNewsDocument, isNewsDocumentForDisplay, newsDisplayBlocked } = require('../lib/news-content');
+const { isNewsDocument, isNewsDocumentForDisplay, newsDisplayBlocked, isRemovedNewsPublisher } = require('../lib/news-content');
 const { fallbackNewsSummary, withNewsRulesSummary } = require('../lib/news-summary');
 const { createWatchlistNews, abortable } = require('./watchlist-news');
 const { matchesWatchlistStock, watchlistStockQuery } = require('../lib/watchlist-news-identity');
@@ -27,7 +27,6 @@ const FEEDS = Object.freeze([
   ['efinance', 'efinance', 'site:efinancethai.com'],
   ['other', 'กรุงเทพธุรกิจ', 'site:bangkokbiznews.com'],
   ['other', 'ฐานเศรษฐกิจ', 'site:thansettakij.com'],
-  ['other', 'Investing.com', 'site:th.investing.com'],
   ['broker', 'โบรกเกอร์', BROKER_FIRMS.map(firm => `"${firm.companyName.replace(/^บริษัท/, '')}"`).join(' OR ')]
 ]);
 
@@ -230,6 +229,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     kept.assessments = [];
     kept.withheldUrls = [];
     for (const original of items) {
+      if (isRemovedNewsPublisher(original)) continue;
       let item = original;
       let evidence = reviewNewsItem(item);
       const preliminary = reviewNewsForDisplay(item, {now:Number(now())});
@@ -299,7 +299,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
           });
         }).map(item=>recordDiscovery(item,{pathway:'google-news-rss/general',observedAt:Number(now())})).filter(item => {
           const published = Date.parse(item.pubDate);
-          return item.title && allowedNewsUrl(item.url)
+          return item.title && !isRemovedNewsPublisher(item) && allowedNewsUrl(item.url)
             && Number.isFinite(published) && published >= cutoff && published <= Number(now()) + 600000;
         }).sort((a, b) => Date.parse(b.pubDate) - Date.parse(a.pubDate));
         if(onDiscovered){try{await onDiscovered(parsed.slice(0,1));}catch{logger.warn('News discovery checkpoint unavailable');}}
@@ -383,7 +383,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
     }));
     const cacheKey = item => newsFingerprint(item) + '|' + item.title + '|' + item.snippet;
     for (const [key, entry] of analysisCache) if (entry.expiresAt <= Number(now())) analysisCache.delete(key);
-    const clean = prepared.filter(item => !item.analysisBlocked && !isNewsDocument(item) && reviewNewsItem(item).status === 'VERIFIED');
+    const clean = prepared.filter(item => !isRemovedNewsPublisher(item) && !item.analysisBlocked && !isNewsDocument(item) && reviewNewsItem(item).status === 'VERIFIED');
     // Concurrent requests share the completed result rather than caching a competing fallback.
     if (openAiInFlight) await openAiInFlight;
     const fresh = [...new Map(clean.filter(item => !analysisCache.has(cacheKey(item))).map(item => [cacheKey(item), item])).values()];
@@ -467,7 +467,7 @@ function createNewsService({ env = process.env, fetchImpl = globalThis.fetch, ar
       const pubDate=decodeXml(xmlTag(block,'pubDate')),snippet=decodeXml(xmlTag(block,'description')).slice(0,1200),outlet=decodeXml(xmlTag(block,'source'));
       return decorateBrokerAttribution({title,url,pubDate,snippet,source:sourceFromOutlet(outlet),sourceName:outlet||'ข่าวหุ้นไทย',
         matchedSymbols:matchesWatchlistStock(stock,title+' '+snippet)?[stock.symbol]:[]});
-    }).map(item=>recordDiscovery(item,{pathway:'google-news-rss/watchlist',observedAt:Number(now())})).filter(item=>item.title&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
+    }).map(item=>recordDiscovery(item,{pathway:'google-news-rss/watchlist',observedAt:Number(now())})).filter(item=>item.title&&!isRemovedNewsPublisher(item)&&allowedNewsUrl(item.url)&&Number.isFinite(Date.parse(item.pubDate))
       &&Date.parse(item.pubDate)>=Number(now())-30*86400000&&Date.parse(item.pubDate)<=Number(now())+600000&&item.matchedSymbols.length);
     const quality=await keepQualityItems(parsed,budget,stock);
     return {items:quality.map(withNewsRulesSummary).filter(Boolean),unverifiedCount:quality.unverifiedCount,
