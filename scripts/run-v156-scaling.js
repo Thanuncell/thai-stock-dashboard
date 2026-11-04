@@ -5,6 +5,7 @@ const {createControlledCoverageStore,stopped}=require('../server/controlled-cove
 const {createCoverageRepository}=require('../server/coverage-service');
 const {createRequestDeadline}=require('../server/request-deadline');
 const batch=require('../server/manual-batch-policy'),scaling=require('../server/scaling-policy'),canary=require('../server/canary-policy');
+const recovery=require('../server/scaling-recovery');
 async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,deadlineFactory=createRequestDeadline,onReport=()=>{},evidenceKind='synthetic',
  mode=env.SETSCOPE_SCALE_MODE||'preflight',stage=Number(env.SETSCOPE_SCALE_STAGE||20),roundJobs=Number(env.SETSCOPE_SCALE_ROUND_JOBS||4)}={}){
  let deadline=deadlineFactory(),jobStarted=false,reads=0;
@@ -14,7 +15,8 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
   preflight:{status:'NOT_RUN',dueCount:null,requiredCount:roundJobs*5,quotaRemaining:null,coordinator:'NOT_CHECKED',checkpoint:'NOT_CHECKED',reasonCode:null}};
  const cancel=()=>deadline.abort();process.once('SIGINT',cancel);process.once('SIGTERM',cancel);
  try{
-  authorize({...env,SETSCOPE_BATCH_CONFIRMATION:'RUN COVERAGE 20'},mode);
+  const recovering=['recovery-preflight','recover'].includes(mode);
+  authorize({...env,SETSCOPE_BATCH_CONFIRMATION:'RUN COVERAGE 20'},recovering?'preflight':mode);
   scaling.validateContext(context);
   if(!Number.isInteger(roundJobs)||roundJobs<1||roundJobs>4||mode==='run'&&env.SETSCOPE_SCALE_CONFIRMATION!==`RUN COVERAGE ${stage}`)throw stopped('SCALING_APPROVAL_REQUIRED');
   const settings={...env,SETSCOPE_V156_MANUAL_VERIFY:'1',SETSCOPE_V156_KILL:'0',SETSCOPE_V156_SCALE_APPROVAL:JSON.stringify(batch.approval(stage))};
@@ -23,7 +25,26 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
    if(++reads>50)throw stopped('BATCH_PREFLIGHT_BUDGET');return fetchImpl(input,init);
   });
   const repository=createCoverageRepository({env:settings,fetchImpl:readOnly,now}),store=createControlledCoverageStore({env:settings,fetchImpl:readOnly,now});
-  const prepared=await deadline.run(()=>batch.preflight({repository,store,now:Number(now()),id:env.GITHUB_RUN_ID,targetSize:roundJobs*5,stage,
+  if(recovering){
+   if(!env.SETSCOPE_SCALE_ID||stage!==100||!context.reviewed||mode==='recover'&&env.SETSCOPE_SCALE_CONFIRMATION!==`RECOVER COVERAGE ${id}`)throw stopped('SCALING_RECOVERY_REVIEW_REQUIRED');
+   const control=await store.inspect('v156:control');
+   const inspected=await deadline.run(()=>recovery.inspect({store,repository,metadata:control.automation_state.metadata,context,now:Number(now())}));
+   report.recovery={fingerprint:inspected.fingerprint,receipt:inspected.receipt};
+   if(mode==='recovery-preflight'){report.status='RECOVERY_READY';return report;}
+   // Recovery is a separate, explicitly approved metadata operation, never a batch run.
+   let requests=reads;
+   const transport=deadline.wrap((input,init={})=>{
+    const url=new URL(String(input));
+    if(url.hostname!==new URL(env.SUPABASE_URL).hostname||!['/rest/v1/coverage_runs','/rest/v1/security_coverage'].includes(url.pathname)
+     ||url.pathname.endsWith('/security_coverage')&&init.method&&!['GET','HEAD'].includes(init.method)||++requests>200)throw stopped('SCALING_RECOVERY_BUDGET');
+    return fetchImpl(input,init);
+   });
+   const writer=createControlledCoverageStore({env:settings,fetchImpl:transport,now});
+   const readRepository=createCoverageRepository({env:settings,fetchImpl:transport,now});
+   const result=await deadline.run(()=>recovery.recover({store:writer,repository:readRepository,context,now:Number(now()),fingerprint:env.SETSCOPE_SCALE_RECOVERY_FINGERPRINT}));
+   Object.assign(report,result);return report;
+  }
+  const prepared=await deadline.run(()=>batch.preflight({repository,store,now:Number(now()),id:env.GITHUB_RUN_ID,targetSize:roundJobs*5,stage,eligibilityReview:env.SETSCOPE_SCALE_ELIGIBILITY_REVIEW||'',
    prepare:async({metadata,report:check})=>{
     if(metadata.scaling){scaling.validateState(metadata.scaling);const s=metadata.scaling;
      check.durableStage={id:s.id,stage:s.stage,phase:s.phase,completed:s.completedSymbols.length,remaining:s.stage-s.completedSymbols.length,evidenceKind:s.evidenceKind};}
@@ -34,7 +55,7 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
     check.stageProgress={id,stage,completed:progress.completedSymbols.length,remaining,continuationReviewRequired:progress.completedSymbols.length>0};
     const jobs=Math.min(roundJobs,remaining/5,check.quotaRemaining.jobs);
     if(jobs<1)throw stopped('SCALING_DAILY_CAPACITY');
-    return {targetSize:jobs*5,excludeSymbols:progress.completedSymbols,scaling:context};
+    return {targetSize:jobs*5,excludeSymbols:[...progress.completedSymbols,...(progress.recoveries||[]).flatMap(r=>r.excludedSymbols)],scaling:context};
    }}));
   report.preflight=prepared.preflight;report.plan=prepared.plan;report.before=batch.counts(prepared.rows,Number(now()));
   if(mode==='preflight'){report.status='READY';return report;}

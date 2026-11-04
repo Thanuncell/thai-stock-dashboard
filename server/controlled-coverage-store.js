@@ -145,11 +145,11 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
     if (patch.activeJob != null && !KEY.test(patch.activeJob)) throw stopped('INVALID_METADATA');
     if(patch.scaling!==undefined)require('./scaling-policy').validateState(patch.scaling);
     if(patch.manualBatch!==undefined){
-      if(!patch.manualBatch||!['running','completed','stopped'].includes(patch.manualBatch.phase)
+      if(!patch.manualBatch||!['running','completed','stopped','recovered'].includes(patch.manualBatch.phase)
         ||!Number.isInteger(patch.manualBatch.next)||patch.manualBatch.next<0||patch.manualBatch.next>4
         ||Buffer.byteLength(JSON.stringify(patch.manualBatch))>16384)throw stopped('INVALID_METADATA');
       const b=patch.manualBatch;
-      if(Object.keys(b).some(k=>!['version','id','day','targets','runKeys','initialReservations','fingerprint','next','phase','targetSize','scaling'].includes(k))
+      if(Object.keys(b).some(k=>!['version','id','day','targets','runKeys','initialReservations','fingerprint','next','phase','targetSize','scaling','exclusions','eligibilityReview'].includes(k))
         ||!Array.isArray(b.targets)||![5,10,15,20].includes(b.targets.length)||b.targets.some(r=>!r||Object.keys(r).some(k=>!['symbol','provider_symbol','provider','active'].includes(k))
           ||!/^[A-Z0-9&.-]{1,20}$/.test(r.symbol)||r.provider_symbol!==r.symbol+'.BK'||r.provider!=='Yahoo Finance'||r.active!==true)
         ||!Array.isArray(b.runKeys)||b.runKeys.length!==b.targets.length/5||b.runKeys.some(k=>!KEY.test(k))
@@ -177,6 +177,7 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
       if (!['providerCalls','databaseReads','databaseWrites','elapsedMs'].includes(key) || !Number.isSafeInteger(value) || value < 0) throw stopped('INVALID_METADATA');
     }
     const row = await current(), state = validate(row);
+    if(patch.manualBatch?.phase==='recovered'&&!require('./scaling-recovery').isRecovered({...state.metadata,...patch}))throw stopped('SCALING_RECOVERY_INVALID');
     await cas(row, { ...state, metadata: { ...state.metadata, ...patch }, leaseUntil: new Date(Number(now()) + leaseMs).toISOString() });
   }
   async function finishRun(payload) {

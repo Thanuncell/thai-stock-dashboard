@@ -7,20 +7,32 @@ function validateContext(c){
   ||c.sourceSha!=null&&!/^[a-f0-9]{40}$/.test(c.sourceSha)||c.evidenceKind==='production-manual'&&!/^[a-f0-9]{40}$/.test(c.sourceSha||''))throw stopped('SCALING_INPUT_INVALID');
 }
 function validateState(s){
- if(!s||Object.keys(s).some(k=>!['version','id','stage','phase','roundId','roundFingerprint','evidenceKind','completedSymbols','completedJobs','acceptedStages'].includes(k))
+ if(!s||Object.keys(s).some(k=>!['version','id','stage','phase','roundId','roundFingerprint','evidenceKind','completedSymbols','completedJobs','acceptedStages','recoveries'].includes(k))
   ||s.version!==1||!ID.test(s.id||'')||!STAGES.includes(s.stage)||!ID.test(s.roundId||'')||!/^[a-f0-9]{64}$/.test(s.roundFingerprint||'')
   ||!['running','awaiting_approval','completed','stopped'].includes(s.phase)||!['synthetic','production-manual'].includes(s.evidenceKind)
   ||!Array.isArray(s.completedSymbols)||s.completedSymbols.length>s.stage||new Set(s.completedSymbols).size!==s.completedSymbols.length
   ||s.completedSymbols.some(x=>!/^([A-Z0-9&.-]){1,20}$/.test(x))||!Array.isArray(s.completedJobs)||s.completedJobs.length>100
   ||s.completedJobs.length*5!==s.completedSymbols.length||!Array.isArray(s.acceptedStages)||s.acceptedStages.length>3
   ||Buffer.byteLength(JSON.stringify(s))>131072)throw stopped('SCALING_CHECKPOINT_INVALID');
+ if(s.recoveries!==undefined){
+  if(!Array.isArray(s.recoveries)||s.recoveries.length>4||new Set(s.recoveries.map(r=>r.roundId)).size!==s.recoveries.length)throw stopped('SCALING_RECOVERY_INVALID');
+  for(const r of s.recoveries){require('./scaling-recovery').validateReceipt(r);if(r.priorBatch.scaling?.id!==s.id||r.priorBatch.scaling?.stage!==s.stage
+   ||r.priorBatch.scaling?.evidenceKind!==s.evidenceKind||s.evidenceKind==='production-manual'&&!/^[a-f0-9]{40}$/.test(r.sourceSha||''))throw stopped('SCALING_RECOVERY_INVALID');}
+ }
  for(const j of s.completedJobs){
   if(!j||Object.keys(j).some(k=>!['runKey','attempted','verified','partial','temporaryFailed','sourceSha'].includes(k))||!/^v156:coverage:\d{4}-\d\d-\d\d:[a-zA-Z0-9_-]{1,24}$/.test(j.runKey||'')
    ||j.attempted!==5||j.verified!==5||j.partial!==0||j.temporaryFailed!==0
    ||j.sourceSha!=null&&!/^[a-f0-9]{40}$/.test(j.sourceSha)||s.evidenceKind==='production-manual'&&!/^[a-f0-9]{40}$/.test(j.sourceSha||''))throw stopped('SCALING_CHECKPOINT_INVALID');
  }
  if(new Set(s.completedJobs.map(j=>j.runKey)).size!==s.completedJobs.length)throw stopped('SCALING_CHECKPOINT_INVALID');
- for(const r of s.acceptedStages)if(!r||Object.keys(r).some(k=>!['id','stage','verified','evidenceKind'].includes(k))||!ID.test(r.id||'')||!STAGES.includes(r.stage)||r.verified!==r.stage||r.evidenceKind!==s.evidenceKind)throw stopped('SCALING_CHECKPOINT_INVALID');
+ for(const r of s.acceptedStages){
+  if(!r||Object.keys(r).some(k=>!['id','stage','verified','evidenceKind','recoveries'].includes(k))||!ID.test(r.id||'')||!STAGES.includes(r.stage)||r.verified!==r.stage||r.evidenceKind!==s.evidenceKind)throw stopped('SCALING_CHECKPOINT_INVALID');
+  if(r.recoveries!==undefined){
+   if(!Array.isArray(r.recoveries)||r.recoveries.length>4)throw stopped('SCALING_RECOVERY_INVALID');
+   for(const h of r.recoveries){require('./scaling-recovery').validateReceipt(h);
+    if(h.priorBatch.scaling?.id!==r.id||h.priorBatch.scaling?.stage!==r.stage||h.priorBatch.scaling?.evidenceKind!==r.evidenceKind)throw stopped('SCALING_RECOVERY_INVALID');}
+  }
+ }
  if(new Set(s.acceptedStages.map(r=>r.stage)).size!==s.acceptedStages.length)throw stopped('SCALING_CHECKPOINT_INVALID');
  if(JSON.stringify(s.acceptedStages.map(r=>r.stage))!==JSON.stringify(STAGES.slice(0,s.acceptedStages.length))
   ||s.acceptedStages.some(r=>r.stage>s.stage)||s.phase==='completed'&&(s.completedSymbols.length!==s.stage||s.acceptedStages.at(-1)?.stage!==s.stage))throw stopped('SCALING_CHECKPOINT_INVALID');
@@ -54,7 +66,7 @@ function admit(metadata,plan,index,canary){
   s=metadata.scaling;validateState(s);
   if(s.id!==c.id||s.stage!==c.stage||s.phase!=='running'||s.roundFingerprint!==plan.fingerprint||s.roundId!==c.roundId)throw stopped('SCALING_SEQUENCE_INVALID');
  }
- if(plan.targets.slice(index*5).some(r=>s.completedSymbols.includes(r.symbol))||s.completedSymbols.length+plan.targets.slice(index*5).length>c.stage)throw stopped('SCALING_DUPLICATE_OR_SIZE');
+ if(plan.targets.slice(index*5).some(r=>s.completedSymbols.includes(r.symbol)||s.recoveries?.some(h=>h.excludedSymbols.includes(r.symbol)))||s.completedSymbols.length+plan.targets.slice(index*5).length>c.stage)throw stopped('SCALING_DUPLICATE_OR_SIZE');
  return {...s,phase:'running',roundId:c.roundId,roundFingerprint:plan.fingerprint};
 }
 function complete(s,plan,index,result){
@@ -65,7 +77,7 @@ function complete(s,plan,index,result){
  const next={...s,completedSymbols:[...s.completedSymbols,...symbols],completedJobs:[...s.completedJobs,
   {runKey:result.runKey,attempted:result.attempted,verified:result.verified,partial:result.partial,temporaryFailed:result.temporaryFailed,sourceSha:plan.scaling.sourceSha||null}]};
  next.phase=next.completedSymbols.length===s.stage?'completed':index===plan.runKeys.length-1?'awaiting_approval':'running';
- if(next.phase==='completed')next.acceptedStages=[...s.acceptedStages,{id:s.id,stage:s.stage,verified:s.stage,evidenceKind:s.evidenceKind}];
+ if(next.phase==='completed')next.acceptedStages=[...s.acceptedStages,{id:s.id,stage:s.stage,verified:s.stage,evidenceKind:s.evidenceKind,...(s.recoveries?.length?{recoveries:structuredClone(s.recoveries)}:{})}];
  validateState(next);return next;
 }
 module.exports={validateContext,validateState,progress,admit,complete};

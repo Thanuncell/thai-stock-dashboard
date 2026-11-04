@@ -5,7 +5,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [preflight, run]
+        options: [preflight, run, recovery-preflight, recover]
         default: preflight
         description: 'Read-only inspection or separately approved round'
         required: true
@@ -30,6 +30,14 @@ on:
       reviewed_state:
         type: string
         description: 'Continuation only: REVIEWED followed by the original stage ID'
+        required: false
+      recovery_fingerprint:
+        type: string
+        description: 'Separately approved recovery: fingerprint from read-only recovery inspection'
+        required: false
+      eligibility_review:
+        type: string
+        description: 'Only after checking current exchange evidence: REVIEWED ACAP YYYY-MM-DD'
         required: false
 
 permissions:
@@ -59,4 +67,6 @@ jobs:
           SETSCOPE_SCALE_ID: ${{ inputs.stage_id }}
           SETSCOPE_SCALE_CONFIRMATION: ${{ inputs.confirmation }}
           SETSCOPE_SCALE_REVIEW: ${{ inputs.reviewed_state }}
+          SETSCOPE_SCALE_RECOVERY_FINGERPRINT: ${{ inputs.recovery_fingerprint }}
+          SETSCOPE_SCALE_ELIGIBILITY_REVIEW: ${{ inputs.eligibility_review }}
         run: node scripts/run-v156-scaling.js

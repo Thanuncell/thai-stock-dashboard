@@ -265,6 +265,32 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       assert.equal(row.automation_state.metadata.scaling.completedSymbols.length,40);assert.equal(row.automation_state.metadata.scaling.phase,'awaiting_approval');
       assert.equal(row.automation_state.metadata.scaling.acceptedStages[0].verified,20);
       assert.equal((await pool.query("select verified from public.coverage_runs where run_key='v156:coverage:2026-10-26:canary-5'")).rows[0].verified,5);
+      // Exercise real JSONB key ordering, CAS and review-gated stopped recovery.
+      time=Date.parse('2026-11-02T11:00:00Z');provider.advance(time,35);
+      const failedSettings={...nextSettings,GITHUB_RUN_ID:'880003',SETSCOPE_SCALE_ID:'880001',SETSCOPE_SCALE_REVIEW:'REVIEWED 880001'};
+      let failedCalls=0;
+      const missing=(input,init)=>new URL(String(input)).hostname==='query1.finance.yahoo.com'?(failedCalls++,Promise.resolve(Response.json({},{status:404}))):fetchImpl(input,init);
+      await assert.rejects(main({env:failedSettings,fetchImpl:missing,now:()=>time,mode:'run'}));assert.equal(failedCalls,1);
+      const interrupted=(await pool.query("select automation_state from public.coverage_runs where run_key='v156:control'")).rows[0].automation_state.metadata;
+      const previousReceipts=structuredClone(interrupted.scaling.completedJobs),reservation=interrupted.reservations;
+      const recoveryStore=()=>createControlledCoverageStore({env,fetchImpl,now:()=>time});
+      await recoveryStore().reconcile(interrupted.activeJob,true);
+      const failedSnapshot=(await pool.query('select row_to_json(r) value from public.coverage_runs r where run_key=$1',[interrupted.activeJob])).rows[0].value;
+      const registrySnapshot=(await pool.query('select row_to_json(r) value from public.security_coverage r order by symbol')).rows.map(r=>r.value);
+      const inspectSettings={...failedSettings,GITHUB_RUN_ID:'880004'};
+      const inspectResult=await main({env:inspectSettings,fetchImpl,now:()=>time,mode:'recovery-preflight'});
+      assert.equal(inspectResult.status,'RECOVERY_READY');
+      const repaired=await main({env:{...inspectSettings,GITHUB_RUN_ID:'880005',SETSCOPE_SCALE_CONFIRMATION:'RECOVER COVERAGE 880001',
+        SETSCOPE_SCALE_RECOVERY_FINGERPRINT:inspectResult.recovery.fingerprint},fetchImpl,now:()=>time,mode:'recover'});
+      assert.equal(repaired.status,'RECOVERED');assert.equal(repaired.jobsStarted,0);
+      const recovered=(await pool.query("select automation_state from public.coverage_runs where run_key='v156:control'")).rows[0].automation_state.metadata;
+      assert.equal(recovered.reservations,reservation+1);assert.equal(recovered.scaling.recoveries[0].quotaBefore.reservations,reservation);assert.deepEqual(recovered.scaling.completedJobs,previousReceipts);
+      assert.equal(recovered.scaling.id,'880001');assert.equal(recovered.scaling.completedSymbols.length,40);assert.equal(recovered.scaling.recoveries.length,1);
+      assert.deepEqual((await pool.query('select row_to_json(r) value from public.security_coverage r order by symbol')).rows.map(r=>r.value),registrySnapshot);
+      assert.deepEqual((await pool.query('select row_to_json(r) value from public.coverage_runs r where run_key=$1',[interrupted.activeJob])).rows[0].value,failedSnapshot);
+      const continuedAfterRecovery=await main({env:{...failedSettings,GITHUB_RUN_ID:'880006'},fetchImpl:transport,now:()=>time,mode:'run'});
+      assert.equal(continuedAfterRecovery.stageProgress.completed,50);assert.equal(continuedAfterRecovery.jobs.length,2);
+      assert.ok(continuedAfterRecovery.plan.targets.every(t=>!inspectResult.recovery.receipt.excludedSymbols.includes(t.symbol)));
     });
     await t.test('rollback refuses to destroy checkpoints, then supports an empty-column rollback and reapply', async () => {
       const archived=(await pool.query('select run_key,automation_state from public.coverage_runs where automation_state is not null')).rows;
