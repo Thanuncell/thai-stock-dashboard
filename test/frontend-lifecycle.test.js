@@ -133,7 +133,7 @@ test('final UI cleanup preserves exact News and chart contracts', () => {
   assert.doesNotMatch(indexSource, /id="chart-name"/);
   assert.doesNotMatch(appSource, /#chart-name/);
   assert.match(indexSource, /แหล่งข้อมูล: Yahoo Finance · ล่าช้าประมาณ 15 นาที/);
-  assert.match(indexSource, /id="chart-updated">รับข้อมูล Yahoo Finance: —/);
+  assert.match(indexSource, /id="chart-updated">อัปเดตเมื่อ —/);
   assert.match(appSource, /watchlist\[0\]\?\.symbol \|\| 'PTT'/);
 });
 
@@ -314,7 +314,7 @@ test('Chart receipt label uses recorded response time, distinguishes the candle 
   assert.match(appSource, /activeQuote\?\.dataState/);
   assert.match(appSource, /แท่งราคาล่าสุดเปิด \$\{technicalTimeText\(allRows\.at\(-1\)\?\.time\)\}/);
   assert.match(appSource, /\['stale', 'suspect', 'quarantined', 'unavailable'\]\.includes\(latestMarket\?\.dataState\)/);
-  assert.match(appSource, /รับข้อมูล Yahoo Finance: \$\{technicalTimeText\(receipt\)\}/);
+  assert.match(appSource, /อัปเดตเมื่อ \$\{receiptText\}/);
   assert.doesNotMatch(appSource, /setText\('#chart-updated', [^\n]*(?:providerTime|chartBarTime|Date\.now)/);
   assert.match(appSource, /ข้อมูลเก่า/);
   assert.match(appSource, /ข้อมูลต้องสงสัย/);

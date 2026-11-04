@@ -75,6 +75,7 @@ for(const [direction,source,type,value]of [[1,'Swing high','support',110],[-1,'S
   const rows=roleRows(direction);const s=levels(rows.slice(0,36)),detail=s[type+'Details'].find(z=>z.value===value&&z.source===source);
   assert.ok(detail);assert.equal(detail.originalType,direction>0?'resistance':'support');
   assert.equal(detail.roleConfirmation.kind,'breakout-confirmed');assert.ok(detail.roleConfirmation.confirmedAt<=rows.at(-1).availableAt);
+  assert.ok(detail.sourceLabel.includes(source));assert.ok(detail.sourceLabel.includes(direction>0?'แนวรับ':'แนวต้าน'));assert.match(detail.sourceLabel,/กลับบทบาทยืนยัน/);
   const retest={...rows.at(-1),time:at+45*step,availableAt:at+46*step,low:direction>0?109.9:86,high:direction>0?114:90.1};
   const r=levels([...rows,retest])[type+'Details'].find(z=>z.value===value&&z.source===source);assert.equal(r.roleConfirmation.kind,'retest-confirmed');
  });
@@ -101,8 +102,16 @@ function drawingHarness(){
  const escape=()=>hostHandlers.keydown({key:'Escape',preventDefault(){}});
  const mode=tool=>controlHandlers.click({target:{closest:q=>q==='[data-draw-tool]'?{dataset:{drawTool:tool}}:null}});
  const original={id:'existing',type:'trend',a:{time:at,price:100},b:{time:at+step,price:110}};
- return {workspace,event,escape,mode,original,writes,captures};
+ return {workspace,event,escape,mode,original,writes,captures,status};
 }
+
+test('drawing persistence wording names this device on normal and failed local writes',()=>{
+ const h=drawingHarness();
+ assert.equal(h.status.textContent,'เลื่อน/ซูมกราฟตามปกติ · ภาพวาดบันทึกแยกตามบัญชีบนอุปกรณ์นี้');
+ h.workspace.items=[h.original];h.workspace.write=()=>{throw Error('fixture storage full');};h.workspace.save();
+ assert.equal(h.status.textContent,'บันทึกบนอุปกรณ์นี้ไม่สำเร็จ ภาพวาดยังอยู่ในหน้านี้');
+ assert.deepEqual(h.workspace.items,[h.original]);assert.equal(h.writes.length,0);
+});
 test('Escape cancels a new drawing without persisting a draft or keeping pointer capture',()=>{
  const h=drawingHarness(),w=h.workspace;h.mode('trend');w.pointerDown(h.event(1));w.pointerMove(h.event(1,120,at+step));h.escape();
  assert.deepEqual(w.items,[]);assert.equal(w.gesture,null);assert.equal(h.writes.length,0);assert.equal(h.captures.size,0);
