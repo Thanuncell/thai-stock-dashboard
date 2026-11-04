@@ -139,11 +139,12 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
   };
   async function metadata() { return structuredClone(validate(await current()).metadata || {}); }
   async function updateMetadata(patch) {
-    const allowed = new Set(['day','reservations','activeJob','providerFailures','failedSecurities','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks','manualBatch','scaling']);
+    const allowed = new Set(['day','reservations','activeJob','providerFailures','failedSecurities','blockedUntil','denied','reason','metrics','mode','session','eodCompleted','coverageChecks','manualBatch','scaling','reconciliation']);
     if (!patch || Object.keys(patch).some(key => !allowed.has(key))) throw stopped('INVALID_METADATA');
     for (const key of ['reservations','providerFailures','failedSecurities']) if (patch[key] !== undefined && (!Number.isSafeInteger(patch[key]) || patch[key] < 0 || patch[key] > 100000)) throw stopped('INVALID_METADATA');
     if (patch.activeJob != null && !KEY.test(patch.activeJob)) throw stopped('INVALID_METADATA');
     if(patch.scaling!==undefined)require('./scaling-policy').validateState(patch.scaling);
+    if(patch.reconciliation!==undefined)require('./scaling-recovery').validateReservation(patch.reconciliation);
     if(patch.manualBatch!==undefined){
       if(!patch.manualBatch||!['running','completed','stopped','recovered'].includes(patch.manualBatch.phase)
         ||!Number.isInteger(patch.manualBatch.next)||patch.manualBatch.next<0||patch.manualBatch.next>4
@@ -215,17 +216,38 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
     });
     return { phase };
   }
-  async function reconcile(runKey, reviewed) {
+  async function reconcile(runKey, reviewed, proof) {
     if (reviewed !== true) throw stopped('RECONCILIATION_REVIEW_REQUIRED');
     const row = await read(runKey), state = validate(row);
+    let scalingJob=Boolean(proof||state.metadata?.reconciliation);
+    if(/:b20-/.test(runKey||'')){
+      const coordinator=validate(await read(CONTROL_KEY)).metadata||{},batch=coordinator.manualBatch;
+      scalingJob=scalingJob||batch?.scaling?.stage===100&&batch.runKeys?.includes(runKey)||coordinator.scaling?.stage===100&&coordinator.activeJob===runKey;
+    }
+    if(scalingJob&&(!proof||held?.key!==CONTROL_KEY))throw stopped('SCALING_RECONCILIATION_REVIEW_REQUIRED');
     if (Date.parse(state.leaseUntil) > Number(now())) throw stopped('JOB_STILL_LEASED');
     if (state.phase === 'completed') return { phase: 'completed' };
+    let audit;
+    if(scalingJob){
+      const {hash,validateReservation}=require('./scaling-recovery');validateReservation(proof.reservation);
+      const control=validate(await current());
+      if(hash(row)!==hash(proof.expected)||hash(control.metadata)!==hash(proof.expectedCoordinatorMetadata)||hash(control.metadata?.reconciliation)!==hash(proof.reservation)
+        ||proof.reservation.jobKey!==runKey||control.metadata?.activeJob!==runKey||state.phase!=='failed'||row.failure_reason!=='CONTROLLED_RUN_INTERRUPTED')throw stopped('SCALING_RECOVERY_STATE_CHANGED');
+      const manifest=state.documents['coverage-manifest:'+runKey],items=state.documents['coverage-items:'+runKey];
+      safeCheckpoint(manifest,env);safeCheckpoint(items,env);
+      if(!Object.keys(items.entries).length||Object.values(items.entries).some(e=>e.status!=='inflight'||Object.keys(e).some(k=>k!=='status')))throw stopped('SCALING_RECOVERY_SIDE_EFFECT_UNCERTAIN');
+      const rows=await require('./coverage-service').createCoverageRepository({env,fetchImpl,now}).listCandidates();
+      if(manifest.rows.some(old=>{const actual=rows.find(r=>r.symbol===old.symbol);return !actual||Object.keys(old).some(k=>JSON.stringify(old[k])!==JSON.stringify(actual[k]));}))throw stopped('SCALING_RECOVERY_SIDE_EFFECT_UNCERTAIN');
+      await current();
+      audit={reservation:structuredClone(proof.reservation),priorDocuments:structuredClone(state.documents),priorPhase:state.phase,
+        priorFailureReason:row.failure_reason,priorRevision:state.revision,priorOwner:state.owner,priorLeaseUntil:state.leaseUntil};
+    }
     const documents = structuredClone(state.documents);
     for (const document of Object.values(documents)) for (const entry of Object.values(document?.entries || {})) {
       if (entry.status === 'inflight') entry.status = 'abandoned';
     }
     // Retain uncertainty as evidence. No synthetic result, registry write or replay.
-    await cas(row, { ...state, documents, phase: 'stopped', leaseUntil: new Date(Number(now())).toISOString() },
+    await cas(row, { ...state, documents, ...(audit?{metadata:{...state.metadata,reconciliation:audit}}:{}),phase: 'stopped', leaseUntil: new Date(Number(now())).toISOString() },
       { status: 'failed', failure_reason: 'OPERATOR_RECONCILED_WITHOUT_REPLAY' });
     return { phase: 'stopped', reconciled: true, replayed: false };
   }

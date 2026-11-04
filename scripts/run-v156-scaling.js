@@ -15,7 +15,8 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
   preflight:{status:'NOT_RUN',dueCount:null,requiredCount:roundJobs*5,quotaRemaining:null,coordinator:'NOT_CHECKED',checkpoint:'NOT_CHECKED',reasonCode:null}};
  const cancel=()=>deadline.abort();process.once('SIGINT',cancel);process.once('SIGTERM',cancel);
  try{
-  const recovering=['recovery-preflight','recover'].includes(mode);
+  const reconciling=['reconciliation-preflight','reconcile'].includes(mode);
+  const recovering=reconciling||['recovery-preflight','recover'].includes(mode);
   authorize({...env,SETSCOPE_BATCH_CONFIRMATION:'RUN COVERAGE 20'},recovering?'preflight':mode);
   scaling.validateContext(context);
   if(!Number.isInteger(roundJobs)||roundJobs<1||roundJobs>4||mode==='run'&&env.SETSCOPE_SCALE_CONFIRMATION!==`RUN COVERAGE ${stage}`)throw stopped('SCALING_APPROVAL_REQUIRED');
@@ -26,11 +27,12 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
   });
   const repository=createCoverageRepository({env:settings,fetchImpl:readOnly,now}),store=createControlledCoverageStore({env:settings,fetchImpl:readOnly,now});
   if(recovering){
-   if(!env.SETSCOPE_SCALE_ID||stage!==100||!context.reviewed||mode==='recover'&&env.SETSCOPE_SCALE_CONFIRMATION!==`RECOVER COVERAGE ${id}`)throw stopped('SCALING_RECOVERY_REVIEW_REQUIRED');
+   if(!env.SETSCOPE_SCALE_ID||stage!==100||!context.reviewed
+    ||['reconcile','recover'].includes(mode)&&env.SETSCOPE_SCALE_CONFIRMATION!==`${reconciling?'RECONCILE':'RECOVER'} COVERAGE ${id}`)throw stopped('SCALING_RECOVERY_REVIEW_REQUIRED');
    const control=await store.inspect('v156:control');
-   const inspected=await deadline.run(()=>recovery.inspect({store,repository,metadata:control.automation_state.metadata,context,now:Number(now())}));
-   report.recovery={fingerprint:inspected.fingerprint,receipt:inspected.receipt};
-   if(mode==='recovery-preflight'){report.status='RECOVERY_READY';return report;}
+   const inspected=await deadline.run(()=>recovery.inspect({store,repository,metadata:control.automation_state.metadata,context,now:Number(now()),reconciliation:reconciling}));
+   report[reconciling?'reconciliation':'recovery']={fingerprint:inspected.fingerprint,receipt:inspected.receipt};
+   if(['recovery-preflight','reconciliation-preflight'].includes(mode)){report.status=reconciling?'RECONCILIATION_READY':'RECOVERY_READY';return report;}
    // Recovery is a separate, explicitly approved metadata operation, never a batch run.
    let requests=reads;
    const transport=deadline.wrap((input,init={})=>{
@@ -41,7 +43,7 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
    });
    const writer=createControlledCoverageStore({env:settings,fetchImpl:transport,now});
    const readRepository=createCoverageRepository({env:settings,fetchImpl:transport,now});
-   const result=await deadline.run(()=>recovery.recover({store:writer,repository:readRepository,context,now:Number(now()),fingerprint:env.SETSCOPE_SCALE_RECOVERY_FINGERPRINT}));
+   const result=await deadline.run(()=>(reconciling?recovery.reconcile:recovery.recover)({store:writer,repository:readRepository,context,now:Number(now()),fingerprint:env.SETSCOPE_SCALE_RECOVERY_FINGERPRINT}));
    Object.assign(report,result);return report;
   }
   const prepared=await deadline.run(()=>batch.preflight({repository,store,now:Number(now()),id:env.GITHUB_RUN_ID,targetSize:roundJobs*5,stage,eligibilityReview:env.SETSCOPE_SCALE_ELIGIBILITY_REVIEW||'',

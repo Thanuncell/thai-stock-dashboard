@@ -274,7 +274,10 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       const interrupted=(await pool.query("select automation_state from public.coverage_runs where run_key='v156:control'")).rows[0].automation_state.metadata;
       const previousReceipts=structuredClone(interrupted.scaling.completedJobs),reservation=interrupted.reservations;
       const recoveryStore=()=>createControlledCoverageStore({env,fetchImpl,now:()=>time});
-      await recoveryStore().reconcile(interrupted.activeJob,true);
+      const reconciliationSettings={...failedSettings,GITHUB_RUN_ID:'879998'};
+      const reconciliationReady=await main({env:reconciliationSettings,fetchImpl,now:()=>time,mode:'reconciliation-preflight'});
+      await main({env:{...reconciliationSettings,GITHUB_RUN_ID:'879999',SETSCOPE_SCALE_CONFIRMATION:'RECONCILE COVERAGE 880001',
+        SETSCOPE_SCALE_RECOVERY_FINGERPRINT:reconciliationReady.reconciliation.fingerprint},fetchImpl,now:()=>time,mode:'reconcile'});
       const failedSnapshot=(await pool.query('select row_to_json(r) value from public.coverage_runs r where run_key=$1',[interrupted.activeJob])).rows[0].value;
       const registrySnapshot=(await pool.query('select row_to_json(r) value from public.security_coverage r order by symbol')).rows.map(r=>r.value);
       const inspectSettings={...failedSettings,GITHUB_RUN_ID:'880004'};
@@ -284,12 +287,12 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
         SETSCOPE_SCALE_RECOVERY_FINGERPRINT:inspectResult.recovery.fingerprint},fetchImpl,now:()=>time,mode:'recover'});
       assert.equal(repaired.status,'RECOVERED');assert.equal(repaired.jobsStarted,0);
       const recovered=(await pool.query("select automation_state from public.coverage_runs where run_key='v156:control'")).rows[0].automation_state.metadata;
-      assert.equal(recovered.reservations,reservation+1);assert.equal(recovered.scaling.recoveries[0].quotaBefore.reservations,reservation);assert.deepEqual(recovered.scaling.completedJobs,previousReceipts);
+      assert.equal(recovered.reservations,reservation+2);assert.equal(recovered.scaling.recoveries[0].quotaBefore.reservations,reservation+1);assert.deepEqual(recovered.scaling.completedJobs,previousReceipts);
       assert.equal(recovered.scaling.id,'880001');assert.equal(recovered.scaling.completedSymbols.length,40);assert.equal(recovered.scaling.recoveries.length,1);
       assert.deepEqual((await pool.query('select row_to_json(r) value from public.security_coverage r order by symbol')).rows.map(r=>r.value),registrySnapshot);
       assert.deepEqual((await pool.query('select row_to_json(r) value from public.coverage_runs r where run_key=$1',[interrupted.activeJob])).rows[0].value,failedSnapshot);
       const continuedAfterRecovery=await main({env:{...failedSettings,GITHUB_RUN_ID:'880006'},fetchImpl:transport,now:()=>time,mode:'run'});
-      assert.equal(continuedAfterRecovery.stageProgress.completed,50);assert.equal(continuedAfterRecovery.jobs.length,2);
+      assert.equal(continuedAfterRecovery.stageProgress.completed,45);assert.equal(continuedAfterRecovery.jobs.length,1);
       assert.ok(continuedAfterRecovery.plan.targets.every(t=>!inspectResult.recovery.receipt.excludedSymbols.includes(t.symbol)));
     });
     await t.test('rollback refuses to destroy checkpoints, then supports an empty-column rollback and reapply', async () => {
