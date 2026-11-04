@@ -159,3 +159,281 @@ test('workflow is dispatch-only and requires explicit continuation inputs withou
  const yaml=fs.readFileSync('.github/workflows/manual-scaling.yml','utf8');assert.match(yaml,/workflow_dispatch:/);assert.match(yaml,/stage_id:/);assert.match(yaml,/reviewed_state:/);
  assert.doesNotMatch(yaml,/schedule:|pull_request:|push:|workflow_run:|strategy:|continue-on-error:/);assert.match(yaml,/github.actor == github.repository_owner/);
 });
+
+const recovery=require('../server/scaling-recovery');
+const repositoryFor=db=>require('../server/coverage-service').createCoverageRepository({env:{...env,SETSCOPE_V156_MANUAL_VERIFY:'1'},fetchImpl:db.fetchImpl,now:()=>NOW});
+const storeFor=db=>createControlledCoverageStore({env:{...env,SETSCOPE_V156_MANUAL_VERIFY:'1'},fetchImpl:db.fetchImpl,now:()=>NOW});
+const recoveryContext=(roundId='11001')=>({id:'11000',stage:100,roundId,reviewed:true,evidenceKind:'synthetic',sourceSha:null});
+async function stoppedStage({kind='404',failAt=1}={}){
+ const db=fixture(125);await seedPrevious(db,100);let calls=0;
+ const transport=async(input,init)=>{
+  if(new URL(String(input)).hostname==='query1.finance.yahoo.com'&&++calls===failAt){
+   if(kind==='lost-write')return db.fetchImpl(input,init);
+   return Response.json({},{status:404});
+  }
+  const response=await db.fetchImpl(input,init);
+  if(kind==='lost-write'&&new URL(String(input)).pathname.endsWith('/security_coverage')&&init?.method==='PATCH')throw Error('lost response');
+  return response;
+ };
+ await assert.rejects(main({env:options(100,'11000'),fetchImpl:transport,now:()=>NOW,mode:'run'}));
+ return db;
+}
+async function reconcileFixture(db){
+ const context=recoveryContext('10999'),store=storeFor(db),repository=repositoryFor(db);
+ const inspected=await recovery.inspect({store,repository,metadata:db.runs.get(CONTROL_KEY).automation_state.metadata,context,now:NOW,reconciliation:true});
+ return recovery.reconcile({store,repository,context,now:NOW,fingerprint:inspected.fingerprint});
+}
+async function review(db,context=recoveryContext()){
+ return recovery.inspect({store:storeFor(db),repository:repositoryFor(db),metadata:db.runs.get(CONTROL_KEY).automation_state.metadata,context,now:NOW});
+}
+test('stopped-stage recovery requires reconcile and exact review; preserves reservations, lineage and no-replay evidence',async()=>{
+ const db=await stoppedStage(),meta=db.runs.get(CONTROL_KEY).automation_state.metadata,key=meta.activeJob;
+ const failed=structuredClone(db.runs.get(key)),beforeRegistry=structuredClone([...db.registry]),accepted=structuredClone(meta.scaling.acceptedStages);
+ await assert.rejects(review(db),/RECONCILIATION_REQUIRED/);
+ await assert.rejects(storeFor(db).reconcile(key,false),/REVIEW_REQUIRED/);
+ await reconcileFixture(db);
+ const reconciled=structuredClone(db.runs.get(key)),r=await review(db);
+ assert.equal(Object.values(reconciled.automation_state.documents['coverage-items:'+key].entries)[0].status,'abandoned');
+ assert.equal(Object.values(failed.automation_state.documents['coverage-items:'+key].entries)[0].status,'inflight');
+ const save=structuredClone(db.runs.get(CONTROL_KEY));
+ await assert.rejects(recovery.recover({store:storeFor(db),repository:repositoryFor(db),context:recoveryContext(),now:NOW,fingerprint:'0'.repeat(64)}),/REVIEW_REQUIRED/);
+ assert.deepEqual(db.runs.get(CONTROL_KEY),save);
+ const calls=providerCalls(db),result=await recovery.recover({store:storeFor(db),repository:repositoryFor(db),context:recoveryContext(),now:NOW,fingerprint:r.fingerprint});
+ assert.equal(result.replayed,false);assert.equal(providerCalls(db),calls);assert.deepEqual([...db.registry],beforeRegistry);assert.deepEqual(db.runs.get(key),reconciled);
+ const recovered=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ assert.equal(recovered.scaling.id,'11000');assert.deepEqual(recovered.scaling.acceptedStages,accepted);assert.equal(recovered.reservations,3);
+ assert.equal(recovered.scaling.recoveries[0].quotaBefore.reservations,2);
+ assert.equal(recovered.reconciliation.originalQuota.reservations,1);
+ assert.deepEqual(recovered.coverageChecks,meta.coverageChecks);assert.equal(recovered.manualBatch.phase,'recovered');
+ assert.equal(recovery.isRecovered(recovered),true);
+ await assert.rejects(review(db),/STATE_CONFLICT/);
+ await assert.rejects(main({env:options(100,'11000','11001'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}));
+ let time=NOW+86400000,run=11002;
+ db.advance(time,35);
+ let count=0;
+ while(count<100){
+  const result=await main({env:options(100,'11000',String(run++)),fetchImpl:db.fetchImpl,now:()=>time,mode:'run'});
+  assert.ok(result.plan.targets.every(t=>!r.receipt.excludedSymbols.includes(t.symbol)));
+  count=result.stageProgress.completed;time+=86400000;while(!tradingDay(bangkokDay(time)))time+=86400000;db.advance(time,35);
+ }
+ const done=db.runs.get(CONTROL_KEY).automation_state.metadata.scaling;
+ assert.equal(done.completedSymbols.length,100);assert.equal(new Set(done.completedSymbols).size,100);assert.equal(done.id,'11000');
+ assert.deepEqual(db.runs.get(key),reconciled);assert.equal(done.recoveries.length,1);
+ const nextStage=require('../server/scaling-policy').progress({scaling:done},{id:'11999',stage:500,roundId:'11999',reviewed:true,evidenceKind:'synthetic',sourceSha:null});
+ assert.deepEqual(nextStage.acceptedStages[1].recoveries,done.recoveries);
+});
+
+for(const kind of ['lost-write','changed-row','inflight','leased','circuit','bad-manifest','changed-review','wrong-stage','receipt','quota'])
+test(`recovery fails closed for ${kind} without provider traffic or coverage writes`,async()=>{
+ const db=await stoppedStage({kind:kind==='lost-write'?'lost-write':'404',failAt:kind==='receipt'?6:1});
+ let meta=db.runs.get(CONTROL_KEY).automation_state.metadata;const key=meta.activeJob;
+ if(kind==='lost-write'){const snapshot=structuredClone([...db.runs]);await assert.rejects(reconcileFixture(db));assert.deepEqual([...db.runs],snapshot);return;}
+ await reconcileFixture(db);
+ meta=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ let fingerprint;
+ if(kind==='changed-review')fingerprint=(await review(db)).fingerprint;
+ if(kind==='changed-row')db.registry.get('S0000').status='temporary_failed';
+ if(kind==='inflight')Object.values(db.runs.get(key).automation_state.documents['coverage-items:'+key].entries)[0].status='inflight';
+ if(kind==='leased')db.runs.get(key).automation_state.leaseUntil=new Date(NOW+1).toISOString();
+ if(kind==='circuit')meta.denied=true;
+ if(kind==='bad-manifest')db.runs.get(key).automation_state.documents['coverage-manifest:'+key].rows[0].provider_symbol='WRONG.BK';
+ if(kind==='changed-review')meta.reservations++;
+ if(kind==='receipt')db.runs.get(meta.manualBatch.runKeys[0]).verified=4;
+ if(kind==='quota')meta.reservations=4;
+ const rows=structuredClone([...db.registry]),count=providerCalls(db),writesBefore=writes(db);
+ if(kind==='changed-review')await assert.rejects(recovery.recover({store:storeFor(db),repository:repositoryFor(db),context:recoveryContext(),now:NOW,fingerprint}));
+ else await assert.rejects(review(db,kind==='wrong-stage'?{...recoveryContext(),stage:500}:recoveryContext()));
+ assert.equal(providerCalls(db),count);assert.equal(writes(db),writesBefore);assert.deepEqual([...db.registry],rows);
+});
+
+test('recovery after job two preserves the first accepted receipt and blocks duplicate targets and quota refund',async()=>{
+ const db=await stoppedStage({failAt:6}),meta=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ const first=structuredClone(meta.scaling.completedJobs),checks=structuredClone(meta.coverageChecks);
+ await reconcileFixture(db);const inspected=await review(db);
+ await recovery.recover({store:storeFor(db),repository:repositoryFor(db),context:recoveryContext(),now:NOW,fingerprint:inspected.fingerprint});
+ await assert.rejects(main({env:options(100,'11000','11002'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}),e=>e.report.reasonCode==='SCALING_DAILY_CAPACITY');
+ db.advance(NOW+86400000,35);
+ const next=await main({env:options(100,'11000','11002'),fetchImpl:db.fetchImpl,now:()=>NOW+86400000,mode:'run'});
+ assert.equal(next.jobs.length,4);assert.equal(next.stageProgress.completed,25);
+ const current=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ assert.equal(current.reservations,4);assert.deepEqual(current.scaling.completedJobs.slice(0,1),first);
+ for(const s of Object.keys(checks))if(!next.plan.targets.some(t=>t.symbol===s))assert.equal(current.coverageChecks[s],checks[s]);
+ assert.ok(next.plan.targets.every(t=>!meta.scaling.completedSymbols.includes(t.symbol)&&!inspected.receipt.excludedSymbols.includes(t.symbol)));
+});
+
+test('exchange suspension exclusion is dated and non-destructive; unexplained no-data never becomes a silent skip',async()=>{
+ const date=Date.parse('2026-11-04T04:00:00Z'),db=fixture(20);db.advance(date,35);
+ db.registry.set('ACAP',{...structuredClone(db.registry.get('S0000')),symbol:'ACAP',provider_symbol:'ACAP.BK',status:'temporary_failed',guard_reason:'SOURCE_NO_DATA'});
+ const before=structuredClone([...db.registry]);
+ const ready=await main({env:options(20,'12000'),fetchImpl:db.fetchImpl,now:()=>date});
+ assert.equal(ready.plan.targets.length,20);assert.equal(ready.plan.targets.some(t=>t.symbol==='ACAP'),false);
+ assert.equal(ready.preflight.exclusions[0].reason,'EXCHANGE_SUSPENDED');assert.deepEqual([...db.registry],before);assert.equal(providerCalls(db),0);
+ await assert.rejects(main({env:options(20,'12000'),fetchImpl:db.fetchImpl,now:()=>date+86400000}),e=>e.report.reasonCode==='BATCH_LIFECYCLE_REVIEW_REQUIRED');
+ const renewed=await main({env:{...options(20,'12000'),SETSCOPE_SCALE_ELIGIBILITY_REVIEW:'REVIEWED ACAP 2026-11-05'},fetchImpl:db.fetchImpl,now:()=>date+86400000});
+ assert.equal(renewed.plan.targets.length,20);assert.equal(renewed.plan.targets.some(t=>t.symbol==='ACAP'),false);
+ db.registry.delete('ACAP');db.registry.get('S0000').guard_reason='SOURCE_NO_DATA';
+ await assert.rejects(main({env:options(20,'12000'),fetchImpl:db.fetchImpl,now:()=>date}),e=>e.report.reasonCode==='BATCH_ELIGIBILITY_REVIEW_REQUIRED');
+ assert.equal(writes(db),0);assert.equal(providerCalls(db),0);
+ delete db.registry.get('S0000').guard_reason;db.registry.get('S0000').failure_reason='SOURCE_NO_DATA';
+ await assert.rejects(main({env:options(20,'12000'),fetchImpl:db.fetchImpl,now:()=>date}),e=>e.report.reasonCode==='BATCH_ELIGIBILITY_REVIEW_REQUIRED'&&e.report.preflight.selectionRisks.some(r=>r.symbol==='S0000'&&r.reason==='SOURCE_NO_DATA_REVIEW_REQUIRED'));
+ assert.ok(db.calls.filter(c=>c.url.pathname.endsWith('/security_coverage')).every(c=>c.url.searchParams.get('select')?.split(',').includes('failure_reason')));
+});
+
+test('Actions recovery inspection is read-only and apply cannot start jobs or authorize the next run',async()=>{
+ const db=await stoppedStage(),key=db.runs.get(CONTROL_KEY).automation_state.metadata.activeJob;
+ await reconcileFixture(db);db.calls.length=0;
+ const settings=options(100,'11000','11001');
+ const ready=await main({env:settings,fetchImpl:db.fetchImpl,now:()=>NOW,mode:'recovery-preflight'});
+ assert.equal(ready.status,'RECOVERY_READY');assert.equal(ready.jobsStarted,0);assert.equal(writes(db),0);assert.equal(providerCalls(db),0);
+ const approval={...settings,GITHUB_RUN_ID:'11002',SETSCOPE_SCALE_CONFIRMATION:'RECOVER COVERAGE 11000',SETSCOPE_SCALE_RECOVERY_FINGERPRINT:ready.recovery.fingerprint};
+ const result=await main({env:approval,fetchImpl:db.fetchImpl,now:()=>NOW,mode:'recover'});
+ assert.equal(result.status,'RECOVERED');assert.equal(result.jobsStarted,0);assert.equal(providerCalls(db),0);
+ assert.ok(db.calls.filter(c=>!['GET','HEAD'].includes(c.method)).every(c=>c.url.pathname.endsWith('/coverage_runs')));
+ await assert.rejects(main({env:options(100,'11000','11002'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}));
+ await assert.rejects(main({env:{...options(100,'11000','11003'),SETSCOPE_SCALE_REVIEW:''},fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}));
+ assert.equal(providerCalls(db),0);
+});
+
+for(const patch of [{GITHUB_ACTOR:'not-owner'},{GITHUB_REF:'refs/heads/other'},{GITHUB_RUN_ATTEMPT:'2'},{SETSCOPE_SCALE_REVIEW:''},{SETSCOPE_SCALE_CONFIRMATION:'RUN COVERAGE 100'}])
+test(`recovery authorization rejects ${JSON.stringify(patch)} before writes`,async()=>{
+ const db=await stoppedStage();db.calls.length=0;
+ await assert.rejects(main({env:{...options(100,'11000','11001'),SETSCOPE_SCALE_CONFIRMATION:'RECOVER COVERAGE 11000',...patch},fetchImpl:db.fetchImpl,now:()=>NOW,mode:'recover'}));
+ assert.equal(writes(db),0);assert.equal(providerCalls(db),0);
+});
+
+test('simultaneous recovery reviewers have one durable winner and never replay the failed job',async()=>{
+ const db=await stoppedStage();await reconcileFixture(db);
+ const ready=await review(db),calls=providerCalls(db);
+ const results=await Promise.allSettled([recoveryContext('11001'),recoveryContext('11002')].map(context=>recovery.recover({store:storeFor(db),repository:repositoryFor(db),context,now:NOW,fingerprint:ready.fingerprint})));
+ assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(providerCalls(db),calls);
+ const meta=db.runs.get(CONTROL_KEY).automation_state.metadata;assert.equal(meta.scaling.recoveries.length,1);assert.equal(meta.reservations,3);
+});
+
+test('lost recovery response preserves durable receipt and blocks automatic replay',async()=>{
+ const db=await stoppedStage();await reconcileFixture(db);
+ const ready=await review(db),calls=providerCalls(db);let lost=false;
+ const transport=async(input,init)=>{const response=await db.fetchImpl(input,init);
+  if(init?.method==='PATCH'&&JSON.parse(init.body).automation_state?.metadata?.manualBatch?.phase==='recovered'&&!lost){lost=true;throw Error('lost recovery response');}return response;};
+ const store=createControlledCoverageStore({env:{...env,SETSCOPE_V156_MANUAL_VERIFY:'1'},fetchImpl:transport,now:()=>NOW});
+ await assert.rejects(recovery.recover({store,repository:repositoryFor(db),context:recoveryContext(),now:NOW,fingerprint:ready.fingerprint}));
+ assert.equal(db.runs.get(CONTROL_KEY).automation_state.metadata.scaling.recoveries.length,1);
+ await assert.rejects(review(db));assert.equal(providerCalls(db),calls);
+});
+
+test('recovered job evidence is checked again before continuation; changed checkpoint cannot start a job',async()=>{
+ const db=await stoppedStage();const key=db.runs.get(CONTROL_KEY).automation_state.metadata.activeJob;
+ await reconcileFixture(db);const ready=await review(db);
+ await recovery.recover({store:storeFor(db),repository:repositoryFor(db),context:recoveryContext(),now:NOW,fingerprint:ready.fingerprint});
+ db.runs.get(key).automation_state.revision++;const before=providerCalls(db),beforeWrites=writes(db);
+ await assert.rejects(main({env:options(100,'11000','11002'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}),e=>e.report.reasonCode==='SCALING_RECOVERY_STATE_CHANGED');
+ assert.equal(providerCalls(db),before);assert.equal(writes(db),beforeWrites);
+});
+
+async function reconciliationReview(db,context=recoveryContext('10999')){
+ return recovery.inspect({store:storeFor(db),repository:repositoryFor(db),metadata:db.runs.get(CONTROL_KEY).automation_state.metadata,context,now:NOW,reconciliation:true});
+}
+for(const kind of ['changed-registry','checked','applied','leased','wrong-identity','wrong-session','quota','no-review','wrong-digest'])
+test(`reconciliation rejects ${kind} without changing existing evidence`,async()=>{
+ const db=await stoppedStage(),metadata=db.runs.get(CONTROL_KEY).automation_state.metadata,key=metadata.activeJob;
+ const job=db.runs.get(key),entries=job.automation_state.documents['coverage-items:'+key].entries;
+ const inspected=await reconciliationReview(db);
+ if(kind==='changed-registry')db.registry.get('S0000').last_checked_at=new Date(NOW).toISOString();
+ if(['checked','applied'].includes(kind))entries.S0000={status:kind,result:{status:'verified'}};
+ if(kind==='leased')job.automation_state.leaseUntil=new Date(NOW+1).toISOString();
+ if(kind==='wrong-identity')metadata.activeJob=metadata.manualBatch.runKeys[1];
+ if(kind==='wrong-session')job.automation_state.metadata.session='2026-10-25';
+ if(kind==='quota')metadata.reservations=4;
+ const before=structuredClone([...db.runs]),registry=structuredClone([...db.registry]),calls=providerCalls(db);
+ await assert.rejects(recovery.reconcile({store:storeFor(db),repository:repositoryFor(db),context:{...recoveryContext('10999'),reviewed:kind!=='no-review'},now:NOW,
+  fingerprint:kind==='wrong-digest'?'0'.repeat(64):inspected.fingerprint}));
+ assert.deepEqual([...db.runs],before);assert.deepEqual([...db.registry],registry);assert.equal(providerCalls(db),calls);
+});
+
+for(const kind of ['lost-response','cas-conflict','late-registry-write','late-coordinator-write','lost-reservation'])test(`reconciliation ${kind} retains uncertainty and never replays`,async()=>{
+ const db=await stoppedStage(),key=db.runs.get(CONTROL_KEY).automation_state.metadata.activeJob,ready=await reconciliationReview(db);
+ const original=structuredClone(db.runs.get(key)),registry=structuredClone([...db.registry]);let triggered=false;
+ const transport=async(input,init={})=>{
+  const url=new URL(String(input)),payload=init.method==='PATCH'?JSON.parse(init.body):null;
+  if(!triggered&&kind==='cas-conflict'&&url.searchParams.get('run_key')==='eq.'+key&&init.method==='PATCH'){
+   triggered=true;db.runs.get(key).automation_state.revision++;return Response.json([]);
+  }
+  const response=await db.fetchImpl(input,init);
+  if(!triggered&&payload?.automation_state?.metadata?.reconciliation){
+   const failed=url.searchParams.get('run_key')==='eq.'+key;
+   if(kind==='lost-response'&&failed||kind==='lost-reservation'&&!failed){triggered=true;throw Error('lost response');}
+   if(kind==='late-registry-write'&&!failed){triggered=true;db.registry.get('S0000').last_checked_at=new Date(NOW).toISOString();}
+   if(kind==='late-coordinator-write'&&!failed){triggered=true;db.runs.get(CONTROL_KEY).automation_state.metadata.reason='MANUAL_REVIEW_CHANGE';}
+  }
+  return response;
+ };
+ const store=createControlledCoverageStore({env:{...env,SETSCOPE_V156_MANUAL_VERIFY:'1'},fetchImpl:transport,now:()=>NOW}),calls=providerCalls(db);
+ await assert.rejects(recovery.reconcile({store,repository:repositoryFor(db),context:recoveryContext('10999'),now:NOW,fingerprint:ready.fingerprint}));
+ assert.equal(triggered,true);assert.equal(providerCalls(db),calls);
+ const job=db.runs.get(key),meta=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ assert.equal(meta.scaling.phase,'stopped');assert.equal(meta.reservations,2);
+ if(kind==='lost-response'){
+  assert.deepEqual(job.automation_state.metadata.reconciliation.priorDocuments,original.automation_state.documents);
+  assert.equal(job.automation_state.phase,'stopped');
+ }else assert.deepEqual(job.automation_state.documents,original.automation_state.documents);
+ if(kind!=='late-registry-write')assert.deepEqual([...db.registry],registry);
+ const saved=structuredClone([...db.runs]);await assert.rejects(reconciliationReview(db));assert.deepEqual([...db.runs],saved);
+});
+
+test('concurrent reconciliation has one CAS winner and preserves original inflight evidence',async()=>{
+ const db=await stoppedStage(),key=db.runs.get(CONTROL_KEY).automation_state.metadata.activeJob,ready=await reconciliationReview(db);
+ const original=structuredClone(db.runs.get(key)),registry=structuredClone([...db.registry]),calls=providerCalls(db);
+ const results=await Promise.allSettled(['10998','10999'].map(roundId=>recovery.reconcile({store:storeFor(db),repository:repositoryFor(db),context:recoveryContext(roundId),now:NOW,fingerprint:ready.fingerprint})));
+ assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(providerCalls(db),calls);assert.deepEqual([...db.registry],registry);
+ const actual=db.runs.get(key);assert.deepEqual(actual.automation_state.metadata.reconciliation.priorDocuments,original.automation_state.documents);
+ assert.equal(actual.automation_state.documents['coverage-items:'+key].entries.S0000.status,'abandoned');
+ assert.equal(db.runs.get(CONTROL_KEY).automation_state.metadata.reservations,2);
+ await assert.rejects(createControlledCoverage({env:{...env,SETSCOPE_V156_MANUAL_VERIFY:'1'},fetchImpl:db.fetchImpl,now:()=>NOW}).execute({operation:'reconcile',runKey:key,reviewed:true}),/REVIEW_REQUIRED/);
+ const frozen=structuredClone(db.runs.get(key));
+ await assert.rejects(storeFor(db).beginRun({runKey:key,startedAt:new Date(NOW).toISOString(),batchSize:5,concurrency:1,resume:true}),/JOB_STOPPED/);
+ assert.deepEqual(db.runs.get(key),frozen);assert.equal(providerCalls(db),calls);
+});
+
+test('production-like ACAP inflight follows separate reconciliation, recovery and fresh preflight approvals',async()=>{
+ // Synthetic reconstruction of the incident shape, not a Production read/write.
+ const date=Date.parse('2026-11-04T04:00:00Z'),day='2026-11-03',id='41562423926',sha='a'.repeat(40),db=fixture(125);
+ const acap={...db.registry.get('S0000'),symbol:'ACAP',provider_symbol:'ACAP.BK',status:'temporary_failed',failure_reason:'SOURCE_NO_DATA'};
+ db.registry.set('ACAP',acap);const rows=[acap,...[...db.registry.values()].filter(r=>r.symbol!=='ACAP').slice(0,19)];
+ const context={id,stage:100,roundId:id,reviewed:false,evidenceKind:'production-manual',sourceSha:sha};
+ const body={version:1,id,day,targets:rows.map(require('../server/manual-batch-policy').identity),runKeys:Array.from({length:4},(_,i)=>`v156:coverage:${day}:b20-${id}-${i+1}`),initialReservations:0,scaling:context};
+ const fingerprint=require('node:crypto').createHash('sha256').update(JSON.stringify(body)).digest('hex'),key=body.runKeys[0];
+ const docs={['coverage-manifest:'+key]:{rows:structuredClone(rows.slice(0,5)),batchSize:5,provider:'Yahoo Finance'},
+  ['coverage-items:'+key]:{version:1,fingerprint:require('../server/coverage-checkpoint').batchKey(rows.slice(0,5)),status:'running',entries:{ACAP:{status:'inflight'}}}};
+ const state={version:1,revision:8,owner:'synthetic-incident',leaseUntil:'2026-11-03T02:00:00Z',phase:'failed',documents:docs,metadata:{mode:'coverage',session:day}};
+ db.runs.set(key,{run_key:key,status:'failed',failure_reason:'CONTROLLED_RUN_INTERRUPTED',batch_size:5,concurrency:1,automation_state:state});
+ const accepted=[{id:'41378021493',stage:20,verified:20,evidenceKind:'production-manual'}];
+ db.runs.set(CONTROL_KEY,{run_key:CONTROL_KEY,status:'completed',batch_size:5,concurrency:1,automation_state:{...structuredClone(state),phase:'completed',documents:{},metadata:{day,reservations:1,activeJob:key,coverageChecks:{ACAP:'2026-11-03T01:51:32Z'},
+  manualBatch:{...body,fingerprint,next:0,phase:'stopped'},scaling:{version:1,id,stage:100,phase:'stopped',roundId:id,roundFingerprint:fingerprint,evidenceKind:'production-manual',completedSymbols:[],completedJobs:[],acceptedStages:accepted}}}});
+ const original=structuredClone(db.runs.get(key)),before=structuredClone([...db.registry]);
+ const settings={...options(100,id,'42000'),GITHUB_SHA:sha};
+ const run=(mode,extra={})=>main({env:{...settings,...extra},fetchImpl:db.fetchImpl,now:()=>date,mode,evidenceKind:'production-manual'});
+ const ready=await run('reconciliation-preflight');assert.equal(ready.status,'RECONCILIATION_READY');assert.equal(writes(db),0);
+ await assert.rejects(run('reconcile',{SETSCOPE_SCALE_CONFIRMATION:'RECOVER COVERAGE '+id,SETSCOPE_SCALE_RECOVERY_FINGERPRINT:ready.reconciliation.fingerprint}));assert.equal(writes(db),0);
+ const done=await run('reconcile',{GITHUB_RUN_ID:'42001',SETSCOPE_SCALE_CONFIRMATION:'RECONCILE COVERAGE '+id,SETSCOPE_SCALE_RECOVERY_FINGERPRINT:ready.reconciliation.fingerprint});
+ assert.equal(done.status,'RECONCILED');assert.equal(done.jobsStarted,0);assert.equal(done.replayed,false);
+ assert.deepEqual(db.runs.get(key).automation_state.metadata.reconciliation.priorDocuments,original.automation_state.documents);
+ assert.deepEqual([...db.registry],before);assert.equal(providerCalls(db),0);
+ const r=await run('recovery-preflight',{GITHUB_RUN_ID:'42002'});assert.equal(r.status,'RECOVERY_READY');
+ await run('recover',{GITHUB_RUN_ID:'42003',SETSCOPE_SCALE_CONFIRMATION:'RECOVER COVERAGE '+id,SETSCOPE_SCALE_RECOVERY_FINGERPRINT:r.recovery.fingerprint});
+ const plan=await run('preflight',{GITHUB_RUN_ID:'42004'});assert.equal(plan.status,'READY');assert.equal(plan.jobsStarted,0);
+ assert.equal(plan.plan.targets.some(t=>rows.slice(0,5).some(r=>r.symbol===t.symbol)),false);
+ const meta=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ assert.equal(meta.scaling.id,id);assert.deepEqual(meta.scaling.acceptedStages,accepted);assert.equal(meta.reconciliation.originalQuota.reservations,1);
+ assert.equal(meta.day,'2026-11-04');assert.equal(meta.reservations,2);assert.equal(providerCalls(db),0);assert.deepEqual([...db.registry],before);
+});
+
+test('reviewed suspension leaves the registry untouched and cannot count as verified or acquire provider data',async()=>{
+ const date=Date.parse('2026-11-04T04:00:00Z'),db=fixture(20);db.advance(date,35);
+ const acap={...structuredClone(db.registry.get('S0000')),symbol:'ACAP',provider_symbol:'ACAP.BK',status:'temporary_failed',failure_reason:'SOURCE_NO_DATA'};
+ db.registry.set('ACAP',structuredClone(acap));
+ await assert.rejects(main({env:{...options(20,'13000'),SETSCOPE_SCALE_ELIGIBILITY_REVIEW:'REVIEWED ACAP 2026-11-04'},fetchImpl:db.fetchImpl,now:()=>date+86400000}),e=>e.report.reasonCode==='BATCH_LIFECYCLE_REVIEW_REQUIRED');
+ assert.equal(writes(db),0);assert.equal(providerCalls(db),0);
+ const result=await main({env:options(20,'13000'),fetchImpl:db.fetchImpl,now:()=>date,mode:'run'});
+ assert.equal(result.verified,20);assert.equal(result.after.verified,20);assert.deepEqual(db.registry.get('ACAP'),acap);
+ assert.equal(result.plan.targets.some(r=>r.symbol==='ACAP'),false);
+ assert.equal(db.calls.some(c=>c.url.hostname==='query1.finance.yahoo.com'&&c.url.pathname.endsWith('/ACAP.BK')),false);
+});

@@ -89,6 +89,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
       if (gate.alreadyRunning) return { runKey: key, alreadyRunning: true, attempted: 0, metrics, schedulerEnabled: false };
       ownsCoordinator = true;
       metadata = await coordinator.metadata();
+      if(metadata.manualBatch?.phase==='recovered')await require('./scaling-recovery').assertEvidence(metadata,store);
       if(metadata.manualBatch&&metadata.manualBatch.phase!=='completed'&&!batchPlan)throw stopped('BATCH_RECOVERY_REQUIRED');
       if(metadata.scaling?.phase==='stopped'||metadata.scaling?.phase==='running'&&!batchPlan?.scaling)throw stopped('SCALING_REVIEW_REQUIRED');
       if (metadata.denied || Date.parse(metadata.blockedUntil || '') > Number(now())) throw stopped('PROVIDER_CIRCUIT_OPEN');
@@ -100,7 +101,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
       const reservations = metadata.day === day ? metadata.reservations || 0 : 0;
       if(batchPlan){
         const prior=metadata.manualBatch;
-        if(batchIndex===0){if(prior&&prior.phase!=='completed')throw stopped('BATCH_RECOVERY_REQUIRED');}
+        if(batchIndex===0){if(prior&&prior.phase!=='completed'&&!require('./scaling-recovery').isRecovered(metadata))throw stopped('BATCH_RECOVERY_REQUIRED');}
         else if(!prior||prior.fingerprint!==batchPlan.fingerprint||prior.phase!=='running'||prior.next!==batchIndex)throw stopped('BATCH_SEQUENCE_INVALID');
         if(reservations!==batchPlan.initialReservations+batchIndex)throw stopped('BATCH_RESERVATIONS_CHANGED');
         batchPolicy.assertCapacity(metadata,Number(now()),batchPlan.runKeys.length-batchIndex,batchPlan.scaling?.stage||20);
