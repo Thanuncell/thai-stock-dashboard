@@ -19,7 +19,7 @@ function exclusions(rows,now,review=''){
  return result;
 }
 function risks(rows){return rows.filter(r=>!r.last_verified_at||r.status==='temporary_failed').map(r=>({symbol:r.symbol,
- reason:r.guard_reason==='SOURCE_NO_DATA'?'SOURCE_NO_DATA_REVIEW_REQUIRED':r.status==='temporary_failed'?'PREVIOUS_TEMPORARY_FAILURE':'NO_HISTORICAL_VERIFICATION'}));}
+ reason:r.guard_reason==='SOURCE_NO_DATA'||r.failure_reason==='SOURCE_NO_DATA'?'SOURCE_NO_DATA_REVIEW_REQUIRED':r.status==='temporary_failed'?'PREVIOUS_TEMPORARY_FAILURE':'NO_HISTORICAL_VERIFICATION'}));}
 function assertSelected(rows){
  if(rows.some(r=>r.guard_reason==='SOURCE_NO_DATA'||r.failure_reason==='SOURCE_NO_DATA'))throw stopped('BATCH_ELIGIBILITY_REVIEW_REQUIRED');
 }

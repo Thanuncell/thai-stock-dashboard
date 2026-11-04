@@ -264,6 +264,9 @@ test('exchange suspension exclusion is dated and non-destructive; unexplained no
  db.registry.delete('ACAP');db.registry.get('S0000').guard_reason='SOURCE_NO_DATA';
  await assert.rejects(main({env:options(20,'12000'),fetchImpl:db.fetchImpl,now:()=>date}),e=>e.report.reasonCode==='BATCH_ELIGIBILITY_REVIEW_REQUIRED');
  assert.equal(writes(db),0);assert.equal(providerCalls(db),0);
+ delete db.registry.get('S0000').guard_reason;db.registry.get('S0000').failure_reason='SOURCE_NO_DATA';
+ await assert.rejects(main({env:options(20,'12000'),fetchImpl:db.fetchImpl,now:()=>date}),e=>e.report.reasonCode==='BATCH_ELIGIBILITY_REVIEW_REQUIRED'&&e.report.preflight.selectionRisks.some(r=>r.symbol==='S0000'&&r.reason==='SOURCE_NO_DATA_REVIEW_REQUIRED'));
+ assert.ok(db.calls.filter(c=>c.url.pathname.endsWith('/security_coverage')).every(c=>c.url.searchParams.get('select')?.split(',').includes('failure_reason')));
 });
 
 test('Actions recovery inspection is read-only and apply cannot start jobs or authorize the next run',async()=>{

@@ -163,7 +163,7 @@ function createCoverageRepository({ env = process.env, fetchImpl = globalThis.fe
   }
 
   async function listCandidates() {
-    const response = await request('security_coverage?select=symbol,provider_symbol,provider,symbol_verified,chart_ready,technical_ready,status,last_verified_at,last_success_at,last_checked_at,failure_count,active,guard_status,guard_reason&order=symbol&limit=1000',
+    const response = await request('security_coverage?select=symbol,provider_symbol,provider,symbol_verified,chart_ready,technical_ready,status,last_verified_at,last_success_at,last_checked_at,failure_count,failure_reason,active,guard_status,guard_reason&order=symbol&limit=1000',
       { headers: { Prefer: 'count=exact' } });
     const rows = await response.json();
     const total = String(response.headers.get('content-range') || '').match(/\/(\d+)$/);
