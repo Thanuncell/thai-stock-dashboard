@@ -91,3 +91,31 @@ jobs:
       - name: Run shared News quality regression
         timeout-minutes: 3
         run: npm run test:news-quality:browser
+
+  technical-browser:
+    name: Technical and touch regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install package metadata
+        run: npm install --ignore-scripts
+      - name: Install pinned browser test library
+        run: npm install --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+      - name: Install Chromium and system dependencies
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Check technical test syntax
+        run: npm run check:technical
+      - name: Run technical browser regression
+        timeout-minutes: 5
+        run: npm run test:technical:browser
+      - name: Run touch and drawing cancellation regression
+        timeout-minutes: 5
+        run: npm run test:technical:corrective:browser

@@ -16,8 +16,8 @@ let phase = 'setup', server, browser, base, checks = 0;
 const pageErrors = [], requests = [];
 const check = (value, expected, description) => { assert.deepEqual(value, expected, description); checks++; };
 const reply = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-const historyRows = symbol => Array.from({ length: 30 }, (_, i) => ({ title: `${symbol} ข่าวทดสอบ ${i + 1}`,
-  url: `https://www.infoquest.co.th/2026/profile-history-${symbol}-${i + 1}`, pubDate: new Date().toISOString(),
+const historyRows = (symbol, timestamp = Date.now()) => Array.from({ length: 30 }, (_, i) => ({ title: `${symbol} ข่าวทดสอบ ${i + 1}`,
+  url: `https://www.infoquest.co.th/2026/profile-history-${symbol}-${i + 1}`, pubDate: new Date(timestamp - i * 1000).toISOString(),
   source: 'infoquest', matchedSymbols: [symbol], verification: { status: 'VERIFIED', basis: 'metadata' } }));
 
 async function makeContext(width) {

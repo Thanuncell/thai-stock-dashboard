@@ -515,11 +515,14 @@ export function selectNewsForDisplay(items = [], {
 }
 
 export function computeSmaSeries(values, period) {
-  let sum = 0;
-  return values.map((value, index) => {
-    sum += value;
-    if (index >= period) sum -= values[index - period];
-    return index >= period - 1 ? sum / period : null;
+  let sum = 0, run = [];
+  const validPeriod = Number.isInteger(period) && period > 0;
+  return (values || []).map(value => {
+    const number = toFiniteNumber(value);
+    if (!validPeriod || number === null) { sum = 0; run = []; return null; }
+    run.push(number); sum += number;
+    if (run.length > period) sum -= run.shift();
+    return run.length === period ? sum / period : null;
   });
 }
 
@@ -538,7 +541,10 @@ export function alignIndicatorSeries(sourceRows, values, visibleRows) {
   const byTime = new Map();
   sourceRows.forEach((row, index) => {
     const time = Number(row?.time);
-    if (Number.isFinite(time) && time > 0) byTime.set(time, values[index] ?? null);
+    if (Number.isFinite(time) && time > 0) {
+      const value = toFiniteNumber(values[index]);
+      byTime.set(time, byTime.has(time) ? null : value);
+    }
   });
   return visibleRows.map(row => {
     const time = Number(row?.time);
@@ -547,18 +553,84 @@ export function alignIndicatorSeries(sourceRows, values, visibleRows) {
 }
 
 export function computeEma(values, period) {
-  const numbers = (values || []).map(Number).filter(Number.isFinite);
-  if (!numbers.length) return [];
-  const result = Array(numbers.length).fill(null);
-  if (numbers.length < period) return result;
-  let ema = numbers.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
-  result[period - 1] = ema;
-  const multiplier = 2 / (period + 1);
-  for (let index = period; index < numbers.length; index++) {
-    ema = numbers[index] * multiplier + ema * (1 - multiplier);
-    result[index] = ema;
+  let seed = [], ema = null;
+  if (!Number.isInteger(period) || period < 1) return (values || []).map(() => null);
+  const alpha = 2 / (period + 1);
+  return (values || []).map(value => {
+    const number = toFiniteNumber(value);
+    if (number === null) { seed = []; ema = null; return null; }
+    if (ema === null) {
+      seed.push(number);
+      if (seed.length < period) return null;
+      ema = seed.reduce((sum, number) => sum + number, 0) / period;
+    } else ema = number * alpha + ema * (1 - alpha);
+    return ema;
+  });
+}
+
+export const TECHNICAL_DEFAULTS = Object.freeze({ sma:20, ema20:20, ema50:50, ema100:100, ema200:200,
+  rsi:14, macdFast:12, macdSlow:26, macdSignal:9, bb:20, bbDeviation:2, atr:14 });
+export function normalizeTechnicalParameters(value = {}) {
+  const result = { ...TECHNICAL_DEFAULTS };
+  for (const key of Object.keys(result)) {
+    const number = toFiniteNumber(value?.[key]);
+    if (key === 'bbDeviation' ? number >= .1 && number <= 5 : Number.isInteger(number) && number >= 2 && number <= 400) result[key] = number;
   }
+  if (result.macdFast >= result.macdSlow) { result.macdFast = 12; result.macdSlow = 26; }
   return result;
+}
+
+export function computeRsiSeries(values, period = 14) {
+  let previous = null, gain = 0, loss = 0, count = 0;
+  return (values || []).map(value => {
+    const number = toFiniteNumber(value);
+    if (number === null || !Number.isInteger(period) || period < 1) { previous = null; gain = loss = count = 0; return null; }
+    if (previous === null) { previous = number; return null; }
+    const change = number - previous; previous = number; count++;
+    if (count <= period) { gain += Math.max(change,0) / period; loss += Math.max(-change,0) / period; }
+    else { gain = (gain * (period-1) + Math.max(change,0)) / period; loss = (loss * (period-1) + Math.max(-change,0)) / period; }
+    if (count < period) return null;
+    // Retain the accepted neutral-flat convention; TA-Lib's flat output is 0.
+    return gain === 0 && loss === 0 ? 50 : loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+  });
+}
+
+export function computeAtrSeries(bars, period = 14) {
+  let previous = null, count = 0, atr = null, sum = 0;
+  return (bars || []).map(bar => {
+    const high = toFiniteNumber(bar?.high), low = toFiniteNumber(bar?.low), close = toFiniteNumber(bar?.close);
+    if (!Number.isInteger(period) || period < 1 || high === null || low === null || close === null || low <= 0 || high < low || close < low || close > high) {
+      previous = null; count = sum = 0; atr = null; return null;
+    }
+    if (previous === null) { previous = close; return null; }
+    const tr = Math.max(high-low,Math.abs(high-previous),Math.abs(low-previous)); previous = close; count++;
+    if (count <= period) sum += tr;
+    if (count < period) return null;
+    atr = atr === null ? sum / period : (atr*(period-1)+tr)/period;
+    return atr;
+  });
+}
+
+export function computeBollingerSeries(values, period = 20, deviation = 2) {
+  const middle = computeSmaSeries(values,period), upper = [], lower = [];
+  let run = [];
+  (values || []).forEach((value,index) => {
+    const number = toFiniteNumber(value);
+    if (number === null) run = []; else { run.push(number); if (run.length > period) run.shift(); }
+    const mean = middle[index];
+    const sd = mean === null || !Number.isFinite(deviation) || deviation < 0 ? null : Math.sqrt(run.reduce((sum,n)=>sum+(n-mean)**2,0)/period);
+    upper.push(sd === null ? null : mean+deviation*sd); lower.push(sd === null ? null : mean-deviation*sd);
+  });
+  return { middle,upper,lower,standardDeviation:'population' };
+}
+
+export function computeTechnicalSeries(bars, parameters = {}) {
+  const p = normalizeTechnicalParameters(parameters), values = (bars || []).map(bar=>toFiniteNumber(bar?.close));
+  const fast=computeEma(values,p.macdFast),slow=computeEma(values,p.macdSlow);
+  const macd=values.map((_,i)=>fast[i]!==null&&slow[i]!==null?fast[i]-slow[i]:null);
+  const signal=computeEma(macd,p.macdSignal),histogram=macd.map((v,i)=>v!==null&&signal[i]!==null?v-signal[i]:null);
+  return { values,sma20:computeSmaSeries(values,p.sma),...Object.fromEntries(['ema20','ema50','ema100','ema200'].map(key=>[key,computeEma(values,p[key])])),
+    rsi:computeRsiSeries(values,p.rsi),macd,signal,histogram,bb:computeBollingerSeries(values,p.bb,p.bbDeviation),atr:computeAtrSeries(bars,p.atr),parameters:p };
 }
 
 export function emaAtPeriod(values, period) {
@@ -637,55 +709,38 @@ export function trustedMarketBars(bars = []) {
   return [...byTime.values()].sort((left, right) => left.time - right.time);
 }
 
-export function analyseTechnicals(bars, levelBars = bars) {
+export function analyseTechnicals(bars, levelBars = bars, parameters = {}) {
   const usable = trustedMarketBars(bars);
   const usableLevels = trustedMarketBars(levelBars || usable);
   const values = usable.map(bar => Number(bar.close));
   if (values.length < 30) return null;
-  const period = 14;
-  let avgGain = 0, avgLoss = 0;
-  for (let index = 1; index <= period; index++) {
-    const change = values[index] - values[index - 1];
-    if (change > 0) avgGain += change; else avgLoss -= change;
-  }
-  avgGain /= period; avgLoss /= period;
-  for (let index = period + 1; index < values.length; index++) {
-    const change = values[index] - values[index - 1];
-    avgGain = (avgGain * (period - 1) + Math.max(change, 0)) / period;
-    avgLoss = (avgLoss * (period - 1) + Math.max(-change, 0)) / period;
-  }
-  const rsi = avgGain === 0 && avgLoss === 0 ? 50 : avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  const sma20 = values.slice(-20).reduce((sum, value) => sum + value, 0) / 20;
-  const emas = { ema20: emaAtPeriod(values, 20), ema50: emaAtPeriod(values, 50), ema100: emaAtPeriod(values, 100), ema200: emaAtPeriod(values, 200) };
-  const fast = computeEma(values, 12), slow = computeEma(values, 26);
-  const macd = values.map((_, index) => Number.isFinite(fast[index]) && Number.isFinite(slow[index]) ? fast[index] - slow[index] : null);
-  const macdIndexes = macd.map((value, index) => Number.isFinite(value) ? index : -1).filter(index => index >= 0);
-  const signalValues = computeEma(macdIndexes.map(index => macd[index]), 9);
-  const signalLine = Array(values.length).fill(null);
-  macdIndexes.forEach((sourceIndex, index) => { signalLine[sourceIndex] = signalValues[index]; });
-  const histogram = macd.map((value, index) => Number.isFinite(value) && Number.isFinite(signalLine[index]) ? value - signalLine[index] : null);
+  const series = computeTechnicalSeries(usable,parameters);
+  const rsi=series.rsi.at(-1),sma20=series.sma20.at(-1);
+  const emas=Object.fromEntries(['ema20','ema50','ema100','ema200'].map(key=>[key,series[key].at(-1)]));
+  const macd=series.macd,signalLine=series.signal,histogram=series.histogram;
   const last = values.at(-1);
   const macdLast = macd.at(-1), macdSignalLast = signalLine.at(-1);
   const macdDiff = Number.isFinite(macdLast) && Number.isFinite(macdSignalLast) ? macdLast - macdSignalLast : null;
   const signals = {
-    rsi: rsi < 30 ? 'ซื้อ' : rsi > 70 ? 'ขาย' : 'เป็นกลาง',
-    sma: last >= sma20 ? 'ซื้อ' : 'ขาย'
+    ...(rsi===null?{}:{rsi:rsi<30?'ซื้อ':rsi>70?'ขาย':'เป็นกลาง'}),
+    ...(sma20===null?{}:{sma:last>=sma20?'ซื้อ':'ขาย'})
   };
   if (macdDiff !== null) signals.macd = macdDiff > 0 ? 'ซื้อ' : macdDiff < 0 ? 'ขาย' : 'เป็นกลาง';
   Object.entries(emas).forEach(([key, value]) => { if (value !== null) signals[key] = last > value ? 'ซื้อ' : last < value ? 'ขาย' : 'เป็นกลาง'; });
   const reasons = [
-    { key: 'RSI (14)', signal: signals.rsi, value: `RSI ${rsi.toFixed(1)}`, detail: rsi < 30 ? 'ต่ำกว่า 30: แรงขายมาก อาจเกิดแรงรีบาวด์ แต่ยังไม่ยืนยันว่าราคากลับตัว' : rsi > 70 ? 'สูงกว่า 70: ภาวะซื้อมาก ราคาอาจย่อตัวได้ แต่ในขาขึ้น RSI อาจสูงต่อเนื่อง' : 'อยู่ระหว่าง 30–70: ยังไม่เข้าขอบเขตซื้อมาก/ขายมากตามเกณฑ์ทั่วไป' },
-    { key: 'SMA (20)', signal: signals.sma, value: `ราคา ${formatNumber(last)} · SMA ${formatNumber(sma20)}`, detail: last >= sma20 ? 'ราคาปิดอยู่เหนือค่าเฉลี่ย 20 แท่ง เป็นหลักฐานสนับสนุนแนวโน้มระยะสั้น' : 'ราคาปิดต่ำกว่าค่าเฉลี่ย 20 แท่ง แสดงว่าแนวโน้มระยะสั้นยังอ่อน' },
-    { key: 'EMA (20)', signal: signals.ema20, value: `ราคา ${formatNumber(last)} · EMA ${formatNumber(emas.ema20)}`, detail: `ราคา${last >= emas.ema20 ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย 20 แท่ง ใช้ดูโมเมนตัมระยะสั้น` }
+    { key: `RSI (${series.parameters.rsi})`, signal: signals.rsi, value: `RSI ${rsi===null?'—':rsi.toFixed(1)}`, detail: rsi===null?'ข้อมูลไม่ครบ warm-up':rsi < 30 ? 'ต่ำกว่า 30: แรงขายมาก อาจเกิดแรงรีบาวด์ แต่ยังไม่ยืนยันว่าราคากลับตัว' : rsi > 70 ? 'สูงกว่า 70: ภาวะซื้อมาก ราคาอาจย่อตัวได้ แต่ในขาขึ้น RSI อาจสูงต่อเนื่อง' : 'อยู่ระหว่าง 30–70: ยังไม่เข้าขอบเขตซื้อมาก/ขายมากตามเกณฑ์ทั่วไป' },
+    { key: `SMA (${series.parameters.sma})`, signal: signals.sma, value: `ราคา ${formatNumber(last)} · SMA ${formatNumber(sma20)}`, detail: sma20===null?'ข้อมูลไม่ครบ warm-up':`ราคาปิด${last>=sma20?'อยู่เหนือ':'ต่ำกว่า'}ค่าเฉลี่ย ${series.parameters.sma} แท่ง` },
+    { key: `EMA (${series.parameters.ema20})`, signal: signals.ema20, value: `ราคา ${formatNumber(last)} · EMA ${formatNumber(emas.ema20)}`, detail: emas.ema20===null?'ข้อมูลไม่ครบ warm-up':`ราคา${last >= emas.ema20 ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย ${series.parameters.ema20} แท่ง ใช้ดูโมเมนตัมระยะสั้น` }
   ];
-  if (signals.macd) reasons.splice(1, 0, { key: 'MACD (12, 26, 9)', signal: signals.macd, value: `MACD ${macdLast.toFixed(3)} · Signal ${macdSignalLast.toFixed(3)}`, detail: macdDiff > 0 ? 'เส้น MACD อยู่เหนือเส้น Signal โมเมนตัมระยะสั้นเป็นบวก' : macdDiff < 0 ? 'เส้น MACD อยู่ใต้เส้น Signal โมเมนตัมระยะสั้นเป็นลบ' : 'เส้น MACD และ Signal อยู่ระดับเดียวกัน โมเมนตัมยังไม่ชี้ทิศทาง' });
+  if (signals.macd) reasons.splice(1, 0, { key: `MACD (${series.parameters.macdFast}, ${series.parameters.macdSlow}, ${series.parameters.macdSignal})`, signal: signals.macd, value: `MACD ${macdLast.toFixed(3)} · Signal ${macdSignalLast.toFixed(3)}`, detail: macdDiff > 0 ? 'เส้น MACD อยู่เหนือเส้น Signal โมเมนตัมระยะสั้นเป็นบวก' : macdDiff < 0 ? 'เส้น MACD อยู่ใต้เส้น Signal โมเมนตัมระยะสั้นเป็นลบ' : 'เส้น MACD และ Signal อยู่ระดับเดียวกัน โมเมนตัมยังไม่ชี้ทิศทาง' });
   for (const [key, emaPeriod, horizon] of [['ema50', 50, 'ระยะสั้นถึงกลาง'], ['ema100', 100, 'ระยะกลาง'], ['ema200', 200, 'ระยะยาว']]) {
     if (emas[key] === null) continue;
-    reasons.push({ key: `EMA (${emaPeriod})`, signal: signals[key], value: `ราคา ${formatNumber(last)} · EMA ${formatNumber(emas[key])}`, detail: `ราคา${last >= emas[key] ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย ${emaPeriod} แท่ง เป็นหลักฐานแนวโน้ม${horizon}` });
+    reasons.push({ key: `EMA (${series.parameters[key]})`, signal: signals[key], value: `ราคา ${formatNumber(last)} · EMA ${formatNumber(emas[key])}`, detail: `ราคา${last >= emas[key] ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย ${series.parameters[key]} แท่ง เป็นหลักฐานแนวโน้ม${horizon}` });
   }
   const buy = Object.values(signals).filter(value => value === 'ซื้อ').length;
   const sell = Object.values(signals).filter(value => value === 'ขาย').length;
   const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
-  const levels = findPriceLevels(usableLevels, last);
-  return { values, rsi, sma20, emas, macd: macdLast, macdSignal: macdSignalLast, macdSeries: macd, signalSeries: signalLine, macdHistogram: histogram, last, signals, reasons, buy, sell, overall, levels, available: Object.keys(signals).length, total: 7 };
+  const cutoff=toFiniteNumber(usable.at(-1)?.time);
+  const levels = findPriceLevels(usableLevels.filter(row=>!cutoff||!toFiniteNumber(row.time)||row.time<=cutoff), last);
+  return { values, rsi, sma20, emas, macd: macdLast, macdSignal: macdSignalLast, macdSeries: macd, signalSeries: signalLine, macdHistogram: histogram, last, signals, reasons, buy, sell, overall, levels, series, available: Object.keys(signals).length, total: 7 };
 }
