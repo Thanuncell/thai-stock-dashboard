@@ -103,7 +103,8 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await draw('trend',width<790);check(await page.locator('[data-draw-list] button').count(),1);
    if(!await page.locator('#indicator-settings').isVisible())await page.locator('.indicator-workspace summary').click();
    await page.locator('#indicator-settings input[name=rsi]').fill('7');await page.locator('#indicator-settings button[type=submit]').click();
-   await page.locator('#user-avatar').click();await page.locator('#profile-logout-button').click();await page.waitForSelector('#login-form');
+   // Logout shows the form before its asynchronous reload; wait for the new document.
+   await page.locator('#user-avatar').click();await Promise.all([page.waitForEvent('load'),page.locator('#profile-logout-button').click()]);await page.waitForSelector('#login-form');
    await page.locator('#login-form input[name=email]').fill('b@example.test');await page.locator('#login-form input[name=password]').fill('synthetic-chart-fixture');await page.locator('#login-form button[type=submit]').click();await page.waitForSelector('body.authenticated');
    await page.locator('[data-workspace-route=chart]:visible').first().click();await page.waitForSelector('.price-candle');await parity();
    check(await page.locator('[data-draw-list] button').count(),0,'account B never sees account A drawings');check(await page.locator('#indicator-settings input[name=rsi]').inputValue(),'14','account B never inherits account A parameters');
