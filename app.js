@@ -793,7 +793,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
     const message = chartLoadMessage || (isUnavailable ? 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้' : isError ? 'โหลดข้อมูลไม่สำเร็จ' : 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
     host.innerHTML = `<div class="chart-empty chart-empty-${escapeHtml(chartLoadState)}"><span>${escapeHtml(message)}</span>${isError ? '<button type="button" data-chart-retry>ลองใหม่</button>' : ''}</div>`;
     host.closest('.own-chart-wrap')?.classList.remove('has-macd');
-    setText('#chart-updated', 'รับข้อมูล Yahoo Finance: —');
+    setText('#chart-updated', 'อัปเดตเมื่อ —');
     return;
   }
   const snapshot=technicalSnapshot(),calculationRows=snapshot.rows,analysis=snapshot.analysis;
@@ -861,7 +861,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const levelLines = levelDetails.map(item => {
     const py = y(item.value);
     const typeLabel = item.type === 'support' ? `S${item.rank}` : `R${item.rank}`;
-    return `<g class="chart-level ${item.type}"><line x1="${left}" y1="${py}" x2="${width - right}" y2="${py}"/><text x="${width - right - 4}" y="${py - 4}" text-anchor="end">${escapeHtml(typeLabel)} ${escapeHtml(number(item.value))} · ${escapeHtml(item.source)}</text></g>`;
+    return `<g class="chart-level ${item.type}"><line x1="${left}" y1="${py}" x2="${width - right}" y2="${py}"/><text x="${width - right - 4}" y="${py - 4}" text-anchor="end">${escapeHtml(typeLabel)} ${escapeHtml(number(item.value))} · ${escapeHtml(item.sourceLabel || item.source)}</text></g>`;
   }).join('');
   let macdPanel = '';
   if (showMacd) {
@@ -889,7 +889,8 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   }).join('');
   const stateText = dataState === 'stale' ? ' · ข้อมูลเก่า' : dataState === 'suspect' || dataState === 'quarantined' ? ' · ข้อมูลต้องสงสัย' : '';
   const receipt=snapshot.receivedAt??(typeof receivedAt==='number'?receivedAt:Date.parse(receivedAt));
-  setText('#chart-updated', `รับข้อมูล Yahoo Finance: ${technicalTimeText(receipt)} (เวลาไทย)${stateText}`);
+  const receiptText=technicalTimeText(receipt);
+  setText('#chart-updated', receiptText==='—'?'อัปเดตเมื่อ —':`อัปเดตเมื่อ ${receiptText} (เวลาไทย)${stateText}`);
   $('#chart-updated').title=`แท่งราคาล่าสุดเปิด ${technicalTimeText(allRows.at(-1)?.time)} · ดูแท่งอ้างอิงสัญญาณที่สรุปด้านล่าง`;
   host.closest('.own-chart-wrap')?.classList.toggle('has-macd', showMacd);
   host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" style="width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
@@ -1190,8 +1191,8 @@ function renderPriceLevels(bars, last, calculatedLevels = null) {
   const levels = calculatedLevels || findPriceLevels(bars || [], last);
   for (let i = 0; i < 3; i++) {
     const support = levels.supportDetails[i], resistance = levels.resistanceDetails[i];
-    setText(`#support-${i + 1}`, support ? `${number(support.value)} · ${support.source}` : 'ไม่มีแนวในช่วงนี้');
-    setText(`#resistance-${i + 1}`, resistance ? `${number(resistance.value)} · ${resistance.source}` : 'ไม่มีแนวในช่วงนี้');
+    setText(`#support-${i + 1}`, support ? `${number(support.value)} · ${support.sourceLabel || support.source}` : 'ไม่มีแนวในช่วงนี้');
+    setText(`#resistance-${i + 1}`, resistance ? `${number(resistance.value)} · ${resistance.sourceLabel || resistance.source}` : 'ไม่มีแนวในช่วงนี้');
   }
   const pivotCount = [...levels.supportDetails, ...levels.resistanceDetails].filter(item => item.source === 'Classic Pivot').length;
   const primaryCount = latestMarket?.history?.length || 0;

@@ -61,9 +61,9 @@ export class DrawingWorkspace {
   const form=this.controls.querySelector('form'),d=this.items.find(d=>d.id===this.selected);form.hidden=!d;
   this.controls.querySelector('[data-draw-delete]').disabled=!d;
   if(d){for(const end of ['a','b']){form.elements[end+'Time'].value=new Date(d[end].time).toISOString().slice(0,-1);form.elements[end+'Price'].value=d[end].price;}}
-  this.message(this.tool==='pan'?'เลื่อน/ซูมกราฟตามปกติ · ภาพวาดเก็บเฉพาะบัญชีนี้ในเครื่อง':this.tool==='select'?'เลือกเส้นเพื่อย้าย · ลากจุดปลายเพื่อแก้ไข · แก้ตัวเลขด้านล่างได้':'ลากบนกราฟราคาเพื่อวาด · Esc กลับโหมดเลื่อนกราฟ');
+  this.message(this.tool==='pan'?'เลื่อน/ซูมกราฟตามปกติ · ภาพวาดบันทึกแยกตามบัญชีบนอุปกรณ์นี้':this.tool==='select'?'เลือกเส้นเพื่อย้าย · ลากจุดปลายเพื่อแก้ไข · แก้ตัวเลขด้านล่างได้':'ลากบนกราฟราคาเพื่อวาด · Esc กลับโหมดเลื่อนกราฟ');
  }
- save(){this.items=validDrawings(this.items);try{this.write('setscope-drawings:'+this.key,this.items);this.sync();}catch{this.sync();this.message('บันทึกในเครื่องไม่สำเร็จ ภาพวาดยังอยู่ในหน้านี้');}this.redraw();}
+ save(){this.items=validDrawings(this.items);try{this.write('setscope-drawings:'+this.key,this.items);this.sync();}catch{this.sync();this.message('บันทึกบนอุปกรณ์นี้ไม่สำเร็จ ภาพวาดยังอยู่ในหน้านี้');}this.redraw();}
  remove(){this.cancelGesture();this.onModeChange();this.items=this.items.filter(d=>d.id!==this.selected);this.selected='';this.save();}
  anchor(event){
   const c=this.context,svg=this.host.querySelector('svg');if(!c||!svg)return null;

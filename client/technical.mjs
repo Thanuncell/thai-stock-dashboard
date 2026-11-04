@@ -67,12 +67,22 @@ export function priceStructure(rows,last,{asOf=Infinity,candleTime=Infinity,inte
  const legacy=findPriceLevels(prior,last);
  const select=(type,legacyDetails)=>{
   const roleEvidence=z=>z.events.findLast(event=>['breakout-confirmed','retest-confirmed'].includes(event.kind)&&event.direction===(type==='support'?1:-1));
-  const candidates=zones.filter(z=>(type==='support'?z.value<last:z.value>last)&&(z.type===type||roleEvidence(z)))
-   .sort((a,b)=>b.events.filter(e=>e.kind==='reaction'||e.kind==='retest-confirmed').length-a.events.filter(e=>e.kind==='reaction'||e.kind==='retest-confirmed').length||Math.abs(a.value-last)-Math.abs(b.value-last));
-  const chosen=candidates.slice(0,3).map(z=>({...z,originalType:z.type,roleConfirmation:z.type===type?null:roleEvidence(z)}));
+  const onSide=value=>type==='support'?value<last:value>last;
+  const candidates=zones.filter(z=>onSide(z.value)&&(z.type===type||roleEvidence(z))).map(z=>({
+   ...z,originalType:z.type,roleConfirmation:z.type===type?null:roleEvidence(z),
+   ...(z.type===type?{}:{sourceLabel:`${z.source} → ${type==='support'?'แนวรับ':'แนวต้าน'} (กลับบทบาทยืนยัน)`})
+  }));
   for(const detail of legacyDetails.filter(d=>d.source==='Classic Pivot')){
+   if(onSide(detail.value)&&candidates.every(z=>Math.abs(z.value-detail.value)>width))candidates.push({...detail,confirmedAt:prior.at(-1)?.availableAt??null,referenceTime:prior.at(-1)?.time??null,referenceInterval:interval,state:'previous-completed-period',events:[]});
+  }
+  // Rank the complete eligible pool by price relative to the confirmed signal
+  // close. Reactions only break equal-price ties; never promote a farther level.
+  const strength=z=>z.events.filter(e=>e.kind==='reaction'||e.kind==='retest-confirmed').length;
+  candidates.sort((a,b)=>(type==='support'?b.value-a.value:a.value-b.value)||strength(b)-strength(a)||(a.confirmedAt??0)-(b.confirmedAt??0));
+  const chosen=[];
+  for(const candidate of candidates){
+   if(chosen.every(z=>Math.abs(z.value-candidate.value)>width))chosen.push(candidate);
    if(chosen.length===3)break;
-   if(chosen.every(z=>Math.abs(z.value-detail.value)>width))chosen.push({...detail,confirmedAt:prior.at(-1)?.availableAt??null,referenceTime:prior.at(-1)?.time??null,referenceInterval:interval,state:'previous-completed-period',events:[]});
   }
   return chosen.map((z,i)=>({...z,type,rank:i+1}));
  };
