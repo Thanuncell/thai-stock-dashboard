@@ -169,6 +169,42 @@ test('rejected incomplete bars do not zero valid chart or Technical Analysis his
   assert.ok(result.history.every(bar => Number.isFinite(bar.close)));
 });
 
+test('intraday technicals cannot consume daily fallback candles', async () => {
+  const now = Date.UTC(2026, 10, 3, 9);
+  const calls = [];
+  const service = createMarketService({
+    now: () => now,
+    fetchImpl: async input => {
+      const url = new URL(String(input));
+      const interval = url.searchParams.get('interval');
+      calls.push(interval);
+      const daily = interval === '1d';
+      const count = daily ? 60 : 12;
+      const step = daily ? 86_400_000 : 60_000;
+      const timestamp = Array.from({ length: count }, (_, index) =>
+        Math.floor((now - (count - index) * step) / 1000));
+      const close = timestamp.map((_, index) => 35 + index * 0.01);
+      const indexSymbol = decodeURIComponent(url.pathname).includes('^SET.BK');
+      return Response.json({ chart: { result: [{
+        meta: { symbol: indexSymbol ? '^SET.BK' : 'PTT.BK',
+          currency: 'THB', exchangeName: 'SET', marketState: 'REGULAR',
+          regularMarketPrice: close.at(-1), regularMarketTime: timestamp.at(-1) },
+        timestamp,
+        indicators: { quote: [{
+          open: close, high: close.map(x => x + 0.1),
+          low: close.map(x => x - 0.1), close, volume: close.map(() => 1000)
+        }] }
+      }], error: null } });
+    }
+  });
+  const market = await service.getMarket(['PTT'], 'PTT', '1D');
+  assert.ok(calls.includes('1d'), 'daily fallback was requested');
+  assert.equal(market.history.length, 12);
+  assert.equal(market.indicatorHistory.length, 12, 'intraday indicators must keep intraday cadence');
+  assert.equal(market.levelsHistory.length, 60, 'daily fallback for price levels remains available');
+  assert.deepEqual(market.indicatorHistory, market.history);
+});
+
 test('a guarded index identity failure does not wipe a valid selected stock', async () => {
   const now = Date.UTC(2026, 9, 18, 9);
   const service = createMarketService({

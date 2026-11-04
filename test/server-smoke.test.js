@@ -162,6 +162,10 @@ test('health and static responses have strict security headers without invalid C
   assert.equal(domain.status, 200);
   assert.match(domain.headers['content-type'], /^text\/javascript/);
   assert.equal((await request(base, '/theme-init.js')).status, 200);
+  for(const file of ['/client/technical.mjs','/client/technical-chart.mjs','/client/drawings.mjs','/lib/market-time.js']){
+    const response=await request(base,file);assert.equal(response.status,200,file);assert.match(response.headers['content-type'],/^text\/javascript/);
+  }
+  for(const file of ['/server/market-service.js','/test/fixtures/technical-reference.json','/client/unapproved.mjs'])assert.notEqual((await request(base,file)).status,200,file);
 });
 
 test('protected APIs reject missing bearer tokens', async () => {
@@ -230,8 +234,9 @@ test('backend API response contracts remain stable before service extraction', a
   const market = JSON.parse((await request(base, '/api/market?symbols=PTT&symbol=PTT&range=1D', { headers })).body);
   assert.deepEqual(Object.keys(market).sort(), [
     'asOf', 'dataState', 'delayMinutes', 'delayed', 'errors', 'fetchedAt', 'history',
-    'indicatorHistory', 'indices', 'levelsHistory', 'partial', 'provider', 'source', 'stale', 'stocks'
+    'indicatorHistory', 'indices', 'levelsHistory', 'partial', 'provider', 'source', 'stale', 'stocks', 'technicalMeta'
   ]);
+  assert.deepEqual(Object.keys(market.technicalMeta).sort(),['history','indicator','levels']);
 
   const coverage = JSON.parse((await request(base, '/api/coverage', { headers })).body);
   assert.deepEqual(Object.keys(coverage).sort(), [

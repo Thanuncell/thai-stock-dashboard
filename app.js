@@ -36,12 +36,16 @@ import {
   stamp,
   summarizeBreadth,
   toFiniteNumber,
+  TECHNICAL_DEFAULTS, normalizeTechnicalParameters, trustedMarketBars,
   zoomChartViewport,
   watchlistNewsViewState,
   newsDisplayAnalysis,
   canRequestNewsAnalysis,
   retainWatchlistNews as retainWatchlistByPolicy
 } from './client/domain.mjs';
+import { createTechnicalSnapshot, INDICATOR_PRESETS } from './client/technical.mjs';
+import { DrawingWorkspace } from './client/drawings.mjs';
+import { seriesPath, oscillatorPanel } from './client/technical-chart.mjs';
 
 // Gate activation is server-owned. Once observed ON, stale OFF responses cannot lower it;
  // an intentional switch back to OFF takes effect after a page reload.
@@ -121,6 +125,16 @@ let searchItems = [];
 let searchPending = false;
 let currentRange = initialNavigation.route === 'chart' ? initialNavigation.range : '1D';
 const chartIndicators = new Set(['sma20', 'ema20', 'ema50', 'macd']);
+let technicalParameters = normalizeTechnicalParameters();
+let technicalCache = null;
+let drawings = null;
+function technicalSnapshot() {
+  const owner=userStorageScope,market=latestMarket,parameterKey=JSON.stringify(technicalParameters);
+  if(technicalCache?.market===market&&technicalCache.owner===owner&&technicalCache.parameterKey===parameterKey&&technicalCache.symbol===activeSymbol&&technicalCache.range===currentRange)return technicalCache.value;
+  const usable=market&&latestMarketSymbol===activeSymbol&&latestMarketRange===currentRange?market:{};
+  const value=createTechnicalSnapshot({...usable,symbol:activeSymbol,timeframe:currentRange,parameters:technicalParameters,dataState:usable.dataState||usable.guard?.state,guardReasons:usable.guard?.reasons||[]});
+  technicalCache={market,owner,parameterKey,symbol:activeSymbol,range:currentRange,value};return value;
+}
 let chartLoadState = 'loading';
 let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
 let chartResizeTimer = null;
@@ -182,6 +196,8 @@ function clearPrivateDom() {
   setWatchlistSyncStatus('', '');
 }
 function clearPrivateState() {
+  technicalCache=null;technicalParameters=normalizeTechnicalParameters();drawings?.reset();
+  chartIndicators.clear();INDICATOR_PRESETS.basic.forEach(key=>chartIndicators.add(key));
   mostActiveExpanded = false;
   const preserveInitialChartSelection = privateInitializationSequence === 0 && initialNavigation.route === 'chart';
   privateInitializationSequence += 1;
@@ -486,6 +502,10 @@ function initializeUserScopedState() {
   }
   privateSessionIdentity = identity;
   userStorageScope = identity.ownerId;
+  technicalParameters=normalizeTechnicalParameters(readScopedLocal('setscope-indicator-parameters',{}));
+  const savedIndicators=readScopedLocal('setscope-indicator-display',INDICATOR_PRESETS.basic);
+  chartIndicators.clear();(Array.isArray(savedIndicators)?savedIndicators:INDICATOR_PRESETS.basic).filter(key=>['sma20','ema20','ema50','ema100','ema200','macd','rsi','bb','atr'].includes(key)).forEach(key=>chartIndicators.add(key));
+  syncIndicatorWorkspace();
   requestedWatchlistId = history.state?.setscopeWatchlist?.ownerId === identity.ownerId
     ? history.state.setscopeWatchlist.watchlistId : (initialNavigation.route === 'watchlist' ? initialNavigation.watchlistId : '');
   const snapshot = loadWatchlistSnapshot();
@@ -766,8 +786,9 @@ function setTechnicalPanelState(state) {
 function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indicatorBars = bars, dataState = 'delayed') {
   const host = $('#stock-price-chart');
   if (!host) return;
-  const allRows = (bars || []).filter(bar => [bar.open, bar.high, bar.low, bar.close].every(value => Number.isFinite(Number(value))) && Number(bar.close) > 0);
+  const allRows = trustedMarketBars(bars).filter(bar=>[bar.open,bar.high,bar.low,bar.close].every(value=>toFiniteNumber(value)!==null));
   if (!allRows.length) {
+    drawings?.suspend();
     const isError = chartLoadState === 'error';
     const isUnavailable = chartLoadState === 'unavailable';
     const message = chartLoadMessage || (isUnavailable ? 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้' : isError ? 'โหลดข้อมูลไม่สำเร็จ' : 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
@@ -776,8 +797,9 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
     setText('#chart-updated', 'อัปเดตล่าสุด: —');
     return;
   }
-  const calculationRows = (indicatorBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
-  const analysis = analyseTechnicals(calculationRows, levelBars);
+  const snapshot=technicalSnapshot(),calculationRows=snapshot.rows,analysis=snapshot.analysis;
+  host.dataset.snapshotId=snapshot.id;
+  drawings?.bind(`${activeSymbol}:${currentRange}`);
   const hostWidth = Math.max(320, Math.floor(host.clientWidth || host.parentElement?.clientWidth || 640));
   const viewportKey = `${activeSymbol}:${currentRange}`;
   if (chartViewportKey !== viewportKey) {
@@ -789,26 +811,24 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
   chartRowCount = allRows.length;
   const rows = allRows.slice(chartViewport.start, chartViewport.end);
   const alignToVisibleChart = values => alignIndicatorSeries(calculationRows, values, allRows).slice(chartViewport.start, chartViewport.end);
-  const macdSeries = analysis ? alignToVisibleChart(analysis.macdSeries) : [];
-  const signalSeries = analysis ? alignToVisibleChart(analysis.signalSeries) : [];
-  const macdHistogram = analysis ? alignToVisibleChart(analysis.macdHistogram) : [];
-  const showMacd = chartIndicators.has('macd') && macdSeries.some(Number.isFinite);
+  const macdSeries = alignToVisibleChart(snapshot.series.macd);
+  const signalSeries = alignToVisibleChart(snapshot.series.signal);
+  const macdHistogram = alignToVisibleChart(snapshot.series.histogram);
+  const showMacd = chartIndicators.has('macd');
+  const showRsi=chartIndicators.has('rsi'),showAtr=chartIndicators.has('atr');
   const geometry = chartGeometry({ rowCount: rows.length, hostWidth, range: currentRange });
   const { left, right, width, plotWidth, step, candleWidth, x } = geometry;
   const top = 22;
-  const height = showMacd ? 520 : 390;
+  const height = 390+(showMacd?130:0)+(showRsi?130:0)+(showAtr?130:0);
   const priceBottom = 280, volumeBottom = 340, macdTop = 375, macdBottom = 475;
   const closes = rows.map(row => Number(row.close));
-  const calculationCloses = calculationRows.map(row => Number(row.close));
-  const smaValues = alignToVisibleChart(computeSmaSeries(calculationCloses, 20));
+  const smaValues = alignToVisibleChart(snapshot.series.sma20);
   const indicatorSeries = [
     ['sma20', smaValues, 'sma20-chart-line'],
-    ['ema20', alignToVisibleChart(computeEma(calculationCloses, 20)), 'ema20-chart-line'],
-    ['ema50', alignToVisibleChart(computeEma(calculationCloses, 50)), 'ema50-chart-line'],
-    ['ema100', alignToVisibleChart(computeEma(calculationCloses, 100)), 'ema100-chart-line'],
-    ['ema200', alignToVisibleChart(computeEma(calculationCloses, 200)), 'ema200-chart-line']
+    ...['ema20','ema50','ema100','ema200'].map(key=>[key,alignToVisibleChart(snapshot.series[key]),`${key}-chart-line`]),
+    ...['upper','middle','lower'].map(key=>['bb',alignToVisibleChart(snapshot.series.bb[key]),'bb-chart-line'])
   ];
-  const chartLevels = analysis?.levels || findPriceLevels(levelBars, Number(allRows.at(-1)?.close));
+  const chartLevels = snapshot.levels;
   const indicatorValues = indicatorSeries.filter(([key]) => chartIndicators.has(key)).flatMap(([, values]) => values.filter(Number.isFinite));
   const axis = chartPriceAxis(rows, indicatorValues);
   const min = axis.min, max = axis.max, span = max - min || 1;
@@ -833,8 +853,8 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
     return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/>${volumeBar}<rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
   }).join('');
   const indicators = indicatorSeries.filter(([key]) => chartIndicators.has(key)).map(([, values, className]) => {
-    const points = values.map((value, index) => value == null ? '' : `${x(index)},${y(value)}`).filter(Boolean).join(' ');
-    return points ? `<polyline class="${className}" points="${points}"/>` : '';
+    const path=seriesPath(values,x,y);
+    return path ? `<path class="${className}" d="${path}"/>` : '';
   }).join('');
   const levelLines = levelDetails.map(item => {
     const py = y(item.value);
@@ -847,27 +867,30 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
     const macdMin = Math.min(...macdValues), macdMax = Math.max(...macdValues), macdSpan = macdMax - macdMin || 1;
     const macdY = value => macdTop + (macdMax - value) / macdSpan * (macdBottom - macdTop);
     const zeroY = macdY(0);
-    const macdLine = macdSeries.map((value, index) => Number.isFinite(value) ? `${x(index)},${macdY(value)}` : '').filter(Boolean).join(' ');
-    const signalLine = signalSeries.map((value, index) => Number.isFinite(value) ? `${x(index)},${macdY(value)}` : '').filter(Boolean).join(' ');
+    const macdLine = seriesPath(macdSeries,x,macdY);
+    const signalLine = seriesPath(signalSeries,x,macdY);
     const histogram = macdHistogram.map((value, index) => {
       if (!Number.isFinite(value)) return '';
       const py = macdY(value), barWidth = Math.max(1.4, Math.min(8, step * .55));
       return `<rect class="macd-histogram ${value >= 0 ? 'positive' : 'negative'}" x="${x(index) - barWidth / 2}" y="${Math.min(py, zeroY)}" width="${barWidth}" height="${Math.max(1, Math.abs(zeroY - py))}"/>`;
     }).join('');
-    macdPanel = `<g class="macd-panel"><rect class="macd-panel-bg" x="${left}" y="${macdTop - 18}" width="${plotWidth}" height="${macdBottom - macdTop + 26}" rx="4"/><text class="chart-label" x="${left + 6}" y="${macdTop - 5}">MACD (12, 26, 9)</text><line class="macd-zero" x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}"/>${histogram}<polyline class="macd-line" points="${macdLine}"/><polyline class="macd-signal-line" points="${signalLine}"/></g>`;
+    macdPanel = `<g class="macd-panel"><rect class="macd-panel-bg" x="${left}" y="${macdTop - 18}" width="${plotWidth}" height="${macdBottom - macdTop + 26}" rx="4"/><text class="chart-label" x="${left + 6}" y="${macdTop - 5}">MACD (${snapshot.parameters.macdFast}, ${snapshot.parameters.macdSlow}, ${snapshot.parameters.macdSignal})${macdSeries.some(Number.isFinite)?'':' · ข้อมูลไม่ครบ warm-up'}</text><line class="macd-zero" x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}"/>${histogram}<path class="macd-line" d="${macdLine}"/><path class="macd-signal-line" d="${signalLine}"/></g>`;
   }
+  let panelTop=375+(showMacd?130:0),extraPanels='';
+  for(const [key,enabled]of [['rsi',showRsi],['atr',showAtr]])if(enabled){extraPanels+=oscillatorPanel({values:alignToVisibleChart(snapshot.series[key]),x,left,right,width,top:panelTop,label:`${key.toUpperCase()} (${snapshot.parameters[key]})`,type:key});panelTop+=130;}
+  const drawingSvg=`<rect class="drawing-surface" x="${left}" y="${top}" width="${plotWidth}" height="${priceBottom-top}"/>`+(drawings?.svg({rows,x,y,left,right,width,height,top,bottom:priceBottom,step,max,span})||'');
   const labelIndices = [...new Set([0, Math.floor((rows.length - 1) / 3), Math.floor((rows.length - 1) * 2 / 3), rows.length - 1])];
   const dateLabels = labelIndices.map(index => {
     const date = new Date(rows[index].time);
     const label = Number.isNaN(+date) ? '' : (currentRange === '1D' ? chartIntradayFormatter : chartDateFormatter).format(date);
-    return `<text class="chart-axis-text" x="${x(index)}" y="${showMacd ? 510 : 375}" text-anchor="middle">${escapeHtml(label)}</text>`;
+    return `<text class="chart-axis-text" x="${x(index)}" y="${height-10}" text-anchor="middle">${escapeHtml(label)}</text>`;
   }).join('');
   const providerDate = providerTime ? new Date(providerTime) : null;
   const updated = providerDate && !Number.isNaN(+providerDate) ? chartIntradayFormatter.format(providerDate) : '—';
   const stateText = dataState === 'stale' ? ' · ข้อมูลเก่า' : dataState === 'suspect' || dataState === 'quarantined' ? ' · ข้อมูลต้องสงสัย' : '';
   setText('#chart-updated', `อัปเดตล่าสุด: ${updated} น. (เวลาไทย)${stateText}`);
   host.closest('.own-chart-wrap')?.classList.toggle('has-macd', showMacd);
-  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" style="width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${dateLabels}</svg></div>`;
+  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" style="width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
 }
 
 function scheduleChartRedraw() {
@@ -914,15 +937,32 @@ function beginChartGesture() {
   }
 }
 
+function cancelChartGestures() {
+  const host=$('#stock-price-chart');
+  for(const id of chartPointers.keys())if(host?.hasPointerCapture?.(id))host.releasePointerCapture?.(id);
+  chartPointers.clear();chartGesture=null;
+}
 function setupChartGestures() {
   const host = $('#stock-price-chart');
   if (!host) return;
+  // SVG hit targets may be replaced during redraw. Keep native scroll suppression
+  // on the stable host, limited to an intentional drawing inside the price plot.
+  host.addEventListener('touchstart',event=>{
+    if(drawings?.tool!=='pan'&&[...event.touches].some(touch=>drawings?.anchor(touch)))event.preventDefault();
+  },{passive:false});
   host.addEventListener('pointerdown', event => {
     chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
+    if([...chartPointers.values()].filter(point=>point.pointerType==='touch').length>=2){
+      drawings?.cancelGesture();
+      for(const id of chartPointers.keys())host.setPointerCapture?.(id);
+      beginChartGesture();return;
+    }
+    if(drawings?.pointerDown(event)){chartGesture=null;return;}
     beginChartGesture();
     if (event.pointerType !== 'touch') host.setPointerCapture?.(event.pointerId);
   });
   host.addEventListener('pointermove', event => {
+    if(chartGesture?.type!=='pinch'&&drawings?.pointerMove(event))return;
     if (!chartPointers.has(event.pointerId) || !chartRowCount) return;
     const current = chartPointers.get(event.pointerId);
     chartPointers.set(event.pointerId, { ...current, x: event.clientX, y: event.clientY });
@@ -956,6 +996,7 @@ function setupChartGestures() {
     queueChartViewportRender();
   }, { passive: false });
   const finish = event => {
+    drawings?.pointerUp(event,event.type==='pointercancel');
     chartPointers.delete(event.pointerId);
     if (host.hasPointerCapture?.(event.pointerId)) host.releasePointerCapture?.(event.pointerId);
     if (chartPointers.size) beginChartGesture(); else chartGesture = null;
@@ -1154,15 +1195,17 @@ function renderPriceLevels(bars, last, calculatedLevels = null) {
   const primaryCount = latestMarket?.history?.length || 0;
   const levelCount = (bars || []).length;
   const historyNote = levelCount > primaryCount && primaryCount > 0 ? `ข้อมูลกราฟ ${primaryCount} แท่ง และย้อนหลังเพิ่มเติมรวม ${levelCount} แท่ง` : `${levelCount} แท่ง`;
-  setText('#levels-basis', `แนวรับ–แนวต้านช่วง ${currentRange} จาก ${historyNote} · จุดกลับตัว${pivotCount ? ` และจุดหมุน ${pivotCount} ระดับ` : ''}`);
+  setText('#levels-basis', `แนวรับ–แนวต้านช่วง ${currentRange} จาก ${historyNote} · จุดกลับตัวที่ยืนยันแล้ว${pivotCount ? ` และจุดหมุนจากแท่งก่อนหน้าที่ปิดแล้ว ${pivotCount} ระดับ (${levels.referenceInterval||'ตามต้นทาง'})` : ''}`);
   return levels;
 }
 
 function drawSignals(bars, levelBars = bars, displayBars = bars) {
-  const analysis = analyseTechnicals(bars, levelBars);
+  const snapshot=bars.length?technicalSnapshot():createTechnicalSnapshot();
+  const analysis = snapshot.analysis;
+  $('.analysis-panel').dataset.snapshotId=snapshot.id;
   if (!analysis) {
     const priceBars = (levelBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
-    renderPriceLevels(levelBars || bars || [], Number(priceBars.at(-1)?.close));
+    renderPriceLevels([], snapshot.rows.at(-1)?.close, snapshot.levels);
     setTechnicalPanelState(priceBars.length ? 'insufficient' : chartLoadState);
     setText('#analysis-note', `ได้รับข้อมูล ${(bars || []).length} จุด ต้องมีอย่างน้อย 30 แท่งเพื่อสรุปสัญญาณ`);
     $('#technical-reasons').innerHTML = '<p class="reason-empty">ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยให้ครบ</p>';
@@ -1188,32 +1231,49 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     el.textContent = value || (requiredBars ? `ข้อมูลไม่ครบ (${analysis.values.length}/${requiredBars})` : 'รอข้อมูล');
     el.className = `pill ${value === 'ซื้อ' ? 'buy-pill' : value === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
   });
-  const hold = analysis.available - analysis.buy - analysis.sell;
-  setText('#buy-count', String(analysis.buy)); setText('#sell-count', String(analysis.sell)); setText('#neutral-count', String(hold));
-  updateSignalDonut(analysis.buy, hold, analysis.sell, analysis.available);
-  setText('#overall-signal', analysis.overall); setText('.signal-score strong', analysis.overall);
-  setText('#rsi-value', analysis.rsi.toFixed(1));
+  const votes=Object.values(snapshot.summary.groups),buy=votes.filter(v=>v>0).length,sell=votes.filter(v=>v<0).length,hold=votes.length-buy-sell;
+  setText('#buy-count', String(buy)); setText('#sell-count', String(sell)); setText('#neutral-count', String(hold));
+  updateSignalDonut(buy, hold, sell, votes.length);
+  setText('#overall-signal', snapshot.summary.overall); setText('.signal-score strong', snapshot.summary.overall);
+  setText('#rsi-value', analysis.rsi===null?'—':analysis.rsi.toFixed(1));
   const rsiBar = $('.rsi-track i');
-  if (rsiBar) rsiBar.style.left = `${analysis.rsi}%`;
+  if (rsiBar) rsiBar.style.left = `${analysis.rsi??50}%`;
   const supportive = analysis.reasons.filter(reason => reason.signal === 'ซื้อ');
   const opposing = analysis.reasons.filter(reason => reason.signal === 'ขาย');
   const neutral = analysis.reasons.filter(reason => reason.signal === 'เป็นกลาง');
   const group = (title, className, items) => `<div class="reason-group ${className}"><b>${title} (${items.length})</b>${items.length ? `<ul>${items.map(item => `<li><strong>${escapeHtml(item.key)} · ${escapeHtml(item.value)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join('')}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
-  $('#technical-reasons').innerHTML = group('แรงหนุนฝั่งบวก', 'positive', supportive) + group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing) + (neutral.length ? group('ยังไม่ชี้ทิศทาง', 'neutral', neutral) : '');
+  const availability=Object.entries(snapshot.availability).map(([key,value])=>`<li>${escapeHtml(indicatorLabel(key))}: ${value.state==='available'?'พร้อม':`ข้อมูลไม่ครบ ${value.bars}/${value.required} แท่ง`}</li>`).join('');
+  const evidence={symbol:snapshot.symbol,timeframe:snapshot.timeframe,candleTime:snapshot.candleTime,confirmation:snapshot.confirmation,quality:snapshot.quality,priceBasis:snapshot.priceBasis,adjustment:snapshot.adjustment,rules:snapshot.summary.reasons,crosses:snapshot.crosses.slice(-6),levels:snapshot.levels.supportDetails.concat(snapshot.levels.resistanceDetails)};
+  $('#technical-reasons').innerHTML = `<ol class="compact-reasons">${snapshot.summary.reasons.map(r=>`<li>${escapeHtml(r.text)}</li>`).join('')}</ol><details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว</summary><ul>${availability}</ul>${group('แรงหนุนฝั่งบวก', 'positive', supportive)+group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing)+(neutral.length?group('ยังไม่ชี้ทิศทาง','neutral',neutral):'')}<pre>${escapeHtml(JSON.stringify(evidence,null,2))}</pre></details>`;
   renderPriceLevels(levelBars || bars || [], analysis.last, analysis.levels);
   const support1 = analysis.levels.supports[0], resistance1 = analysis.levels.resistances[0];
-  const plan = analysis.overall === 'ซื้อ'
-    ? `หลักฐานเอนบวก ${analysis.buy}/${analysis.available} ข้อ · รอการยืนเหนือแนวต้าน 1 ${number(resistance1)} เพื่อยืนยัน; หากปิดต่ำกว่าแนวรับ 1 ${number(support1)} มุมมองนี้อ่อนลง`
-    : analysis.overall === 'ขาย'
-      ? `หลักฐานเอนลบ ${analysis.sell}/${analysis.available} ข้อ · หากหลุดแนวรับ 1 ${number(support1)} แรงกดดันอาจต่อเนื่อง; การกลับยืนเหนือแนวต้าน 1 ${number(resistance1)} จะทำให้มุมมองลบอ่อนลง`
-      : `สัญญาณบวก ${analysis.buy} ข้อและลบ ${analysis.sell} ข้อ · รอราคาเลือกทิศทางเหนือแนวต้าน 1 ${number(resistance1)} หรือหลุดแนวรับ 1 ${number(support1)} ก่อนพิจารณา`;
+  const plan = !snapshot.summary.actionable ? 'รอแท่งปิดและข้อมูลที่ยืนยันได้ก่อนสรุป · ค่าบนกราฟอาจยังเปลี่ยนระหว่างแท่ง' : snapshot.summary.overall === 'ซื้อ'
+    ? `หลักฐานเอนบวก ${buy}/${votes.length} กลุ่ม · รอการยืนเหนือแนวต้าน 1 ${number(resistance1)} เพื่อยืนยัน; หากปิดต่ำกว่าแนวรับ 1 ${number(support1)} มุมมองนี้อ่อนลง`
+    : snapshot.summary.overall === 'ขาย'
+      ? `หลักฐานเอนลบ ${sell}/${votes.length} กลุ่ม · หากหลุดแนวรับ 1 ${number(support1)} แรงกดดันอาจต่อเนื่อง; การกลับยืนเหนือแนวต้าน 1 ${number(resistance1)} จะทำให้มุมมองลบอ่อนลง`
+      : `สัญญาณบวก ${buy} กลุ่มและลบ ${sell} กลุ่ม · รอราคาเลือกทิศทางเหนือแนวต้าน 1 ${number(resistance1)} หรือหลุดแนวรับ 1 ${number(support1)} ก่อนพิจารณา`;
   setText('#technical-plan', plan);
   const displayedCount = (displayBars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0).length;
   const barsNote = analysis.values.length > displayedCount
     ? `แสดง ${displayedCount} แท่ง · ใช้ย้อนหลัง ${analysis.values.length} แท่งคำนวณ`
     : `${analysis.values.length} แท่ง`;
-  setText('#analysis-note', `${analysis.overall === 'ซื้อ' ? 'หลักฐานเอนบวก' : analysis.overall === 'ขาย' ? 'หลักฐานเอนลบ' : 'สัญญาณยังผสม'} · ซื้อ ${analysis.buy} / กลาง ${analysis.available - analysis.buy - analysis.sell} / ขาย ${analysis.sell} · มีข้อมูล ${analysis.available}/${analysis.total} indicators · ช่วง ${currentRange} (${barsNote})`);
+  setText('#analysis-note', `${snapshot.confirmation==='confirmed'?'แท่งยืนยันแล้ว':'แท่งยังไม่ยืนยัน'} · ${snapshot.quality.warnings.length?'มีข้อควรตรวจสอบข้อมูล · ':''}ช่วง ${currentRange} (${barsNote}) · นับค่าเฉลี่ยเป็นหลักฐานกลุ่มเดียว`);
   return analysis;
+}
+function indicatorLabel(key){
+  if(key==='macd')return `MACD ${technicalParameters.macdFast}/${technicalParameters.macdSlow}/${technicalParameters.macdSignal}`;
+  if(key==='bb')return `BB ${technicalParameters.bb}/${technicalParameters.bbDeviation}`;
+  const p=key==='sma20'?technicalParameters.sma:technicalParameters[key];return `${key.startsWith('ema')?'EMA':key==='sma20'?'SMA':key.toUpperCase()} ${p}`;
+}
+function syncIndicatorWorkspace(){
+  document.querySelectorAll('[data-indicator]').forEach(button=>{button.classList.toggle('active',chartIndicators.has(button.dataset.indicator));button.setAttribute('aria-pressed',String(chartIndicators.has(button.dataset.indicator)));const label=button.querySelector('span');if(label)label.textContent=indicatorLabel(button.dataset.indicator);});
+  const form=$('#indicator-settings');if(form)for(const [key,value]of Object.entries(technicalParameters))if(form.elements[key])form.elements[key].value=value;
+  const labels={rsi:'RSI',macd:'MACD',sma:'SMA',ema20:'EMA',ema50:'EMA',ema100:'EMA',ema200:'EMA'};
+  for(const [key,name]of Object.entries(labels)){const el=$(`#${key}-signal`)?.previousElementSibling;if(el)el.lastChild.textContent=` ${key==='macd'?indicatorLabel('macd'):name+' ('+technicalParameters[key==='sma'?'sma':key]+')'}`;}
+}
+function saveIndicatorWorkspace(){
+  try{writeScopedLocal('setscope-indicator-parameters',technicalParameters);writeScopedLocal('setscope-indicator-display',[...chartIndicators]);}catch{}
+  syncIndicatorWorkspace();updateTradingViewChart();drawSignals(latestMarket?.indicatorHistory||latestMarket?.history||[],latestMarket?.levelsHistory||[],latestMarket?.history||[]);
 }
 function getAlertPref(symbol) { return alertPrefs[symbol] || { technical: true, above: '', below: '' }; }
 function renderAlertSettings() {
@@ -1995,8 +2055,14 @@ function setupUiEventWiring() {
     const key = button.dataset.indicator;
     if (chartIndicators.has(key)) chartIndicators.delete(key); else chartIndicators.add(key);
     button.classList.toggle('active', chartIndicators.has(key));
-    updateTradingViewChart();
+    saveIndicatorWorkspace();
   });
+  $('.indicator-workspace').addEventListener('click',event=>{const key=event.target.closest('[data-indicator]')?.dataset.indicator;if(!key)return;if(chartIndicators.has(key))chartIndicators.delete(key);else chartIndicators.add(key);saveIndicatorWorkspace();});
+  $('#indicator-preset').addEventListener('change',event=>{const preset=INDICATOR_PRESETS[event.target.value];if(!preset)return;chartIndicators.clear();preset.forEach(key=>chartIndicators.add(key));saveIndicatorWorkspace();});
+  $('#indicator-settings').addEventListener('submit',event=>{event.preventDefault();const data=Object.fromEntries(new FormData(event.currentTarget));if(Number(data.macdFast)>=Number(data.macdSlow)){$('#indicator-settings-error').textContent='MACD Fast ต้องน้อยกว่า Slow';return;}$('#indicator-settings-error').textContent='';technicalParameters=normalizeTechnicalParameters(data);saveIndicatorWorkspace();});
+  $('#indicator-defaults').addEventListener('click',()=>{technicalParameters={...TECHNICAL_DEFAULTS};chartIndicators.clear();INDICATOR_PRESETS.basic.forEach(key=>chartIndicators.add(key));$('#indicator-settings-error').textContent='';saveIndicatorWorkspace();});
+  drawings=new DrawingWorkspace({host:$('#stock-price-chart'),controls:$('#drawing-workspace'),read:readScopedLocal,write:writeScopedLocal,redraw:queueChartViewportRender,onModeChange:cancelChartGestures});
+  syncIndicatorWorkspace();
   $('#chart-fullscreen')?.addEventListener('click', toggleChartFullscreen);
   $('#chart-zoom-in')?.addEventListener('click', () => setChartZoom(.8));
   $('#chart-zoom-out')?.addEventListener('click', () => setChartZoom(1.25));

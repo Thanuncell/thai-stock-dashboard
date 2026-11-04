@@ -291,6 +291,28 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 #stock-price-chart{touch-action:pan-y;user-select:none}
 .chart-svg-scroll{overflow-x:auto;overflow-y:hidden;touch-action:pan-y;-webkit-overflow-scrolling:touch}
 .price-chart-svg{display:block;width:100%;min-width:100%;height:100%;font-family:var(--latin),var(--font)}
+.indicator-workspace,.drawing-workspace{margin:10px 0;padding:10px;border:1px solid var(--line);border-radius:7px;font-size:12px;min-width:0}
+.indicator-workspace summary,.technical-evidence summary{cursor:pointer;padding:7px 0;font-weight:600}
+.indicator-fields,.drawing-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:10px 0}
+.indicator-fields label,.drawing-fields label{display:grid;gap:4px;min-width:0}
+.indicator-workspace input,.indicator-workspace select,.drawing-fields input{width:100%;min-width:0;padding:7px;border:1px solid var(--line);border-radius:5px;background:var(--paper);color:inherit;font:inherit}
+.drawing-workspace button,.indicator-workspace button{padding:8px;min-height:36px;border:1px solid var(--line);border-radius:5px;background:var(--paper);color:inherit;cursor:pointer;margin:2px}
+.drawing-workspace button[aria-pressed="true"],.indicator-workspace button.active{outline:2px solid #517fe8;outline-offset:-2px}
+.drawing-workspace p,.indicator-workspace small{line-height:1.6;color:var(--muted)}
+#stock-price-chart.drawing-active{cursor:crosshair}
+.drawing-surface{fill:transparent;pointer-events:none}
+.drawing-active .drawing-surface{pointer-events:all;touch-action:none}
+.drawing-active .drawing-hit,.drawing-active .drawing-handle{touch-action:none}
+.drawing-line{stroke:#b37410;stroke-width:2;fill:none;pointer-events:none}
+.drawing-hit{stroke:transparent;stroke-width:18;pointer-events:stroke}
+.drawing-handle{stroke:#b37410;fill:var(--paper);stroke-width:2;cursor:move}
+.drawing.selected .drawing-line{stroke:#2674dd}.drawing-label{fill:var(--text);font-size:11px;pointer-events:none}
+.bb-chart-line,.rsi-chart-line,.atr-chart-line{fill:none;stroke-width:1.6;stroke:#8b62d7;pointer-events:none}
+.atr-chart-line{stroke:#bf7910}.bb-chart-line{stroke:#8b62d7;stroke-dasharray:5 3}
+.compact-reasons{padding-left:22px;line-height:1.7}.compact-reasons li{margin:8px 0}
+.technical-evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;max-height:320px;overflow:auto}
+.technical-evidence{font-size:12px}.own-chart-wrap:has(.rsi-panel),.own-chart-wrap:has(.atr-panel){height:auto;max-height:none}.own-chart-wrap:has(.rsi-panel) .price-chart-svg,.own-chart-wrap:has(.atr-panel) .price-chart-svg{height:auto}
+@media(max-width:470px){.indicator-fields,.drawing-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.drawing-workspace button{min-height:40px}.drawing-workspace{padding:6px}}
 .chart-grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}
 .chart-axis-text,.chart-label{fill:var(--muted);font-size:10px}
 .chart-label{font-size:10px;font-weight:600}
@@ -456,3 +478,7 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 @media(max-width:470px){.topbar .avatar{display:grid}.breadcrumb{min-width:0;overflow:hidden;text-overflow:ellipsis}.top-actions{flex-shrink:0}.profile-setting{align-items:flex-start}}
 
 .profile-page .logout-button{font:500 12px var(--font)}.profile-page .logout-button:after{content:none}
+
+/* Optional panels retain their own vertical space at every responsive breakpoint. */
+.chart-panel .own-chart-wrap:has(.oscillator-panel){height:auto;max-height:none}
+.chart-panel .own-chart-wrap:has(.oscillator-panel) .price-chart-svg{height:auto}

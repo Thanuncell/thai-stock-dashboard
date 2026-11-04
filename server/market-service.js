@@ -1,6 +1,7 @@
 'use strict';
 
 const { createMarketDataGuard } = require('./data-guard');
+const {temporalBars}=require('../lib/market-time');
 
 const PUBLIC_ERROR_CODES = new Set([
   'SOURCE_NO_DATA', 'SOURCE_DENIED', 'SOURCE_RATE_LIMITED', 'ACQUISITION_GAP', 'PARSER_MISMATCH',
@@ -119,7 +120,14 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
 
   function shapeChart(result, symbol, contextKey = 'default', providerSymbol) {
     const assessed = dataGuard.assess(result, symbol, { contextKey, providerSymbol });
-    if (assessed.value) return assessed.value;
+    if (assessed.value) {
+      const value=assessed.value,meta=result?.meta||{},interval=contextKey.match(/:(1m|5m|15m|1d)$/)?.[1]||'1d';
+      const end=!value.fallbackFromLastKnown&&Number(meta.currentTradingPeriod?.regular?.end)>0?Number(meta.currentTradingPeriod.regular.end)*1000:null;
+      const history=temporalBars(value.history,{interval,observedAt:value.receivedAt,regularEnd:end,timeZone:meta.exchangeTimezoneName});
+      return {...value,history,validatedHistory:history,provenance:{provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',adjustment:'provider-defined; no local adjustment',
+        interval,receivedAt:value.receivedAt,timestampKind:'bar-open',regularEnd:end,corporateActionCount:Object.keys(result?.events?.splits||{}).length,
+        dividendCount:Object.keys(result?.events?.dividends||{}).length,adjustedClosePresent:Array.isArray(result?.indicators?.adjclose?.[0]?.adjclose),historyReasons:value.historyReasons||[]}};
+    }
     const error = Error(`Data Guard ${symbol}: ${assessed.guardReasons.join(',') || 'UNAVAILABLE'}`);
     error.code = assessed.guardReasons[0] || 'DATA_GUARD_REJECTED';
     error.guardStatus = assessed.guardStatus;
@@ -212,6 +220,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
           rejectedBars: historyResult.rejectedBars,
           historyReasons: historyResult.historyReasons,
           historyStatus: historyResult.historyStatus,
+          provenance: historyResult.provenance,
           identityStatus: historyResult.identityStatus,
           quoteStatus: historyResult.quoteStatus,
           guardStatus: historyResult.guardStatus,
@@ -237,17 +246,22 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     const trustedTechnicalHistory = ['usable', 'usable_with_warnings'].includes(selected?.historyStatus);
     let levelsHistory = trustedTechnicalHistory ? history : [];
     let indicatorHistory = trustedTechnicalHistory ? history : [];
+    let indicatorProvenance=selected?.provenance||null;
+    let levelProvenance=selected?.provenance||null;
     if (trustedTechnicalHistory && history.length < 40) {
       const [fallbackRange, fallbackInterval] = LEVEL_FALLBACK_PERIODS[range] || LEVEL_FALLBACK_PERIODS['1M'];
       try {
         const fallback = shapeChart(await yahooChart(`${active}.BK`, fallbackRange, fallbackInterval), active, `chart:${fallbackRange}:${fallbackInterval}`);
         if (['usable', 'usable_with_warnings'].includes(fallback.historyStatus) && fallback.history.length > history.length) {
+          // Longer history may inform price levels, but technical indicators must stay
+          // on the selected chart interval: daily candles are not intraday candles.
           levelsHistory = fallback.history;
-          indicatorHistory = fallback.history;
+          levelProvenance=fallback.provenance;
+          if (fallbackInterval === interval) { indicatorHistory = fallback.history; indicatorProvenance=fallback.provenance; }
         }
       } catch (error) { errors.push(publicMarketError(error, 'ข้อมูลย้อนหลังสำหรับการวิเคราะห์')); }
     }
-    const fetchedAt = new Date().toISOString();
+    const fetchedAt = new Date(now()).toISOString();
     const latestProviderTime = [...stocks, index].filter(Boolean)
       .map(item => Number(item.time)).filter(Number.isFinite).reduce((latest, value) => Math.max(latest, value), 0);
     const partial = errors.length > 0;
@@ -265,6 +279,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       history,
       levelsHistory,
       indicatorHistory,
+      technicalMeta:{history:selected?.provenance||null,indicator:indicatorProvenance,levels:levelProvenance},
       fetchedAt,
       asOf: latestProviderTime ? new Date(latestProviderTime).toISOString() : fetchedAt,
       provider: 'Yahoo Finance',

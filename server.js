@@ -38,6 +38,7 @@ const TYPES = {
 };
 const PUBLIC_FILES = new Set([
   '/index.html', '/app.js', '/auth.js', '/theme-init.js', '/client/domain.mjs', '/lib/news-content.js',
+  '/client/technical.mjs', '/client/technical-chart.mjs', '/client/drawings.mjs', '/lib/market-time.js',
   '/style.css', '/analysis.css', '/about.html', '/privacy.html', '/terms.html', '/disclaimer.html'
 ]);
 

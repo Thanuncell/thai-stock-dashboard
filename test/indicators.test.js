@@ -9,6 +9,7 @@ let computeSmaSeries;
 let createRequestSequence;
 let findPriceLevels;
 let trustedMarketBars;
+let alignIndicatorSeries;
 
 test.before(async () => {
   ({
@@ -17,7 +18,8 @@ test.before(async () => {
     computeSmaSeries,
     createRequestSequence,
     findPriceLevels,
-    trustedMarketBars
+    trustedMarketBars,
+    alignIndicatorSeries
   } = await import('../client/domain.mjs'));
 });
 
@@ -46,6 +48,16 @@ test('a slower stale response cannot overwrite the newest request state', async 
 test('SMA and EMA preserve the current warm-up contract', () => {
   assert.deepEqual(computeSmaSeries([1, 2, 3, 4, 5], 3), [null, null, 2, 3, 4]);
   assert.deepEqual(computeEma([1, 2, 3, 4, 5], 3), [null, null, 2, 3, 4]);
+});
+
+test('indicator alignment never borrows a daily close for an earlier intraday candle', () => {
+  const daily = Date.UTC(2026, 10, 3, 9);
+  const intraday = Date.UTC(2026, 10, 3, 3);
+  const source = [{ time: daily }, { time: daily + 86_400_000 }];
+  const display = [{ time: intraday }, { time: daily }, { time: daily + 86_400_000 }];
+  assert.deepEqual(alignIndicatorSeries(source, [101, 102], display), [null, 101, 102]);
+  assert.deepEqual(alignIndicatorSeries([{ time: intraday }], [42], [{ time: intraday }]), [42]);
+  assert.deepEqual(alignIndicatorSeries([], [], [{ time: intraday }]), [null]);
 });
 
 test('technical analysis keeps insufficient history unavailable', () => {
