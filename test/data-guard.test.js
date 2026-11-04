@@ -104,6 +104,36 @@ test('majority-valid history remains usable with warnings and retains rejected-b
   assert.deepEqual(result.value.historyReasons, ['INVALID_NUMERIC']);
 });
 
+for (const field of ['open', 'high', 'low', 'close']) test(`historical null ${field} is rejected without filling a PTT 1W bar or mislabelling quote metadata`, () => {
+  const quote = { open: [35, 35.1, 35.2], high: [35.5, 35.6, 35.7], low: [34.75, 34.9, 35], close: [35.25, 35.3, 35.4], volume: [1000, null, 1200] };
+  quote[field][1] = null;
+  const raw = yahooResult({ timestamp: [1_760_000_000, 1_760_086_400, 1_760_172_800], indicators: { quote: [quote] } });
+  const before = JSON.stringify(raw);
+  const result = createMarketDataGuard({ now: () => NOW }).assess(raw, 'PTT', { contextKey: 'chart:5d:15m' });
+  assert.deepEqual(result.guardReasons, []);
+  assert.deepEqual(result.value.historyReasons, ['INVALID_NUMERIC']);
+  assert.equal(result.value.historyStatus, 'usable_with_warnings');
+  assert.equal(result.value.rejectedBars, 1);
+  assert.deepEqual(result.value.history.map(bar => bar.time), [1_760_000_000_000, 1_760_172_800_000]);
+  assert.equal(JSON.stringify(raw), before);
+});
+
+test('missing historical volume remains null while a genuine zero remains zero', () => {
+  const raw = yahooResult(); raw.indicators.quote[0].volume = [null, 0];
+  const result = createMarketDataGuard({ now: () => NOW }).assess(raw, 'PTT');
+  assert.deepEqual(result.value.history.map(bar => bar.volume), [null, 0]);
+  assert.deepEqual(result.value.historyReasons, []);
+});
+
+test('invalid quote day-high is a quote warning and is never confused with invalid historical bars', () => {
+  const result = createMarketDataGuard({ now: () => NOW }).assess(yahooResult({ meta: { regularMarketDayHigh: 'not-a-number' } }), 'PTT');
+  assert.ok(result.guardReasons.includes('INVALID_NUMERIC'));
+  assert.equal(result.value.high, null);
+  assert.deepEqual(result.value.historyReasons, []);
+  assert.equal(result.value.historyStatus, 'usable');
+  assert.equal(result.value.rejectedBars, 0);
+});
+
 test('an unconfirmed historical price spike remains usable with warnings', () => {
   const guard = createMarketDataGuard({ now: () => NOW, maxPriceMoveRatio: 0.35 });
   const result = guard.assess(yahooResult({

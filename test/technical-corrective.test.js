@@ -1,5 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 let technical,DrawingWorkspace;
 test.before(async()=>{technical=await import('../client/technical.mjs');({DrawingWorkspace}=await import('../client/drawings.mjs'));});
 const at=Date.UTC(2026,9,20,3),step=60000;
@@ -8,6 +9,63 @@ function roleRows(direction,volume=1000){return Array.from({length:39},(_,i)=>{
  return {time:at+i*step,availableAt:at+(i+1)*step,complete:true,open:close,close,high:i===25?110:close+2,low:i===25?90:close-2,volume:i>=35?volume:1000};
 });}
 const levels=(rows,last=rows.at(-1).close,asOf=rows.at(-1).availableAt)=>technical.priceStructure(rows,last,{asOf,candleTime:rows.at(-1).time,interval:'1m',atr:2});
+
+function renderSignalEvidence({warnings=[],rows=260,unconfirmed=false}={}){
+ const history=Array.from({length:rows},(_,i)=>({time:at+i*step,open:100+i*.1,high:102+i*.1,low:99+i*.1,close:101+i*.1,volume:1000+i}));
+ const snapshot=technical.createTechnicalSnapshot({symbol:'PTT',timeframe:'1D',history,indicatorHistory:history,levelsHistory:history,
+  fetchedAt:unconfirmed?null:new Date(at+rows*step).toISOString(),technicalMeta:{indicator:{interval:'1m',receivedAt:unconfirmed?null:new Date(at+rows*step).toISOString(),historyReasons:warnings}}});
+ const before=JSON.stringify(snapshot),nodes=new Map();
+ const node=selector=>{if(!nodes.has(selector))nodes.set(selector,{dataset:{},style:{},textContent:'',innerHTML:''});return nodes.get(selector);};
+ const source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
+ const renderer=source.slice(source.indexOf('function technicalTimeText('),source.indexOf('\nfunction indicatorLabel('));
+ const escapeHtml=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const context=vm.createContext({technicalSnapshot:()=>snapshot,createTechnicalSnapshot:technical.createTechnicalSnapshot,
+  document:{getElementById:node},$:node,setText:(key,value)=>{node(key).textContent=value;},setTechnicalPanelState:()=>{},
+  renderPriceLevels:()=>{},updateSignalDonut:()=>{},indicatorLabel:key=>key,escapeHtml,number:String,currentRange:'1D',latestMarket:{history},history});
+ vm.runInContext(renderer+'\ndrawSignals(history);',context);
+ return {snapshot,before,nodes,html:node('#technical-reasons').innerHTML};
+}
+
+test('signal evidence renders three readable reason groups and indicator details without serialized snapshot JSON',()=>{
+ const {html,snapshot}=renderSignalEvidence();
+ assert.doesNotMatch(html,/<pre\b|"(?:ruleId|candleTime|priceBasis)"\s*:/i);
+ assert.match(html,/<ol class="compact-reasons">/);
+ for(const reason of snapshot.summary.reasons)assert.ok(html.includes(reason.text),'all three computed reasons remain readable');
+ assert.equal(snapshot.summary.reasons.length,3);
+ assert.match(html,/<details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว<\/summary>/);
+ for(const key of Object.keys(snapshot.availability))assert.ok(html.includes(key+': พร้อม'),'indicator availability remains');
+ for(const reason of snapshot.analysis.reasons)assert.ok(html.includes(reason.key+' · '+reason.value),'individual indicator values remain');
+});
+
+test('rendering signal evidence preserves the complete frozen calculation snapshot and all indicator series',()=>{
+ const {snapshot,before,nodes}=renderSignalEvidence();
+ assert.equal(JSON.stringify(snapshot),before);
+ assert.equal(nodes.get('.analysis-panel').dataset.snapshotId,snapshot.id);
+ assert.ok(Object.isFrozen(snapshot));assert.ok(Object.isFrozen(snapshot.summary.reasons));
+ for(const key of ['rsi','macd','sma20','ema20','ema50','ema100','ema200','bb','atr'])assert.ok(snapshot.series[key]);
+ assert.ok(snapshot.quality);assert.ok(snapshot.levels);assert.ok(snapshot.crosses);assert.ok(snapshot.priceBasis);
+});
+
+test('evidence UI cleanup keeps the data quality warning and its internal INVALID_NUMERIC reason',()=>{
+ const {snapshot,before,nodes,html}=renderSignalEvidence({warnings:['INVALID_NUMERIC']});
+ assert.deepEqual(snapshot.quality.warnings,['INVALID_NUMERIC']);
+ assert.equal(JSON.stringify(snapshot),before);
+ assert.match(nodes.get('#analysis-note').textContent,/มีข้อควรตรวจสอบข้อมูล/);
+ assert.doesNotMatch(html,/<pre\b/i);
+});
+
+test('insufficient technical history remains unavailable without fabricated evidence or indicator values',()=>{
+ const {snapshot,before,html,nodes}=renderSignalEvidence({rows:12});
+ assert.equal(snapshot.analysis,null);assert.equal(JSON.stringify(snapshot),before);
+ assert.match(html,/ข้อมูลยังไม่พอ/);assert.doesNotMatch(html,/<pre\b|technical-evidence/);
+ assert.equal(nodes.get('#rsi-value').textContent,'—');
+});
+test('unconfirmed history shows waiting for close rather than a misleading shortage or fabricated signal',()=>{
+ const {snapshot,nodes,html}=renderSignalEvidence({rows:40,unconfirmed:true});assert.equal(snapshot.summary.status,'waiting-close');assert.equal(nodes.get('#overall-signal').textContent,'รอแท่งปิด');assert.match(html,/ยังไม่มีแท่งที่ยืนยันแล้ว/);assert.match(nodes.get('#technical-plan').textContent,/รอหลักฐานว่าแท่งปิด/);assert.equal(nodes.get('#rsi-value').textContent,'—');
+});
+test('critical quality with insufficient history remains data review in the visible renderer',()=>{
+ const {nodes,html}=renderSignalEvidence({rows:12,warnings:['HISTORICAL_ANOMALY']});assert.equal(nodes.get('#overall-signal').textContent,'ข้อมูลต้องตรวจสอบ');assert.match(html,/ข้อมูลต้องตรวจสอบ/);assert.equal(nodes.get('rsi-signal').textContent,'ข้อมูลต้องตรวจสอบ');
+});
 for(const [direction,source,type,value]of [[1,'Swing high','support',110],[-1,'Swing low','resistance',90]]){
  test(`${source} cannot change into ${type} on an unconfirmed/zero-volume breakout`,()=>{
   const rows=roleRows(direction,0),s=levels(rows);assert.ok(s.zones.some(z=>z.value===value&&z.state==='breakout-pending-volume'));

@@ -64,7 +64,7 @@ test('snapshot is immutable and identity-bound; mismatched cadence, anomalies an
  assert.equal(s.summary.reasons.length,3);assert.ok(Math.abs(s.summary.score)<=3,'MA votes count as one evidence group');
  assert.ok(s.summary.reasons.every(r=>r.symbol===s.symbol&&r.candleTime===s.candleTime&&r.version===s.version));
  for(const extra of [{guardReasons:['HISTORICAL_ANOMALY']},{technicalMeta:{indicator:{interval:'1m',corporateActionCount:1}}},{dataState:'stale'},{technicalMeta:{indicator:{interval:'1d'}}}]){
-  const value=snapshot(rows,extra);assert.equal(value.summary.actionable,false);assert.equal(value.summary.overall,'รอยืนยัน');
+  const value=snapshot(rows,extra);assert.equal(value.summary.actionable,false);assert.equal(value.summary.overall,'ข้อมูลต้องตรวจสอบ');
  }
  assert.equal(snapshot(rows,{technicalMeta:{indicator:{interval:'1d'}}}).rows.length,0);
 });

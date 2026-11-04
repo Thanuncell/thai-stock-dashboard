@@ -18,7 +18,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
   for(const width of (process.env.SETSCOPE_TECHNICAL_WIDTHS||'320,360,390,430,1366').split(',').map(Number))for(const theme of ['light','dark']){
    phase=`${width}-${theme}-setup`;
    const context=await browser.newContext({viewport:{width,height:900},isMobile:width<790,hasTouch:width<790});
-   const state={getOwners:[],putOwners:[]},errors=[],marketCalls=[];let short=false,pending=null;
+   const state={getOwners:[],putOwners:[]},errors=[],marketCalls=[];let short=false,pending=null,dailyState='closed',qualityWarning=false;
    await context.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url());
     if(url.origin!==base&&url.origin!=='https://isolation-test.supabase.co')return route.abort();
@@ -28,8 +28,10 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      if(pending&&pending.range===range){const held=pending;pending=null;held.started();await held.wait;}
      const interval=range==='1D'?'1m':range==='1W'?'15m':'1d',step=interval==='1m'?60000:interval==='15m'?900000:86400000;
      const start=Date.UTC(2025,0,1,3,0,17,123),rows=Array.from({length:short?12:260},(_,i)=>({time:start+i*step,open:100+Math.sin(i*.31)*4+i*.03,close:100.4+Math.sin(i*.31)*4+i*.03,high:103+Math.sin(i*.31)*4+i*.03,low:98+Math.sin(i*.31)*4+i*.03,volume:i===40?0:1000+i%11*100}));
-     const end=rows.at(-1).time+(interval==='1d'?24000000:step),meta={interval,receivedAt:new Date(end).toISOString(),regularEnd:interval==='1d'?end:null,priceBasis:'provider-quote-ohlc',adjustment:'fixture-unadjusted'};
-     return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({stocks:[{symbol,last:rows.at(-1).close,prior:rows.at(-2).close,time:end,history:rows,guardStatus:'accepted',dataState:'delayed'}],indices:[],history:rows,indicatorHistory:rows,levelsHistory:rows,fetchedAt:meta.receivedAt,technicalMeta:{history:meta,indicator:meta,levels:meta},dataState:'delayed',errors:[]})});
+     const end=rows.at(-1).time+(interval==='1d'?24000000:step),observed=interval==='1d'&&['during','draft-spike'].includes(dailyState)?rows.at(-1).time+3600000:end;
+     if(interval==='1d'&&dailyState==='draft-spike')Object.assign(rows.at(-1),{open:999,high:1001,low:998,close:1000,volume:999999});
+     const meta={interval,receivedAt:dailyState==='unknown-receipt'?null:new Date(observed).toISOString(),regularStart:interval==='1d'?rows.at(-1).time:null,regularEnd:interval==='1d'?(dailyState==='missing'?null:dailyState==='mismatch'?end+86400000:end):null,timeZone:'Asia/Bangkok',priceBasis:'provider-quote-ohlc',adjustment:'fixture-unadjusted'};
+     return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({stocks:[{symbol,last:rows.at(-1).close,prior:rows.at(-2).close,time:end,history:rows,guardStatus:'accepted',dataState:'delayed'}],indices:[],history:rows,indicatorHistory:rows,levelsHistory:rows,fetchedAt:meta.receivedAt,technicalMeta:{history:meta,indicator:meta,levels:meta},dataState:qualityWarning?'stale':'delayed',errors:[]})});
     }
     return mockRequest(route,base,state);
    });
@@ -38,6 +40,18 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await page.goto(base+'/?symbol=PTT&range=1D#chart');await page.waitForSelector('.price-candle');
    const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b;});check(await page.locator('.compact-reasons li').count(),3);};
    await parity();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal page overflow');
+   const evidence=page.locator('#technical-reasons .technical-evidence');
+   const evidenceSnapshot=await page.locator('.analysis-panel').getAttribute('data-snapshot-id');
+   check(await page.locator('#technical-reasons pre').count(),0,'raw evidence JSON is absent from the render path');
+   check(/"(?:ruleId|candleTime|priceBasis)"\s*:/.test(await page.locator('#technical-reasons').textContent()),false,'no serialized snapshot fields');
+   check(await evidence.evaluate(el=>el.open),false,'indicator details start collapsed');
+   await evidence.locator('summary').click();
+   check(await evidence.evaluate(el=>el.open),true,'indicator details expand');
+   check(await evidence.locator(':scope > ul > li').count(),9,'all indicator availability details remain');
+   check(await evidence.locator('.reason-group li strong').count()>0,true,'readable individual indicator values remain');
+   await evidence.locator('summary').click();
+   check(await evidence.evaluate(el=>el.open),false,'indicator details collapse');
+   check(await page.locator('.analysis-panel').getAttribute('data-snapshot-id'),evidenceSnapshot,'expansion cannot change the calculation snapshot');
    const id=await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),count=marketCalls.length;
    phase=`${width}-${theme}-indicators`;await page.locator('.indicator-workspace summary').click();
    for(const key of ['rsi','atr','bb'])await page.locator(`[data-indicator="${key}"]`).click();
@@ -87,6 +101,29 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await page.locator('[data-draw-reset]').click();await pause(page);check(await page.locator('[data-draw-list] button').count(),0);
    phase=`${width}-${theme}-range-short`;
    for(const range of ['1W','1M','3M','1Y','1D']){await page.locator(`[data-range="${range}"]`).click();await page.waitForFunction(range=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith(range),range);await parity();check((await page.locator('#analysis-note').textContent()).includes('ยืนยันแล้ว'),true);}
+   phase=`${width}-${theme}-daily-confirmation`;
+   for(const range of ['1M','3M','1Y']){
+    await page.locator(`[data-range="${range}"]`).click();await page.waitForFunction(range=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith(range),range);
+    let priorReasons;
+    for(const mode of ['closed','during','draft-spike','missing','mismatch']){
+     dailyState=mode;
+     const done=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await done;
+     const expected=Date.UTC(2025,0,1,3,0,17,123)+(mode==='closed'?259:258)*86400000;
+     await page.waitForFunction(time=>document.querySelector('.analysis-panel').dataset.signalCandleTime===String(time),expected);await pause(page);await parity();
+     check(await page.locator('#stock-price-chart').getAttribute('data-signal-candle-time'),String(expected),'chart and summary use the same signal reference');
+     check(await page.locator('#stock-price-chart').getAttribute('data-latest-candle-time'),String(Date.UTC(2025,0,1,3,0,17,123)+259*86400000),'raw chart candle time is unchanged');
+     check(['ซื้อ','ขาย','เป็นกลาง'].includes(await page.locator('#overall-signal').textContent()),true,'available confirmed history does not remain waiting');
+     check((await page.locator('#analysis-note').textContent()).includes(mode==='closed'?'แท่งยืนยันแล้ว':'ใช้แท่งปิดก่อนหน้า'),true);
+     check((await page.locator('#chart-updated').textContent()).includes(['during','draft-spike'].includes(mode)?'11:00':'16:40'),true,'received time is not daily open time');
+     check((await page.locator('#chart-updated').getAttribute('title')).includes('แท่งราคาล่าสุดเปิด'),true);
+     const reasons=await page.locator('.compact-reasons').textContent();if(mode==='during')priorReasons=reasons;if(mode==='draft-spike')check(reasons,priorReasons,'draft spike cannot change confirmed explanations');
+     check(await page.locator('#technical-reasons pre').count(),0,'daily evidence never renders JSON');
+    }
+    qualityWarning=true;const warningDone=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await warningDone;await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลต้องตรวจสอบ');await parity();check(await page.locator('#buy-count').textContent(),'—','critical quality cannot show actionable votes');check(await page.locator('#analysis-note').isVisible(),true);check((await page.locator('#analysis-note').textContent()).startsWith('ข้อมูลต้องตรวจสอบ'),true);qualityWarning=false;dailyState='closed';
+   }
+   short=true;dailyState='missing';const shortDone=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await shortDone;await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลไม่เพียงพอ');check(await page.locator('#rsi-value').textContent(),'—');check(await page.locator('#analysis-note').isVisible(),true);check((await page.locator('#analysis-note').textContent()).startsWith('ข้อมูลไม่เพียงพอ'),true);
+   short=false;dailyState='unknown-receipt';const unconfirmedDone=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await unconfirmedDone;await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='รอแท่งปิด');check(await page.locator('#analysis-note').isVisible(),true);check((await page.locator('#analysis-note').textContent()).startsWith('รอแท่งปิด'),true);check((await page.locator('#chart-updated').textContent()).includes('รับข้อมูล Yahoo Finance: —'),true);check(await page.locator('#stock-price-chart').getAttribute('data-signal-candle-time'),'');
+   short=false;dailyState='closed';await page.locator('[data-range="1D"]').click();await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith('1D'));await parity();
    phase=`${width}-${theme}-race`;
    let release,started;const began=new Promise(resolve=>{started=resolve;});pending={range:'1W',started,wait:new Promise(resolve=>{release=resolve;})};
    await page.locator('[data-range="1W"]').click();await began;await page.locator('[data-range="1M"]').click();await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith('1M'));
@@ -94,7 +131,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    check((await page.locator('.price-chart-svg').getAttribute('aria-label')).endsWith('1M'),true,'late timeframe response cannot replace newer data');await parity();
    for(const symbol of ['CPALL','PTT']){await page.locator('#stock-search').fill(symbol);await page.locator(`.suggestion-item[data-symbol=${symbol}]`).waitFor();await page.locator(`.suggestion-item[data-symbol=${symbol}]`).click();await page.waitForFunction(symbol=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').includes(symbol),symbol);await parity();}
    await page.locator('[data-range="1D"]').click();await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith('1D'));await parity();
-   short=true;await page.locator('#refresh-chart').click();await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='รอข้อมูล');
+   short=true;await page.locator('#refresh-chart').click();await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลไม่เพียงพอ');
    check(await page.locator('.price-candle').count(),12,'insufficient history keeps real candles visible');check(await page.locator('#rsi-value').textContent(),'—');
    check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);check(errors,[],'no browser errors');
    if(process.env.SETSCOPE_TECHNICAL_SCREENSHOT_DIR){short=false;await page.locator('#refresh-chart').click();await page.waitForSelector('.compact-reasons');await page.locator('.indicator-workspace summary').click();await page.selectOption('#indicator-preset','momentum');await page.locator('.rsi-panel').waitFor();await page.locator('#chart-section').screenshot({path:path.join(process.env.SETSCOPE_TECHNICAL_SCREENSHOT_DIR,`technical-${width}-${theme}.png`)});}
