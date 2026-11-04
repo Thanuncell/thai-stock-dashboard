@@ -123,9 +123,11 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     if (assessed.value) {
       const value=assessed.value,meta=result?.meta||{},interval=contextKey.match(/:(1m|5m|15m|1d)$/)?.[1]||'1d';
       const end=!value.fallbackFromLastKnown&&Number(meta.currentTradingPeriod?.regular?.end)>0?Number(meta.currentTradingPeriod.regular.end)*1000:null;
-      const history=temporalBars(value.history,{interval,observedAt:value.receivedAt,regularEnd:end,timeZone:meta.exchangeTimezoneName});
+      const start=!value.fallbackFromLastKnown&&Number(meta.currentTradingPeriod?.regular?.start)>0?Number(meta.currentTradingPeriod.regular.start)*1000:null;
+      const timeZone=meta.exchangeTimezoneName||'Asia/Bangkok';
+      const history=temporalBars(value.history,{interval,observedAt:value.receivedAt,regularStart:start,regularEnd:end,timeZone});
       return {...value,history,validatedHistory:history,provenance:{provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',adjustment:'provider-defined; no local adjustment',
-        interval,receivedAt:value.receivedAt,timestampKind:'bar-open',regularEnd:end,corporateActionCount:Object.keys(result?.events?.splits||{}).length,
+        interval,receivedAt:value.receivedAt,timestampKind:'bar-open',regularStart:start,regularEnd:end,timeZone,corporateActionCount:Object.keys(result?.events?.splits||{}).length,
         dividendCount:Object.keys(result?.events?.dividends||{}).length,adjustedClosePresent:Array.isArray(result?.indicators?.adjclose?.[0]?.adjclose),historyReasons:value.historyReasons||[]}};
     }
     const error = Error(`Data Guard ${symbol}: ${assessed.guardReasons.join(',') || 'UNAVAILABLE'}`);

@@ -763,12 +763,11 @@ function updateTradingViewChart() {
     return;
   }
   const activeQuote = latestMarket?.stocks?.find(item => item.symbol === activeSymbol);
-  const chartBarTime = latestMarket?.history?.at(-1)?.time;
-  const providerTime = chartBarTime ? new Date(chartBarTime).toISOString() : activeQuote?.time ? new Date(activeQuote.time).toISOString() : latestMarket?.asOf;
+  const receivedAt = latestMarket?.technicalMeta?.history?.receivedAt || latestMarket?.fetchedAt;
   const guardedState = ['stale', 'suspect', 'quarantined', 'unavailable'].includes(latestMarket?.dataState)
     ? latestMarket.dataState
     : activeQuote?.dataState || latestMarket?.dataState;
-  renderPriceChart(latestMarket?.history || [], providerTime, latestMarket?.levelsHistory || [], latestMarket?.indicatorHistory || [], guardedState);
+  renderPriceChart(latestMarket?.history || [], receivedAt, latestMarket?.levelsHistory || [], latestMarket?.indicatorHistory || [], guardedState);
 }
 
 function setChartLoadState(state, message = '') {
@@ -783,7 +782,7 @@ function setTechnicalPanelState(state) {
   panel.classList.toggle('no-chart-data', state === 'unavailable' || state === 'error' || state === 'loading');
 }
 
-function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indicatorBars = bars, dataState = 'delayed') {
+function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicatorBars = bars, dataState = 'delayed') {
   const host = $('#stock-price-chart');
   if (!host) return;
   const allRows = trustedMarketBars(bars).filter(bar=>[bar.open,bar.high,bar.low,bar.close].every(value=>toFiniteNumber(value)!==null));
@@ -794,11 +793,14 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
     const message = chartLoadMessage || (isUnavailable ? 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้' : isError ? 'โหลดข้อมูลไม่สำเร็จ' : 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
     host.innerHTML = `<div class="chart-empty chart-empty-${escapeHtml(chartLoadState)}"><span>${escapeHtml(message)}</span>${isError ? '<button type="button" data-chart-retry>ลองใหม่</button>' : ''}</div>`;
     host.closest('.own-chart-wrap')?.classList.remove('has-macd');
-    setText('#chart-updated', 'อัปเดตล่าสุด: —');
+    setText('#chart-updated', 'รับข้อมูล Yahoo Finance: —');
     return;
   }
   const snapshot=technicalSnapshot(),calculationRows=snapshot.rows,analysis=snapshot.analysis;
   host.dataset.snapshotId=snapshot.id;
+  host.dataset.signalCandleTime=String(snapshot.candleTime??'');
+  host.dataset.latestCandleTime=String(allRows.at(-1)?.time??'');
+  host.dataset.signalStatus=snapshot.summary.status;
   drawings?.bind(`${activeSymbol}:${currentRange}`);
   const hostWidth = Math.max(320, Math.floor(host.clientWidth || host.parentElement?.clientWidth || 640));
   const viewportKey = `${activeSymbol}:${currentRange}`;
@@ -885,10 +887,10 @@ function renderPriceChart(bars = [], providerTime = '', levelBars = bars, indica
     const label = Number.isNaN(+date) ? '' : (currentRange === '1D' ? chartIntradayFormatter : chartDateFormatter).format(date);
     return `<text class="chart-axis-text" x="${x(index)}" y="${height-10}" text-anchor="middle">${escapeHtml(label)}</text>`;
   }).join('');
-  const providerDate = providerTime ? new Date(providerTime) : null;
-  const updated = providerDate && !Number.isNaN(+providerDate) ? chartIntradayFormatter.format(providerDate) : '—';
   const stateText = dataState === 'stale' ? ' · ข้อมูลเก่า' : dataState === 'suspect' || dataState === 'quarantined' ? ' · ข้อมูลต้องสงสัย' : '';
-  setText('#chart-updated', `อัปเดตล่าสุด: ${updated} น. (เวลาไทย)${stateText}`);
+  const receipt=snapshot.receivedAt??(typeof receivedAt==='number'?receivedAt:Date.parse(receivedAt));
+  setText('#chart-updated', `รับข้อมูล Yahoo Finance: ${technicalTimeText(receipt)} (เวลาไทย)${stateText}`);
+  $('#chart-updated').title=`แท่งราคาล่าสุดเปิด ${technicalTimeText(allRows.at(-1)?.time)} · ดูแท่งอ้างอิงสัญญาณที่สรุปด้านล่าง`;
   host.closest('.own-chart-wrap')?.classList.toggle('has-macd', showMacd);
   host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" style="width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
 }
@@ -1199,23 +1201,35 @@ function renderPriceLevels(bars, last, calculatedLevels = null) {
   return levels;
 }
 
+function technicalTimeText(value) {
+  return typeof value==='number'&&Number.isFinite(value)&&value>0
+    ? new Intl.DateTimeFormat('th-TH',{timeZone:'Asia/Bangkok',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '—';
+}
+function technicalReferenceNote(snapshot) {
+  const ref=snapshot.signalReference;
+  const reference=ref?`สัญญาณจากแท่งเปิด ${technicalTimeText(ref.barOpenTime)} · ${ref.barCloseTime?'ปิดแท่ง':'ยืนยันได้เมื่อ'} ${technicalTimeText(ref.availableAt)} (เวลาไทย) · ${ref.selection==='previous-confirmed'?'ใช้แท่งปิดก่อนหน้า; แท่งล่าสุดยังไม่ยืนยัน':'แท่งยืนยันแล้ว'}`:'ยังไม่มีแท่งที่ยืนยันได้';
+  return `${snapshot.summary.overall} · ${reference} · ใช้ ${snapshot.signalRows.length} แท่งยืนยัน${snapshot.summary.status==='insufficient'?` (ต้องมีอย่างน้อย ${snapshot.summary.requiredBars})`:''}${snapshot.quality.warnings.length?' · มีข้อควรตรวจสอบข้อมูล':''} · ช่วง ${snapshot.timeframe} · นับค่าเฉลี่ยเป็นหลักฐานกลุ่มเดียว`;
+}
 function drawSignals(bars, levelBars = bars, displayBars = bars) {
   const snapshot=bars.length?technicalSnapshot():createTechnicalSnapshot();
   const analysis = snapshot.analysis;
+  const blockedPlan=snapshot.summary.status==='data-review'?'ตรวจสอบคุณภาพข้อมูลก่อนใช้สัญญาณ':snapshot.summary.status==='insufficient'?'รอ History ที่ยืนยันแล้วให้ครบ Warm-up ก่อนสรุปสัญญาณ':'รอหลักฐานว่าแท่งปิดแล้วก่อนสรุปสัญญาณ';
   $('.analysis-panel').dataset.snapshotId=snapshot.id;
+  $('.analysis-panel').dataset.signalCandleTime=String(snapshot.candleTime??'');
+  $('.analysis-panel').dataset.signalStatus=snapshot.summary.status;
   if (!analysis) {
     const priceBars = (levelBars || bars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0);
     renderPriceLevels([], snapshot.rows.at(-1)?.close, snapshot.levels);
     setTechnicalPanelState(priceBars.length ? 'insufficient' : chartLoadState);
-    setText('#analysis-note', `ได้รับข้อมูล ${(bars || []).length} จุด ต้องมีอย่างน้อย 30 แท่งเพื่อสรุปสัญญาณ`);
-    $('#technical-reasons').innerHTML = '<p class="reason-empty">ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยให้ครบ</p>';
-    setText('#technical-plan', 'รอข้อมูลเพิ่มก่อนสรุปเงื่อนไขที่ควรจับตา');
+    setText('#analysis-note', technicalReferenceNote(snapshot));
+    $('#technical-reasons').innerHTML = `<p class="reason-empty">${snapshot.summary.status==='waiting-close'?'ยังไม่มีแท่งที่ยืนยันแล้วให้คำนวณสัญญาณ':snapshot.summary.status==='data-review'?'ข้อมูลต้องตรวจสอบก่อนคำนวณสัญญาณ':'ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยจากแท่งยืนยันให้ครบ'}</p>`;
+    setText('#technical-plan', blockedPlan);
     ['rsi-signal', 'macd-signal', 'sma-signal', 'ema20-signal', 'ema50-signal', 'ema100-signal', 'ema200-signal'].forEach(id => {
       const el = document.getElementById(id);
-      if (el) { el.textContent = 'ข้อมูลไม่พอ'; el.className = 'pill neutral-pill'; }
+      if (el) { el.textContent = snapshot.summary.overall; el.className = 'pill neutral-pill'; }
     });
     ['#buy-count', '#neutral-count', '#sell-count'].forEach(id => setText(id, '—'));
-    ['#overall-signal', '.signal-score strong'].forEach(id => setText(id, 'รอข้อมูล'));
+    ['#overall-signal', '.signal-score strong'].forEach(id => setText(id, snapshot.summary.overall));
     updateSignalDonut(0, 0, 0, 0);
     setText('#rsi-value', '—');
     if ($('.rsi-track i')) $('.rsi-track i').style.left = '50%';
@@ -1228,12 +1242,12 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     if (!el) return;
     const value = analysis.signals[key];
     const requiredBars = { ema20: 20, ema50: 50, ema100: 100, ema200: 200 }[key];
-    el.textContent = value || (requiredBars ? `ข้อมูลไม่ครบ (${analysis.values.length}/${requiredBars})` : 'รอข้อมูล');
-    el.className = `pill ${value === 'ซื้อ' ? 'buy-pill' : value === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
+    el.textContent = !snapshot.summary.actionable?snapshot.summary.overall:value || (requiredBars ? `ข้อมูลไม่ครบ (${analysis.values.length}/${requiredBars})` : 'รอข้อมูล');
+    el.className = `pill ${!snapshot.summary.actionable?'neutral-pill':value === 'ซื้อ' ? 'buy-pill' : value === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
   });
   const votes=Object.values(snapshot.summary.groups),buy=votes.filter(v=>v>0).length,sell=votes.filter(v=>v<0).length,hold=votes.length-buy-sell;
-  setText('#buy-count', String(buy)); setText('#sell-count', String(sell)); setText('#neutral-count', String(hold));
-  updateSignalDonut(buy, hold, sell, votes.length);
+  setText('#buy-count', snapshot.summary.actionable?String(buy):'—'); setText('#sell-count', snapshot.summary.actionable?String(sell):'—'); setText('#neutral-count', snapshot.summary.actionable?String(hold):'—');
+  updateSignalDonut(...(snapshot.summary.actionable?[buy,hold,sell,votes.length]:[0,0,0,0]));
   setText('#overall-signal', snapshot.summary.overall); setText('.signal-score strong', snapshot.summary.overall);
   setText('#rsi-value', analysis.rsi===null?'—':analysis.rsi.toFixed(1));
   const rsiBar = $('.rsi-track i');
@@ -1243,21 +1257,16 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
   const neutral = analysis.reasons.filter(reason => reason.signal === 'เป็นกลาง');
   const group = (title, className, items) => `<div class="reason-group ${className}"><b>${title} (${items.length})</b>${items.length ? `<ul>${items.map(item => `<li><strong>${escapeHtml(item.key)} · ${escapeHtml(item.value)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join('')}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
   const availability=Object.entries(snapshot.availability).map(([key,value])=>`<li>${escapeHtml(indicatorLabel(key))}: ${value.state==='available'?'พร้อม':`ข้อมูลไม่ครบ ${value.bars}/${value.required} แท่ง`}</li>`).join('');
-  const evidence={symbol:snapshot.symbol,timeframe:snapshot.timeframe,candleTime:snapshot.candleTime,confirmation:snapshot.confirmation,quality:snapshot.quality,priceBasis:snapshot.priceBasis,adjustment:snapshot.adjustment,rules:snapshot.summary.reasons,crosses:snapshot.crosses.slice(-6),levels:snapshot.levels.supportDetails.concat(snapshot.levels.resistanceDetails)};
-  $('#technical-reasons').innerHTML = `<ol class="compact-reasons">${snapshot.summary.reasons.map(r=>`<li>${escapeHtml(r.text)}</li>`).join('')}</ol><details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว</summary><ul>${availability}</ul>${group('แรงหนุนฝั่งบวก', 'positive', supportive)+group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing)+(neutral.length?group('ยังไม่ชี้ทิศทาง','neutral',neutral):'')}<pre>${escapeHtml(JSON.stringify(evidence,null,2))}</pre></details>`;
+  $('#technical-reasons').innerHTML = `<ol class="compact-reasons">${snapshot.summary.reasons.map(r=>`<li>${escapeHtml(r.text)}</li>`).join('')}</ol><details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว</summary><ul>${availability}</ul>${group('แรงหนุนฝั่งบวก', 'positive', supportive)+group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing)+(neutral.length?group('ยังไม่ชี้ทิศทาง','neutral',neutral):'')}</details>`;
   renderPriceLevels(levelBars || bars || [], analysis.last, analysis.levels);
   const support1 = analysis.levels.supports[0], resistance1 = analysis.levels.resistances[0];
-  const plan = !snapshot.summary.actionable ? 'รอแท่งปิดและข้อมูลที่ยืนยันได้ก่อนสรุป · ค่าบนกราฟอาจยังเปลี่ยนระหว่างแท่ง' : snapshot.summary.overall === 'ซื้อ'
+  const plan = !snapshot.summary.actionable ? blockedPlan : snapshot.summary.overall === 'ซื้อ'
     ? `หลักฐานเอนบวก ${buy}/${votes.length} กลุ่ม · รอการยืนเหนือแนวต้าน 1 ${number(resistance1)} เพื่อยืนยัน; หากปิดต่ำกว่าแนวรับ 1 ${number(support1)} มุมมองนี้อ่อนลง`
     : snapshot.summary.overall === 'ขาย'
       ? `หลักฐานเอนลบ ${sell}/${votes.length} กลุ่ม · หากหลุดแนวรับ 1 ${number(support1)} แรงกดดันอาจต่อเนื่อง; การกลับยืนเหนือแนวต้าน 1 ${number(resistance1)} จะทำให้มุมมองลบอ่อนลง`
       : `สัญญาณบวก ${buy} กลุ่มและลบ ${sell} กลุ่ม · รอราคาเลือกทิศทางเหนือแนวต้าน 1 ${number(resistance1)} หรือหลุดแนวรับ 1 ${number(support1)} ก่อนพิจารณา`;
   setText('#technical-plan', plan);
-  const displayedCount = (displayBars || []).filter(bar => Number.isFinite(Number(bar.close)) && Number(bar.close) > 0).length;
-  const barsNote = analysis.values.length > displayedCount
-    ? `แสดง ${displayedCount} แท่ง · ใช้ย้อนหลัง ${analysis.values.length} แท่งคำนวณ`
-    : `${analysis.values.length} แท่ง`;
-  setText('#analysis-note', `${snapshot.confirmation==='confirmed'?'แท่งยืนยันแล้ว':'แท่งยังไม่ยืนยัน'} · ${snapshot.quality.warnings.length?'มีข้อควรตรวจสอบข้อมูล · ':''}ช่วง ${currentRange} (${barsNote}) · นับค่าเฉลี่ยเป็นหลักฐานกลุ่มเดียว`);
+  setText('#analysis-note', `${technicalReferenceNote(snapshot)} · กราฟแสดง ${(displayBars||[]).filter(bar=>Number.isFinite(Number(bar.close))&&Number(bar.close)>0).length} แท่ง`);
   return analysis;
 }
 function indicatorLabel(key){
@@ -1338,12 +1347,11 @@ function evaluateWatchlistAlerts(rows) {
 }
 function updateStockCards(rows) {
   const activeQuote = rows.find(row => row.symbol === activeSymbol);
-  const chartBarTime = latestMarket?.history?.at(-1)?.time;
-  const providerTime = chartBarTime ? new Date(chartBarTime).toISOString() : activeQuote?.time ? new Date(activeQuote.time).toISOString() : latestMarket?.asOf;
+  const receivedAt = latestMarket?.technicalMeta?.history?.receivedAt || latestMarket?.fetchedAt;
   const guardedState = ['stale', 'suspect', 'quarantined', 'unavailable'].includes(latestMarket?.dataState)
     ? latestMarket.dataState
     : activeQuote?.dataState || latestMarket?.dataState;
-  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], providerTime, latestMarket?.levelsHistory || [], latestMarket?.indicatorHistory || [], guardedState);
+  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], receivedAt, latestMarket?.levelsHistory || [], latestMarket?.indicatorHistory || [], guardedState);
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   renderWatchlist(rows);
   const quote = bySymbol[activeSymbol];

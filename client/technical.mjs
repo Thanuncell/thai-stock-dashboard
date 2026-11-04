@@ -82,40 +82,54 @@ export function priceStructure(rows,last,{asOf=Infinity,candleTime=Infinity,inte
 
 export function createTechnicalSnapshot({history=[],indicatorHistory=history,levelsHistory=history,symbol='',timeframe='1M',fetchedAt=null,technicalMeta={},parameters={},dataState='unknown',guardReasons=[]}={}){
  const p=normalizeTechnicalParameters(parameters),interval=RANGE_INTERVAL[timeframe]||'1d';
- const visible=trustedMarketBars(history).filter(row=>clock(row.time)!==null);
- const candleTime=visible.at(-1)?.time??null,meta=technicalMeta.indicator||technicalMeta.history||{};
+ const meta=technicalMeta.indicator||technicalMeta.history||{};
+ let invalidTimeZone=false;
+ try{new Intl.DateTimeFormat('en-CA',{timeZone:meta.timeZone||'Asia/Bangkok'});}catch{invalidTimeZone=true;}
  const observedAt=clock(meta.receivedAt)||clock(fetchedAt);
+ const receivedAt=clock(technicalMeta.history?.receivedAt)||observedAt;
+ const visible=trustedMarketBars(history).filter(row=>clock(row.time)!==null&&(observedAt===null||row.time<=observedAt));
+ const visibleCandleTime=visible.at(-1)?.time??null;
  const mismatch=Boolean(meta.interval&&meta.interval!==interval);
- const rows=temporalBars(mismatch?[]:trustedMarketBars(indicatorHistory).filter(row=>clock(row.time)!==null&&candleTime!==null&&row.time<=candleTime),{
-  interval,observedAt,regularEnd:meta.regularEnd
+ const rows=temporalBars(mismatch?[]:trustedMarketBars(indicatorHistory).filter(row=>clock(row.time)!==null&&visibleCandleTime!==null&&row.time<=visibleCandleTime),{
+  interval,observedAt,regularStart:meta.regularStart,regularEnd:meta.regularEnd,timeZone:meta.timeZone
  });
  const levelMeta=technicalMeta.levels||meta,levelInterval=levelMeta.interval||interval;
- const timedLevels=temporalBars(trustedMarketBars(levelsHistory).filter(row=>clock(row.time)!==null),{interval:levelInterval,observedAt,regularEnd:levelMeta.regularEnd});
- const latest=rows.at(-1),asOf=observedAt===null?0:Math.min(observedAt,latest?.availableAt||observedAt);
+ const timedLevels=temporalBars(trustedMarketBars(levelsHistory).filter(row=>clock(row.time)!==null&&(observedAt===null||row.time<=observedAt)),{interval:levelInterval,observedAt,regularStart:levelMeta.regularStart,regularEnd:levelMeta.regularEnd,timeZone:levelMeta.timeZone});
+ // Chart series retain real provisional prices. Confirmed signals use only the
+ // latest available closed candle and its confirmed prefix, never that draft.
+ const latestCandle=rows.at(-1)||null;
+ const signalRows=rows.filter(row=>row.complete&&row.availableAt<=observedAt),latest=signalRows.at(-1);
+ const candleTime=latest?.time??null,asOf=latest?.availableAt??0;
+ const signalReference=latest?{barOpenTime:latest.barOpenTime,barCloseTime:latest.barCloseTime,availableAt:latest.availableAt,confirmationBasis:latest.confirmationBasis,
+  selection:latest.time===latestCandle.time?'latest-confirmed':'previous-confirmed'}:null;
  const completedLevels=timedLevels.filter(row=>row.complete&&row.availableAt<=asOf&&row.time<=candleTime);
- const analysis=analyseTechnicals(rows,completedLevels,p),series=analysis?.series||computeTechnicalSeries(rows,p);
- const last=rows.at(-1)?.close??null,atr=series.atr.at(-1)??null;
+ const analysis=analyseTechnicals(signalRows,completedLevels,p),signalSeries=analysis?.series||computeTechnicalSeries(signalRows,p);
+ const series=signalRows.length===rows.length?signalSeries:computeTechnicalSeries(rows,p);
+ const last=latest?.close??null,atr=signalSeries.atr.at(-1)??null;
  const levels=last===null?{supports:[],resistances:[],supportDetails:[],resistanceDetails:[],zones:[],swings:{confirmed:[],pending:[]}}:priceStructure(timedLevels,last,{asOf,candleTime,interval:levelInterval,atr});
- const warnings=[...new Set([...guardReasons,...(meta.historyReasons||[]),...(mismatch?['INTERVAL_MISMATCH']:[]),...(meta.corporateActionCount?['CORPORATE_ACTION_REVIEW']:[]),...(['stale','suspect','quarantined'].includes(dataState)?['SOURCE_'+dataState.toUpperCase()]:[])])];
+ const warnings=[...new Set([...guardReasons,...(meta.historyReasons||[]),...(mismatch?['INTERVAL_MISMATCH']:[]),...(invalidTimeZone?['EXCHANGE_TIMEZONE_INVALID']:[]),...(meta.corporateActionCount?['CORPORATE_ACTION_REVIEW']:[]),...(['stale','suspect','quarantined','unavailable'].includes(dataState)?['SOURCE_'+dataState.toUpperCase()]:[])])];
  const confirmation=latest?.complete?'confirmed':'provisional';
  const quality={state:mismatch?'unavailable':rows.length?'usable-with-warnings':'insufficient',warnings};
  if(rows.length&&!warnings.length)quality.state='usable';
  const required={sma20:p.sma,ema20:p.ema20,ema50:p.ema50,ema100:p.ema100,ema200:p.ema200,rsi:p.rsi+1,macd:p.macdSlow+p.macdSignal-1,bb:p.bb,atr:p.atr+1};
- const latestValue=key=>key==='bb'?series.bb.middle.at(-1):key==='macd'?series.signal.at(-1):series[key]?.at(-1);
- const availability=Object.fromEntries(Object.entries(required).map(([key,bars])=>[key,{state:finite(latestValue(key))?'available':'insufficient',bars:rows.length,required:bars,confirmation}]));
+ const latestValue=key=>key==='bb'?signalSeries.bb.middle.at(-1):key==='macd'?signalSeries.signal.at(-1):signalSeries[key]?.at(-1);
+ const availability=Object.fromEntries(Object.entries(required).map(([key,bars])=>[key,{state:finite(latestValue(key))?'available':'insufficient',bars:signalRows.length,required:bars,confirmation}]));
  const common={version:TECHNICAL_VERSION,symbol,timeframe,candleTime,confirmation,dataQuality:quality.state};
- const trendValues=['sma20','ema20','ema50','ema100','ema200'].map(key=>series[key].at(-1)).filter(finite);
+ const trendValues=['sma20','ema20','ema50','ema100','ema200'].map(key=>signalSeries[key].at(-1)).filter(finite);
  const trend=sign(trendValues.reduce((sum,value)=>sum+sign(last-value),0));
- const rsi=series.rsi.at(-1)??null,macd=series.macd.at(-1)??null,signal=series.signal.at(-1)??null;
+ const rsi=signalSeries.rsi.at(-1)??null,macd=signalSeries.macd.at(-1)??null,signal=signalSeries.signal.at(-1)??null;
  const rsiVote=rsi===null?0:rsi<30?1:rsi>70?-1:0,macdVote=macd===null||signal===null?0:sign(macd-signal);
  const momentum=sign(rsiVote+macdVote);
  const recentBreak=levels.zones.flatMap(z=>z.events).filter(e=>['breakout-confirmed','retest-confirmed'].includes(e.kind)&&e.confirmedAt===latest?.availableAt).at(-1);
  const structure=recentBreak?.direction||0;
  const score=trend+momentum+structure;
- const actionable=Boolean(analysis&&confirmation==='confirmed'&&!warnings.some(w=>['HISTORICAL_ANOMALY','CORPORATE_ACTION_REVIEW','INTERVAL_MISMATCH'].includes(w)||w.startsWith('SOURCE_')));
- const overall=actionable?side(score>=2?1:score<=-2?-1:0):'รอยืนยัน';
+ const critical=warnings.some(w=>['HISTORICAL_ANOMALY','CORPORATE_ACTION_REVIEW','INTERVAL_MISMATCH','EXCHANGE_TIMEZONE_INVALID','SYMBOL_MISMATCH','MARKET_MISMATCH','SYMBOL_UNVERIFIED','INVALID_TIMESTAMP','FUTURE_TIMESTAMP','DATA_ANOMALY','INVALID_OHLC'].includes(w)||w.startsWith('SOURCE_'));
+ const requiredBars=Math.max(30,p.sma,p.rsi+1,p.macdSlow+p.macdSignal-1);
+ const status=critical?'data-review':signalRows.length>=requiredBars&&analysis?'ready':rows.length<requiredBars||signalRows.length>0?'insufficient':'waiting-close';
+ const actionable=status==='ready';
+ const overall=actionable?side(score>=2?1:score<=-2?-1:0):status==='data-review'?'ข้อมูลต้องตรวจสอบ':status==='waiting-close'?'รอแท่งปิด':'ข้อมูลไม่เพียงพอ';
  const number=value=>finite(value)?Number(value.toPrecision(7)).toString():'—';
- const referenceVolume=rows.slice(-21,-1).map(row=>toFiniteNumber(row.volume));
+ const referenceVolume=signalRows.slice(-21,-1).map(row=>toFiniteNumber(row.volume));
  const volumeBaseline=referenceVolume.length===20?mean(referenceVolume):null,volumeRatio=volumeBaseline>0&&finite(latest?.volume)?latest.volume/volumeBaseline:null;
  const reasons=[
   {...common,ruleId:'TREND-MA-GROUP-1',group:'trend',direction:trend,text:`แนวโน้ม: ราคา ${number(last)} เทียบค่าเฉลี่ยที่พร้อม ${trendValues.length} เส้น · ${side(trend)}`,values:{last,averages:trendValues}},
@@ -124,13 +138,13 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
    :{...common,ruleId:'VOLATILITY-CONTEXT-1',group:'volatility',direction:0,text:`ความผันผวน: ATR ${number(atr)} · ปริมาณเทียบ 20 แท่งก่อน ${number(volumeRatio)} เท่า (ไม่ใช่สัญญาณซื้อขาย)`,values:{atr,volumeRatio}}
  ];
  const crosses=[];
- for(let i=1;i<rows.length;i++){
-  if(!rows[i].complete||!finite(series.histogram[i])||!finite(series.histogram[i-1]))continue;
-  const before=series.histogram[i-1],after=series.histogram[i];
-  if(before<=0&&after>0||before>=0&&after<0)crosses.push({kind:'MACD_SIGNAL_CROSS',direction:sign(after),candleTime:rows[i].time,confirmedAt:rows[i].availableAt});
-  if(finite(series.macd[i-1])&&(series.macd[i-1]<=0&&series.macd[i]>0||series.macd[i-1]>=0&&series.macd[i]<0))crosses.push({kind:'MACD_ZERO_CROSS',direction:sign(series.macd[i]),candleTime:rows[i].time,confirmedAt:rows[i].availableAt});
+ for(let i=1;i<signalRows.length;i++){
+  if(!finite(signalSeries.histogram[i])||!finite(signalSeries.histogram[i-1]))continue;
+  const before=signalSeries.histogram[i-1],after=signalSeries.histogram[i];
+  if(before<=0&&after>0||before>=0&&after<0)crosses.push({kind:'MACD_SIGNAL_CROSS',direction:sign(after),candleTime:signalRows[i].time,confirmedAt:signalRows[i].availableAt});
+  if(finite(signalSeries.macd[i-1])&&(signalSeries.macd[i-1]<=0&&signalSeries.macd[i]>0||signalSeries.macd[i-1]>=0&&signalSeries.macd[i]<0))crosses.push({kind:'MACD_ZERO_CROSS',direction:sign(signalSeries.macd[i]),candleTime:signalRows[i].time,confirmedAt:signalRows[i].availableAt});
  }
- const id=TECHNICAL_VERSION+':'+fingerprint([symbol,timeframe,rows.map(row=>[row.time,row.close,row.high,row.low,row.volume,row.complete]),p,warnings]);
- return frozen({id,...common,interval,asOf,observedAt,priceBasis:meta.priceBasis||'provider-quote-ohlc',adjustment:meta.adjustment||'unverified',parameters:p,rows,series,availability,levels,
-  analysis:analysis?{...analysis,levels}:null,summary:{overall,actionable,score,groups:{trend,momentum,structure},reasons},crosses,volume:{baseline:volumeBaseline,ratio:volumeRatio},quality});
+ const id=TECHNICAL_VERSION+':'+fingerprint([symbol,timeframe,rows.map(row=>[row.time,row.close,row.high,row.low,row.volume,row.complete,row.availableAt]),signalReference,p,warnings]);
+ return frozen({id,...common,interval,asOf,observedAt,receivedAt,latestCandle,signalReference,signalRows,signalSeries,priceBasis:meta.priceBasis||'provider-quote-ohlc',adjustment:meta.adjustment||'unverified',parameters:p,rows,series,availability,levels,
+  analysis:analysis?{...analysis,levels}:null,summary:{overall,actionable,status,requiredBars,score,groups:{trend,momentum,structure},reasons},crosses,volume:{baseline:volumeBaseline,ratio:volumeRatio},quality});
 }

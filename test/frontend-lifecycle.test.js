@@ -133,7 +133,7 @@ test('final UI cleanup preserves exact News and chart contracts', () => {
   assert.doesNotMatch(indexSource, /id="chart-name"/);
   assert.doesNotMatch(appSource, /#chart-name/);
   assert.match(indexSource, /แหล่งข้อมูล: Yahoo Finance · ล่าช้าประมาณ 15 นาที/);
-  assert.match(indexSource, /id="chart-updated">อัปเดตล่าสุด: —/);
+  assert.match(indexSource, /id="chart-updated">รับข้อมูล Yahoo Finance: —/);
   assert.match(appSource, /watchlist\[0\]\?\.symbol \|\| 'PTT'/);
 });
 
@@ -309,12 +309,13 @@ test('Footer Coverage uses validated persisted summary fields without a hard-cod
   assert.doesNotMatch(indexSource, /หุ้นในขอบเขตตรวจสอบ:\s*(?:291|500|900)/);
 });
 
-test('Chart freshness uses the selected provider timestamp and exposes guarded state', () => {
-  assert.match(appSource, /activeQuote\?\.time/);
+test('Chart receipt label uses recorded response time, distinguishes the candle open and exposes guarded state', () => {
+  assert.match(appSource, /latestMarket\?\.technicalMeta\?\.history\?\.receivedAt \|\| latestMarket\?\.fetchedAt/);
   assert.match(appSource, /activeQuote\?\.dataState/);
-  assert.match(appSource, /latestMarket\?\.history\?\.at\(-1\)\?\.time/);
+  assert.match(appSource, /แท่งราคาล่าสุดเปิด \$\{technicalTimeText\(allRows\.at\(-1\)\?\.time\)\}/);
   assert.match(appSource, /\['stale', 'suspect', 'quarantined', 'unavailable'\]\.includes\(latestMarket\?\.dataState\)/);
-  assert.doesNotMatch(appSource, /renderPriceChart\([^\n]*latestMarket\?\.fetchedAt/);
+  assert.match(appSource, /รับข้อมูล Yahoo Finance: \$\{technicalTimeText\(receipt\)\}/);
+  assert.doesNotMatch(appSource, /setText\('#chart-updated', [^\n]*(?:providerTime|chartBarTime|Date\.now)/);
   assert.match(appSource, /ข้อมูลเก่า/);
   assert.match(appSource, /ข้อมูลต้องสงสัย/);
 });
