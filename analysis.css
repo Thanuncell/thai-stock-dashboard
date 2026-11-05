@@ -86,7 +86,6 @@ html[data-theme="dark"] .analysis-panel .reason-group.neutral > b { color: #f1bd
 .analysis-panel .pill { white-space: normal; }
 
 .analysis-panel .rsi-meter,
-.analysis-panel .analysis-note p,
 .analysis-panel .reason-group li span,
 .analysis-panel .reason-group > p {
   color: var(--technical-secondary);
@@ -100,6 +99,11 @@ html[data-theme="dark"] .analysis-panel .reason-group.neutral > b { color: #f1bd
 .analysis-panel .evidence-status { color: var(--technical-secondary); }
 .analysis-panel .technical-plan {
   font-size: 10px;
+  line-height: 1.7;
+}
+.analysis-panel .analysis-note p {
+  color: var(--technical-secondary);
+  font-size: 11px;
   line-height: 1.7;
 }
 .analysis-panel .technical-reasons > small,
