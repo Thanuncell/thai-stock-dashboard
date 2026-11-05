@@ -269,7 +269,7 @@ test('PostgreSQL 17: approved migration, native concurrent claims and restart re
       time=Date.parse('2026-11-02T11:00:00Z');provider.advance(time,35);
       const failedSettings={...nextSettings,GITHUB_RUN_ID:'880003',SETSCOPE_SCALE_ID:'880001',SETSCOPE_SCALE_REVIEW:'REVIEWED 880001'};
       let failedCalls=0;
-      const missing=(input,init)=>new URL(String(input)).hostname==='query1.finance.yahoo.com'?(failedCalls++,Promise.resolve(Response.json({},{status:404}))):fetchImpl(input,init);
+      const missing=(input,init)=>new URL(String(input)).hostname==='query1.finance.yahoo.com'?(failedCalls++,Promise.resolve(Response.json({},{status:503}))):fetchImpl(input,init);
       await assert.rejects(main({env:failedSettings,fetchImpl:missing,now:()=>time,mode:'run'}));assert.equal(failedCalls,1);
       const interrupted=(await pool.query("select automation_state from public.coverage_runs where run_key='v156:control'")).rows[0].automation_state.metadata;
       const previousReceipts=structuredClone(interrupted.scaling.completedJobs),reservation=interrupted.reservations;
