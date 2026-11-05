@@ -1,7 +1,7 @@
 /* Compact, readable technical signal donut without a pointer. */
 .analysis-panel{min-width:0}
 .analysis-panel .signal-summary{display:grid;grid-template-columns:clamp(78px,8vw,98px) minmax(0,1fr);align-items:center;gap:14px;min-height:0;margin:14px 0 12px}
-.signal-donut{--donut-buy-angle:0deg;--donut-hold-angle:0deg;--donut-sell-angle:0deg;width:clamp(78px,8vw,98px);aspect-ratio:1;border-radius:50%;display:grid;place-items:center;flex:none;background:conic-gradient(from -90deg,var(--green) 0 var(--donut-buy-angle),#dfa63f var(--donut-buy-angle) calc(var(--donut-buy-angle) + var(--donut-hold-angle)),var(--red) calc(var(--donut-buy-angle) + var(--donut-hold-angle)) 360deg)}
+.signal-donut{width:clamp(78px,8vw,98px);aspect-ratio:1;border-radius:50%;display:grid;place-items:center;flex:none;background:var(--donut-fill,var(--line))}
 .signal-donut.no-data{background:conic-gradient(var(--line) 0 360deg)}
 .signal-donut-hole{width:67%;aspect-ratio:1;border-radius:50%;background:var(--paper);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}
 .signal-donut-hole strong{font:700 19px var(--latin);line-height:1.1;color:var(--ink)}

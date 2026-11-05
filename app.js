@@ -1203,8 +1203,30 @@ function updateSignalDonut(buy, hold, sell, total) {
   if (!donut) return;
   const safeTotal = Math.max(0, Number(total) || 0);
   const counts = [Math.max(0, Number(buy) || 0), Math.max(0, Number(hold) || 0), Math.max(0, Number(sell) || 0)];
-  const angles = safeTotal ? counts.map(count => `${count / safeTotal * 360}deg`) : ['0deg', '0deg', '0deg'];
-  ['--donut-buy-angle', '--donut-hold-angle', '--donut-sell-angle'].forEach((name, index) => donut.style.setProperty(name, angles[index]));
+  const colors = ['var(--green)', '#dfa63f', 'var(--red)'];
+  const segments = safeTotal ? counts.map((count, index) => ({
+    color: colors[index], angle: count / safeTotal * 360
+  })).filter(segment => segment.angle > 0) : [];
+  let fill = segments[0]?.color;
+  if (segments.length > 1) {
+    // Center blends on the true boundaries and leave at least half of each segment solid.
+    const halfBlend = (left, right) => Math.min(8, left.angle / 4, right.angle / 4);
+    const first = segments[0], last = segments.at(-1);
+    const seam = halfBlend(last, first);
+    // Start just before the wrap blend so the 0° and 360° stops have the same color.
+    const stops = [`${last.color} 0deg`, `${first.color} ${2 * seam}deg`];
+    let boundary = seam;
+    for (let index = 0; index < segments.length - 1; index++) {
+      const left = segments[index], right = segments[index + 1];
+      boundary += left.angle;
+      const blend = halfBlend(left, right);
+      stops.push(`${left.color} ${boundary - blend}deg`, `${right.color} ${boundary + blend}deg`);
+    }
+    stops.push(`${last.color} 360deg`);
+    fill = `conic-gradient(from ${-90 - seam}deg, ${stops.join(', ')})`;
+  }
+  if (fill) donut.style.setProperty('--donut-fill', fill);
+  else donut.style.removeProperty('--donut-fill');
   donut.classList.toggle('no-data', safeTotal === 0);
   const totalNode = $('#signal-total');
   if (totalNode) totalNode.textContent = safeTotal ? String(safeTotal) : '—';

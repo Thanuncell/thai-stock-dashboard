@@ -10,6 +10,56 @@ function roleRows(direction,volume=1000){return Array.from({length:39},(_,i)=>{
 });}
 const levels=(rows,last=rows.at(-1).close,asOf=rows.at(-1).availableAt)=>technical.priceStructure(rows,last,{asOf,candleTime:rows.at(-1).time,interval:'1m',atr:2});
 
+function signalDonutFixture(){
+ const source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
+ const renderer=source.slice(source.indexOf('function updateSignalDonut('),source.indexOf('function renderPriceLevels('));
+ const props=new Map(),classes=new Map(),attributes=new Map(),total={textContent:''};
+ const donut={
+  style:{setProperty:(key,value)=>props.set(key,value),removeProperty:key=>props.delete(key)},
+  classList:{toggle:(key,on)=>classes.set(key,on)},
+  setAttribute:(key,value)=>attributes.set(key,value)
+ };
+ const update=vm.runInNewContext(renderer+'\nupdateSignalDonut',{ $:selector=>selector==='#signal-donut'?donut:total });
+ return {update,props,classes,attributes,total};
+}
+
+test('donut blends center on the true ratio boundaries and preserve a narrow active segment',()=>{
+ const {update,props}=signalDonutFixture();
+ const palette=['var(--green)','#dfa63f','var(--red)'];
+ for(const [counts,boundaries] of [[[2,1,0],[240]],[[1,1,1],[120,240]],[[1,0,2],[120]],[[99,0,1],[356.4]]]){
+  update(...counts,counts.reduce((sum,count)=>sum+count,0));
+  const fill=props.get('--donut-fill');
+  const origin=Number(fill.match(/from (-?[\d.]+)deg/)[1]);
+  const stops=[...fill.matchAll(/(var\(--(?:green|red)\)|#dfa63f) ([\d.]+)deg/g)].map(([,color,angle])=>({color,angle:Number(angle)}));
+  const active=palette.filter((_,index)=>counts[index]>0);
+  assert.deepEqual([...new Set(stops.map(stop=>stop.color))].sort(),[...active].sort());
+  assert.equal(stops[0].color,stops.at(-1).color,'matching endpoint colors close the seam');
+  assert.equal(stops[0].angle,0);
+  assert.equal(stops.at(-1).angle,360);
+  const blends=stops.slice(1).flatMap((right,index)=>{
+   const left=stops[index];
+   return right.color===left.color?[]:[(left.angle+right.angle)/2+origin+90];
+  });
+  assert.deepEqual(blends.map(angle=>Number(angle.toFixed(6))),[0,...boundaries]);
+  for(const color of active)assert.ok(stops.some((stop,index)=>index>0&&stop.color===color&&
+   stops[index-1].color===color&&stop.angle>stops[index-1].angle),'each active color retains a solid arc');
+ }
+});
+
+test('single-state donut stays solid and no-data clears the fill while preserving the accessible summary',()=>{
+ const {update,props,classes,attributes,total}=signalDonutFixture();
+ update(3,0,0,3);
+ assert.equal(props.get('--donut-fill'),'var(--green)');
+ assert.equal(total.textContent,'3');
+ assert.equal(classes.get('no-data'),false);
+ assert.equal(attributes.get('aria-label'),'สัดส่วนสัญญาณ ซื้อ 3 ถือ 0 ขาย 0 จาก 3 สัญญาณ');
+ update(0,0,0,0);
+ assert.equal(props.has('--donut-fill'),false);
+ assert.equal(total.textContent,'—');
+ assert.equal(classes.get('no-data'),true);
+ assert.equal(attributes.get('aria-label'),'ยังไม่มีข้อมูลพอสรุปสัญญาณ');
+});
+
 function renderSignalEvidence({warnings=[],rows=260,unconfirmed=false,reasonCount}={}){
  const history=Array.from({length:rows},(_,i)=>({time:at+i*step,open:100+i*.1,high:102+i*.1,low:99+i*.1,close:101+i*.1,volume:1000+i}));
  const snapshot=technical.createTechnicalSnapshot({symbol:'PTT',timeframe:'1D',history,indicatorHistory:history,levelsHistory:history,
