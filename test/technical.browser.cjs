@@ -28,7 +28,9 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      const range=url.searchParams.get('range')||'1D',symbol=url.searchParams.get('symbol')||'PTT';marketCalls.push({range,symbol});
      if(pending&&pending.range===range){const held=pending;pending=null;held.started();await held.wait;}
      const interval=range==='1D'?'1m':range==='1W'?'15m':'1d',step=interval==='1m'?60000:interval==='15m'?900000:86400000;
-     const start=Date.UTC(2025,0,1,3,0,17,123),rows=ranking==='nearest'?rankingRows(range):ranking==='role'?roleRankingRows():ranking==='scarce'?scarceRows():Array.from({length:short?12:260},(_,i)=>({time:start+i*step,open:100+Math.sin(i*.31)*4+i*.03,close:100.4+Math.sin(i*.31)*4+i*.03,high:103+Math.sin(i*.31)*4+i*.03,low:98+Math.sin(i*.31)*4+i*.03,volume:i===40?0:1000+i%11*100}));
+     const start=Date.UTC(2025,0,1,3,0,17,123),rows=ranking==='nearest'?rankingRows(range):ranking==='role'?roleRankingRows():ranking==='reverse-role'?roleRankingRows().map(row=>({
+      ...row,open:200-row.open,close:200-row.close,high:200-row.low,low:200-row.high
+     })):ranking==='scarce'?scarceRows():Array.from({length:short?12:260},(_,i)=>({time:start+i*step,open:100+Math.sin(i*.31)*4+i*.03,close:100.4+Math.sin(i*.31)*4+i*.03,high:103+Math.sin(i*.31)*4+i*.03,low:98+Math.sin(i*.31)*4+i*.03,volume:i===40?0:1000+i%11*100}));
      const end=rows.at(-1).time+(interval==='1d'?24000000:step),observed=interval==='1d'&&['during','draft-spike'].includes(dailyState)?rows.at(-1).time+3600000:end;
      if(interval==='1d'&&dailyState==='draft-spike')Object.assign(rows.at(-1),{open:999,high:1001,low:998,close:1000,volume:999999});
      const meta={interval,receivedAt:dailyState==='unknown-receipt'?null:new Date(observed).toISOString(),regularStart:interval==='1d'?rows.at(-1).time:null,regularEnd:interval==='1d'?(dailyState==='missing'?null:dailyState==='mismatch'?end+86400000:end):null,timeZone:'Asia/Bangkok',priceBasis:'provider-quote-ohlc',adjustment:'fixture-unadjusted'};
@@ -109,7 +111,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await assertFit('Reset restores the default viewport at the fitted size');
    }
    phase=`${width}-${theme}-setup`;
-   const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b;});check(await page.locator('.compact-reasons li').count(),3);};
+   const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b;});check(await page.locator('.technical-reason-card').count(),3);};
    await parity();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal page overflow');
    check(await page.locator('.indicator-workspace small').textContent(),'ซ่อน/แสดงไม่เปลี่ยนผลวิเคราะห์ · การเปลี่ยน Period จะคำนวณจากข้อมูลเดิม · บันทึกแยกตามบัญชีบนอุปกรณ์นี้');
    check(await page.locator('[data-draw-status]').textContent(),'เลื่อน/ซูมกราฟตามปกติ · ภาพวาดบันทึกแยกตามบัญชีบนอุปกรณ์นี้');
@@ -119,11 +121,28 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    check(await page.locator('#technical-reasons pre').count(),0,'raw evidence JSON is absent from the render path');
    check(/"(?:ruleId|candleTime|priceBasis)"\s*:/.test(await page.locator('#technical-reasons').textContent()),false,'no serialized snapshot fields');
    check(await evidence.evaluate(el=>el.open),false,'indicator details start collapsed');
-   await evidence.locator('summary').click();
+   const summary=evidence.locator('summary');
+   await summary.focus();
+   await page.keyboard.press('Enter');
    check(await evidence.evaluate(el=>el.open),true,'indicator details expand');
-   check(await evidence.locator(':scope > ul > li').count(),9,'all indicator availability details remain');
+   check(await evidence.locator(':scope > .evidence-grid > li').count(),9,'all indicator availability details remain');
    check(await evidence.locator('.reason-group li strong').count()>0,true,'readable individual indicator values remain');
-   await evidence.locator('summary').click();
+   check(await page.locator('.technical-reason-number').allTextContents(),['01','02','03']);
+   const typography=await page.locator('.analysis-panel').evaluate(panel=>{
+    const style=selector=>getComputedStyle(panel.querySelector(selector));
+    return {
+     heading:[style('h3').fontSize,style('h3').fontWeight],
+     reason:[style('.technical-reason-text').fontSize,style('.technical-reason-text').fontWeight],
+     indicator:style('.evidence-label').fontSize,status:[style('.evidence-status').fontSize,style('.evidence-status').fontWeight],
+     secondary:style('#analysis-note').fontSize,family:style('.technical-reason-text').fontFamily.includes('IBM Plex Sans Thai'),
+     columns:style('.evidence-grid').gridTemplateColumns.split(' ').length,
+     hierarchy:parseFloat(style('#overall-signal').fontSize)>parseFloat(style('.technical-reason-text').fontSize)
+    };
+   });
+   check(typography,{heading:['14px','600'],reason:['13px','400'],indicator:'13px',status:['11px','500'],
+    secondary:'12px',family:true,columns:width===1366?2:1,hierarchy:true},'technical type and evidence grid at this width');
+   check(await evidence.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true,'expanded evidence has no horizontal overflow');
+   await page.keyboard.press('Space');
    check(await evidence.evaluate(el=>el.open),false,'indicator details collapse');
    check(await page.locator('.analysis-panel').getAttribute('data-snapshot-id'),evidenceSnapshot,'expansion cannot change the calculation snapshot');
    const id=await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),count=marketCalls.length;
@@ -190,7 +209,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      check((await page.locator('#analysis-note').textContent()).includes(mode==='closed'?'แท่งยืนยันแล้ว':'ใช้แท่งปิดก่อนหน้า'),true);
      check((await page.locator('#chart-updated').textContent()).includes(['during','draft-spike'].includes(mode)?'11:00':'16:40'),true,'received time is not daily open time');
      check((await page.locator('#chart-updated').getAttribute('title')).includes('แท่งราคาล่าสุดเปิด'),true);
-     const reasons=await page.locator('.compact-reasons').textContent();if(mode==='during')priorReasons=reasons;if(mode==='draft-spike')check(reasons,priorReasons,'draft spike cannot change confirmed explanations');
+     const reasons=await page.locator('.technical-reason-text').allTextContents();if(mode==='during')priorReasons=reasons;if(mode==='draft-spike')check(reasons,priorReasons,'draft spike cannot change confirmed explanations');
      check(await page.locator('#technical-reasons pre').count(),0,'daily evidence never renders JSON');
     }
     qualityWarning=true;const warningDone=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await warningDone;await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลต้องตรวจสอบ');await parity();check(await page.locator('#buy-count').textContent(),'—','critical quality cannot show actionable votes');check(await page.locator('#analysis-note').isVisible(),true);check((await page.locator('#analysis-note').textContent()).startsWith('ข้อมูลต้องตรวจสอบ'),true);qualityWarning=false;dailyState='closed';
@@ -224,7 +243,12 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    }
    ranking='role';await page.locator('[data-range="1D"]').click();await page.waitForFunction(()=>document.querySelector('#support-1').textContent.startsWith('110.00'));await parity();
    for(let i=0;i<5&&await page.locator('.price-candle').count()<45;i++){await page.locator('#chart-zoom-out').click();await pause(page);}
-   const roleLabel='Swing high → แนวรับ (กลับบทบาทยืนยัน)';check((await page.locator('#support-1').textContent()).includes(roleLabel),true);check((await page.locator('.chart-level.support text').first().textContent()).includes(roleLabel),true);
+   check(await page.locator('#support-1').textContent(),'110.00 · Swing high');
+   check(await page.locator('.chart-level.support text').first().textContent(),'S1 110.00 · Swing high');
+   ranking='reverse-role';await page.locator('#refresh-chart').click();
+   await page.waitForFunction(()=>document.querySelector('#resistance-1').textContent.startsWith('90.00'));await parity();
+   check(await page.locator('#resistance-1').textContent(),'90.00 · Swing low');
+   check(await page.locator('.chart-level.resistance text').first().textContent(),'R1 90.00 · Swing low');
    ranking='scarce';await page.locator('#refresh-chart').click();await page.waitForFunction(()=>document.querySelector('#support-1').textContent.startsWith('16.67'));await parity();
    for(const rank of [2,3])check(await page.locator(`#support-${rank}`).textContent(),'ไม่มีแนวในช่วงนี้','missing levels are not invented');
    ranking=null;await page.locator('#refresh-chart').click();await page.waitForFunction(()=>!document.querySelector('#support-1').textContent.startsWith('16.67'));await parity();

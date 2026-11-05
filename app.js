@@ -876,7 +876,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const levelLines = levelDetails.map(item => {
     const py = y(item.value);
     const typeLabel = item.type === 'support' ? `S${item.rank}` : `R${item.rank}`;
-    return `<g class="chart-level ${item.type}"><line x1="${left}" y1="${py}" x2="${width - right}" y2="${py}"/><text x="${width - right - 4}" y="${py - 4}" text-anchor="end">${escapeHtml(typeLabel)} ${escapeHtml(number(item.value))} · ${escapeHtml(item.sourceLabel || item.source)}</text></g>`;
+    return `<g class="chart-level ${item.type}"><line x1="${left}" y1="${py}" x2="${width - right}" y2="${py}"/><text x="${width - right - 4}" y="${py - 4}" text-anchor="end">${escapeHtml(typeLabel)} ${escapeHtml(number(item.value))} · ${escapeHtml(item.source)}</text></g>`;
   }).join('');
   let macdPanel = '';
   if (showMacd) {
@@ -1215,8 +1215,8 @@ function renderPriceLevels(bars, last, calculatedLevels = null) {
   const levels = calculatedLevels || findPriceLevels(bars || [], last);
   for (let i = 0; i < 3; i++) {
     const support = levels.supportDetails[i], resistance = levels.resistanceDetails[i];
-    setText(`#support-${i + 1}`, support ? `${number(support.value)} · ${support.sourceLabel || support.source}` : 'ไม่มีแนวในช่วงนี้');
-    setText(`#resistance-${i + 1}`, resistance ? `${number(resistance.value)} · ${resistance.sourceLabel || resistance.source}` : 'ไม่มีแนวในช่วงนี้');
+    setText(`#support-${i + 1}`, support ? `${number(support.value)} · ${support.source}` : 'ไม่มีแนวในช่วงนี้');
+    setText(`#resistance-${i + 1}`, resistance ? `${number(resistance.value)} · ${resistance.source}` : 'ไม่มีแนวในช่วงนี้');
   }
   const pivotCount = [...levels.supportDetails, ...levels.resistanceDetails].filter(item => item.source === 'Classic Pivot').length;
   const primaryCount = latestMarket?.history?.length || 0;
@@ -1280,9 +1280,27 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
   const supportive = analysis.reasons.filter(reason => reason.signal === 'ซื้อ');
   const opposing = analysis.reasons.filter(reason => reason.signal === 'ขาย');
   const neutral = analysis.reasons.filter(reason => reason.signal === 'เป็นกลาง');
-  const group = (title, className, items) => `<div class="reason-group ${className}"><b>${title} (${items.length})</b>${items.length ? `<ul>${items.map(item => `<li><strong>${escapeHtml(item.key)} · ${escapeHtml(item.value)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join('')}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
-  const availability=Object.entries(snapshot.availability).map(([key,value])=>`<li>${escapeHtml(indicatorLabel(key))}: ${value.state==='available'?'พร้อม':`ข้อมูลไม่ครบ ${value.bars}/${value.required} แท่ง`}</li>`).join('');
-  $('#technical-reasons').innerHTML = `<ol class="compact-reasons">${snapshot.summary.reasons.map(r=>`<li>${escapeHtml(r.text)}</li>`).join('')}</ol><details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว</summary><ul>${availability}</ul>${group('แรงหนุนฝั่งบวก', 'positive', supportive)+group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing)+(neutral.length?group('ยังไม่ชี้ทิศทาง','neutral',neutral):'')}</details>`;
+  const group = (title, className, items) => {
+    const evidence = items.map(item => `<li><strong>${escapeHtml(item.key)} · ${escapeHtml(item.value)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join('');
+    return `<div class="reason-group ${className}"><b>${title} (${items.length})</b>
+      ${evidence ? `<ul class="evidence-grid" role="list">${evidence}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
+  };
+  const availability = Object.entries(snapshot.availability).map(([key, value]) => {
+    const status = value.state === 'available' ? 'พร้อม' : `ข้อมูลไม่ครบ ${value.bars}/${value.required} แท่ง`;
+    return `<li><span class="evidence-label">${escapeHtml(indicatorLabel(key))}:</span> <span class="evidence-status">${status}</span></li>`;
+  }).join('');
+  const reasonCards = snapshot.summary.reasons.map((reason, index) => `
+    <div class="technical-reason-card" role="listitem">
+      <span class="technical-reason-number" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
+      <p class="technical-reason-text">${escapeHtml(reason.text)}</p>
+    </div>`).join('');
+  $('#technical-reasons').innerHTML = `<div class="compact-reasons" role="list">${reasonCards}</div>
+    <details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว</summary>
+      <ul class="evidence-grid" role="list">${availability}</ul>
+      ${group('แรงหนุนฝั่งบวก', 'positive', supportive)}
+      ${group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing)}
+      ${neutral.length ? group('ยังไม่ชี้ทิศทาง', 'neutral', neutral) : ''}
+    </details>`;
   renderPriceLevels(levelBars || bars || [], analysis.last, analysis.levels);
   const support1 = analysis.levels.supports[0], resistance1 = analysis.levels.resistances[0];
   const plan = !snapshot.summary.actionable ? blockedPlan : snapshot.summary.overall === 'ซื้อ'

@@ -10,7 +10,7 @@ function roleRows(direction,volume=1000){return Array.from({length:39},(_,i)=>{
 });}
 const levels=(rows,last=rows.at(-1).close,asOf=rows.at(-1).availableAt)=>technical.priceStructure(rows,last,{asOf,candleTime:rows.at(-1).time,interval:'1m',atr:2});
 
-function renderSignalEvidence({warnings=[],rows=260,unconfirmed=false}={}){
+function renderSignalEvidence({warnings=[],rows=260,unconfirmed=false,reasonCount}={}){
  const history=Array.from({length:rows},(_,i)=>({time:at+i*step,open:100+i*.1,high:102+i*.1,low:99+i*.1,close:101+i*.1,volume:1000+i}));
  const snapshot=technical.createTechnicalSnapshot({symbol:'PTT',timeframe:'1D',history,indicatorHistory:history,levelsHistory:history,
   fetchedAt:unconfirmed?null:new Date(at+rows*step).toISOString(),technicalMeta:{indicator:{interval:'1m',receivedAt:unconfirmed?null:new Date(at+rows*step).toISOString(),historyReasons:warnings}}});
@@ -19,7 +19,8 @@ function renderSignalEvidence({warnings=[],rows=260,unconfirmed=false}={}){
  const source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8');
  const renderer=source.slice(source.indexOf('function technicalTimeText('),source.indexOf('\nfunction indicatorLabel('));
  const escapeHtml=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- const context=vm.createContext({technicalSnapshot:()=>snapshot,createTechnicalSnapshot:technical.createTechnicalSnapshot,
+ const view=reasonCount===undefined?snapshot:{...snapshot,summary:{...snapshot.summary,reasons:snapshot.summary.reasons.slice(0,reasonCount)}};
+ const context=vm.createContext({technicalSnapshot:()=>view,createTechnicalSnapshot:technical.createTechnicalSnapshot,
   document:{getElementById:node},$:node,setText:(key,value)=>{node(key).textContent=value;},setTechnicalPanelState:()=>{},
   renderPriceLevels:()=>{},updateSignalDonut:()=>{},indicatorLabel:key=>key,escapeHtml,number:String,currentRange:'1D',latestMarket:{history},history});
  vm.runInContext(renderer+'\ndrawSignals(history);',context);
@@ -29,12 +30,18 @@ function renderSignalEvidence({warnings=[],rows=260,unconfirmed=false}={}){
 test('signal evidence renders three readable reason groups and indicator details without serialized snapshot JSON',()=>{
  const {html,snapshot}=renderSignalEvidence();
  assert.doesNotMatch(html,/<pre\b|"(?:ruleId|candleTime|priceBasis)"\s*:/i);
- assert.match(html,/<ol class="compact-reasons">/);
+ assert.match(html,/<div class="compact-reasons" role="list">/);
+ assert.deepEqual([...html.matchAll(/class="technical-reason-number" aria-hidden="true">(\d+)</g)].map(match=>match[1]),['01','02','03']);
  for(const reason of snapshot.summary.reasons)assert.ok(html.includes(reason.text),'all three computed reasons remain readable');
  assert.equal(snapshot.summary.reasons.length,3);
  assert.match(html,/<details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว<\/summary>/);
- for(const key of Object.keys(snapshot.availability))assert.ok(html.includes(key+': พร้อม'),'indicator availability remains');
+ for(const key of Object.keys(snapshot.availability))assert.ok(html.includes(key+':</span> <span class="evidence-status">พร้อม</span>'),'indicator availability remains');
  for(const reason of snapshot.analysis.reasons)assert.ok(html.includes(reason.key+' · '+reason.value),'individual indicator values remain');
+});
+
+test('reason cards follow the actual number of reasons',()=>{
+ const {html}=renderSignalEvidence({reasonCount:2});
+ assert.deepEqual([...html.matchAll(/class="technical-reason-number" aria-hidden="true">(\d+)</g)].map(match=>match[1]),['01','02']);
 });
 
 test('rendering signal evidence preserves the complete frozen calculation snapshot and all indicator series',()=>{
