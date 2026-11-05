@@ -68,6 +68,9 @@ html[data-theme="dark"] .watchlist-label select,html[data-theme="dark"] .mobile-
   .banner-stats { gap: 16px; }
   .banner-stats > div { min-width: 84px; }
 }
+.nav-icon { display: flex; align-items: center; justify-content: center; }
+.nav-icon > svg { display: block; flex: none; }
+
 @media (max-width:790px) {
   body { overflow-x: hidden; padding-bottom: env(safe-area-inset-bottom); }
   .sidebar { inset: auto 0 0; width: 100%; height: calc(64px + env(safe-area-inset-bottom)); padding: 4px 8px env(safe-area-inset-bottom); border: 0; border-top: 1px solid var(--line); flex-direction: row; background: var(--paper); box-shadow: 0 -4px 18px #142b3a0d; }

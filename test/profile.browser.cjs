@@ -146,10 +146,38 @@ async function makeContext(width) {
         check(Math.round(nav.width), width, 'bottom navigation fills viewport');
         check(nav.y >= 770, true, 'navigation stays at bottom');
       }
-      for (const route of ['overview', 'chart', 'news', 'watchlist', 'profile']) {
-        await page.locator(`.side-nav [data-workspace-route="${route}"]`).click();
-        check(await page.locator('body').getAttribute('data-workspace-page'), route);
+      const routes = ['overview', 'chart', 'news', 'watchlist', 'profile'];
+      const nav = page.locator('.side-nav');
+      for (const theme of ['light', 'dark']) {
+        if (theme === 'dark') await page.locator('#theme-toggle').click();
+        for (const route of routes) {
+          const link = nav.locator(`[data-workspace-route="${route}"]`);
+          const svg = link.locator('.nav-icon svg');
+          check(await link.getAttribute('href'), '#' + route);
+          check(await svg.evaluate(icon => {
+            const {width, height} = icon.getBoundingClientRect();
+            return [width, height, icon.getAttribute('viewBox'), icon.getAttribute('stroke-width'),
+              icon.getAttribute('aria-hidden'), icon.getAttribute('focusable')];
+          }), [18, 18, '0 0 24 24', '1.9', 'true', 'false'], 'decorative SVG at the approved size');
+          check((await link.boundingBox()).height, width <= 790 ? 54 : 42);
+          const inheritsColor = () => svg.evaluate(icon => {
+            const anchor = icon.closest('a');
+            return getComputedStyle(icon).stroke === getComputedStyle(anchor).color;
+          });
+          check(await inheritsColor(), true, 'default SVG color follows the link');
+          await link.hover();
+          check(await inheritsColor(), true, 'hover SVG color follows the link');
+          await link.focus();
+          await page.keyboard.press('Enter');
+          check(await page.locator('body').getAttribute('data-workspace-page'), route);
+          check(await link.getAttribute('aria-current'), 'page');
+          check(await inheritsColor(), true, 'active SVG color follows the link');
+        }
+        if (process.env.SETSCOPE_NAV_SCREENSHOT_DIR && [390, 1440].includes(width)) {
+          await nav.screenshot({ path: path.join(process.env.SETSCOPE_NAV_SCREENSHOT_DIR, `nav-${width}-${theme}.png`) });
+        }
       }
+      await page.locator('#theme-toggle').click();
       await page.locator('#profile-theme-toggle').click();
       check(await page.locator('html').getAttribute('data-theme'), 'dark');
       await page.locator('#profile-theme-toggle').click();
