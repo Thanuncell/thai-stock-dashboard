@@ -34,26 +34,31 @@ function assertCapacity(meta,now,jobs=4,stage=20){
   ||(used+jobs)*JOB_BUDGET.databaseRequests>policy.databaseDailyLimit)throw stopped('BATCH_DAILY_CAPACITY');
  return used;
 }
+function validSize(size, scaling) {
+ return Number.isInteger(size) && size >= 1 && size <= 20 && (scaling || size % 5 === 0);
+}
 function makePlan({rows,metadata={},now,id,targetSize=20,excludeSymbols=[],scaling,eligibilityReview=''}){
  if(!/^\d{1,15}$/.test(id||''))throw stopped('BATCH_ID_INVALID');
  if(!executionWindow({now,mode:'coverage'}).eligible)throw stopped('BATCH_WINDOW_CLOSED');
- if(![5,10,15,20].includes(targetSize))throw stopped('BATCH_SIZE_INVALID');
+ if(!validSize(targetSize,scaling))throw stopped('BATCH_SIZE_INVALID');
  validateRows(rows);const excluded=eligibility.exclusions(rows,now,eligibilityReview),selected=[];
- for(let i=0;i<targetSize/5;i++){
+ for(let i=0;i<Math.ceil(targetSize/5);i++){
   const next=selectCoverage(rows,{now,coverageChecks:metadata.coverageChecks||{},excludeSymbols:[...excludeSymbols,...excluded.map(r=>r.symbol),...selected.map(r=>r.symbol)]});
-  if(next.length!==5)throw stopped('BATCH_NOT_ENOUGH_DUE');selected.push(...next);
+  const size=Math.min(5,targetSize-selected.length);
+  if(next.length<size)throw stopped('BATCH_NOT_ENOUGH_DUE');
+  selected.push(...next.slice(0,size));
  }
  eligibility.assertSelected(selected);
  const day=bangkokDay(now),targets=selected.map(identity);
- const runKeys=Array.from({length:targetSize/5},(_,i)=>`v156:coverage:${day}:b20-${id}-${i+1}`);
- const plan={version:1,id,day,targets,runKeys,initialReservations:assertCapacity(metadata,now,targetSize/5,scaling?.stage||20),...(excluded.length?{exclusions:excluded,eligibilityReview}:{}),...(targetSize!==20?{targetSize}:{}),...(scaling?{scaling}:{})};
+ const runKeys=Array.from({length:Math.ceil(targetSize/5)},(_,i)=>`v156:coverage:${day}:b20-${id}-${i+1}`);
+ const plan={version:1,id,day,targets,runKeys,initialReservations:assertCapacity(metadata,now,Math.ceil(targetSize/5),scaling?.stage||20),...(excluded.length?{exclusions:excluded,eligibilityReview}:{}),...(targetSize!==20?{targetSize}:{}),...(scaling?{scaling}:{})};
  return {...plan,fingerprint:digest(plan)};
 }
 function validatePlan(plan){
  const size=plan?.targetSize||20;
  if(!plan||plan.version!==1||!/^\d{1,15}$/.test(plan.id||'')||!/^\d{4}-\d\d-\d\d$/.test(plan.day||'')
-  ||![5,10,15,20].includes(size)||!Array.isArray(plan.targets)||plan.targets.length!==size||new Set(plan.targets.map(r=>r.symbol)).size!==size
-  ||!Array.isArray(plan.runKeys)||JSON.stringify(plan.runKeys)!==JSON.stringify(Array.from({length:size/5},(_,i)=>`v156:coverage:${plan.day}:b20-${plan.id}-${i+1}`))
+  ||!validSize(size,plan.scaling)||!Array.isArray(plan.targets)||plan.targets.length!==size||new Set(plan.targets.map(r=>r.symbol)).size!==size
+  ||!Array.isArray(plan.runKeys)||JSON.stringify(plan.runKeys)!==JSON.stringify(Array.from({length:Math.ceil(size/5)},(_,i)=>`v156:coverage:${plan.day}:b20-${plan.id}-${i+1}`))
   ||!Number.isSafeInteger(plan.initialReservations)||plan.initialReservations<0)throw stopped('BATCH_PLAN_INVALID');
  validateRows(plan.targets,true);
  if(plan.targets.some(r=>r.active!==true))throw stopped('BATCH_MAPPING_INVALID');
@@ -69,7 +74,7 @@ function selectPinned(plan,index,rows,metadata,now){
   if(!row||JSON.stringify(identity(row))!==JSON.stringify(target))throw stopped('BATCH_MAPPING_CHANGED');return row;
  });
  eligibility.assertSelected(selected);
- if(selectCoverage(selected,{now,coverageChecks:metadata.coverageChecks||{}}).length!==5)throw stopped('BATCH_NO_LONGER_DUE');
+ if(selectCoverage(selected,{now,coverageChecks:metadata.coverageChecks||{}}).length!==selected.length)throw stopped('BATCH_NO_LONGER_DUE');
  return selected;
 }
 async function inspectOptional(store,key){try{return await store.inspect(key);}catch(e){if(e.code==='JOB_NOT_FOUND')return null;throw e;}}

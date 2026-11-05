@@ -57,7 +57,7 @@ test('synthetic stages 20 -> 100 -> 500 complete across explicitly approved roun
  assert.equal(providerCalls(db),620);assert.deepEqual(db.registry.get('OUTSIDE'),outside);assert.deepEqual(db.runs.get(CANARY),canary);
 });
 
-for(const stage of [20,100,500])for(const kind of ['404','429','503','timeout','lost-write'])
+for(const stage of [20,100,500])for(const kind of ['403','429','503','timeout','lost-write'])
 test(`synthetic stage ${stage}: ${kind} stops the round without replay or outside writes`,async()=>{
  const db=fixture(20);if(stage>20)await seedPrevious(db,stage);let calls=0,lost=false;
  const transport=async(input,init)=>{
@@ -164,12 +164,12 @@ const recovery=require('../server/scaling-recovery');
 const repositoryFor=db=>require('../server/coverage-service').createCoverageRepository({env:{...env,SETSCOPE_V156_MANUAL_VERIFY:'1'},fetchImpl:db.fetchImpl,now:()=>NOW});
 const storeFor=db=>createControlledCoverageStore({env:{...env,SETSCOPE_V156_MANUAL_VERIFY:'1'},fetchImpl:db.fetchImpl,now:()=>NOW});
 const recoveryContext=(roundId='11001')=>({id:'11000',stage:100,roundId,reviewed:true,evidenceKind:'synthetic',sourceSha:null});
-async function stoppedStage({kind='404',failAt=1}={}){
+async function stoppedStage({kind='503',failAt=1}={}){
  const db=fixture(125);await seedPrevious(db,100);let calls=0;
  const transport=async(input,init)=>{
   if(new URL(String(input)).hostname==='query1.finance.yahoo.com'&&++calls===failAt){
    if(kind==='lost-write')return db.fetchImpl(input,init);
-   return Response.json({},{status:404});
+   return Response.json({},{status:503});
   }
   const response=await db.fetchImpl(input,init);
   if(kind==='lost-write'&&new URL(String(input)).pathname.endsWith('/security_coverage')&&init?.method==='PATCH')throw Error('lost response');
@@ -225,7 +225,7 @@ test('stopped-stage recovery requires reconcile and exact review; preserves rese
 
 for(const kind of ['lost-write','changed-row','inflight','leased','circuit','bad-manifest','changed-review','wrong-stage','receipt','quota'])
 test(`recovery fails closed for ${kind} without provider traffic or coverage writes`,async()=>{
- const db=await stoppedStage({kind:kind==='lost-write'?'lost-write':'404',failAt:kind==='receipt'?6:1});
+ const db=await stoppedStage({kind:kind==='lost-write'?'lost-write':'503',failAt:kind==='receipt'?6:1});
  let meta=db.runs.get(CONTROL_KEY).automation_state.metadata;const key=meta.activeJob;
  if(kind==='lost-write'){const snapshot=structuredClone([...db.runs]);await assert.rejects(reconcileFixture(db));assert.deepEqual([...db.runs],snapshot);return;}
  await reconcileFixture(db);
@@ -436,4 +436,107 @@ test('reviewed suspension leaves the registry untouched and cannot count as veri
  assert.equal(result.verified,20);assert.equal(result.after.verified,20);assert.deepEqual(db.registry.get('ACAP'),acap);
  assert.equal(result.plan.targets.some(r=>r.symbol==='ACAP'),false);
  assert.equal(db.calls.some(c=>c.url.hostname==='query1.finance.yahoo.com'&&c.url.pathname.endsWith('/ACAP.BK')),false);
+});
+
+function isolatedResult(db,kind,onRequest=()=>false) {
+ let calls=0;
+ return async (input,init={})=>{
+  const url=new URL(String(input));
+  if(onRequest(url,init))return Response.json({}, {status:503});
+  if(url.hostname!=='query1.finance.yahoo.com'||++calls!==6)return db.fetchImpl(input,init);
+  if(kind==='no-data')return Response.json({}, {status:404});
+  const payload=await (await db.fetchImpl(input,init)).json();
+  payload.chart.result[0].meta.regularMarketChange=3;
+  return Response.json(payload);
+ };
+}
+
+for(const kind of ['mismatch','no-data'])test('isolated '+kind+' preserves nine results and permits a short final job',async()=>{
+ const db=fixture(25);
+ const oldVerified='2026-10-01T00:00:00.000Z';
+ for(const row of db.registry.values())if(row.active)row.last_verified_at=oldVerified;
+ const first=await main({env:options(20,'15000'),fetchImpl:isolatedResult(db,kind),now:()=>NOW,mode:'run',roundJobs:2});
+ assert.equal(first.status,'ROUND_PASS');
+ assert.equal(first.verified,9);
+ assert.equal(first.stageProgress.completed,9);
+ const symbol=first.plan.targets[5].symbol, row=db.registry.get(symbol);
+ assert.equal(row.last_verified_at,oldVerified);
+ if(kind==='mismatch'){
+  assert.equal(row.status,'partial');
+  assert.equal(row.guard_status,'suspect');
+  assert.equal(row.guard_reason,'PRICE_CHANGE_MISMATCH');
+ }else assert.equal(row.status,'temporary_failed');
+ const nextDay=NOW+86400000;db.advance(nextDay,35);
+ const next=await main({env:options(20,'15000','15001'),fetchImpl:db.fetchImpl,now:()=>nextDay,mode:'run'});
+ assert.deepEqual(next.jobs.map(j=>j.attempted),[5,5,1]);
+ assert.equal(next.status,'STAGE_PASS');
+ assert.equal(next.stageProgress.completed,20);
+ assert.ok(next.plan.targets.every(t=>!first.plan.targets.some(old=>old.symbol===t.symbol)));
+});
+
+test('reviewed recovery imports only completed mixed-job evidence without replay or registry writes',async()=>{
+ const db=fixture(125);await seedPrevious(db,100);
+ await main({env:options(100,'16000'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run',roundJobs:2});
+ const day=NOW+86400000;db.advance(day,35);
+ const key='v156:coverage:2026-10-27:b20-16001-2';
+ let interrupted=false;
+ const transport=isolatedResult(db,'mismatch',(url,init)=>{
+  if(!interrupted&&url.searchParams.get('run_key')==='eq.'+key&&!init.method&&db.runs.get(key)?.status==='completed'){
+   interrupted=true;return true;
+  }
+  return false;
+ });
+ await assert.rejects(main({env:options(100,'16000','16001'),fetchImpl:transport,now:()=>day,mode:'run'}));
+ const old=structuredClone(db.runs.get(CONTROL_KEY).automation_state.metadata);
+ const evidence=structuredClone(db.runs.get(key)), registry=structuredClone([...db.registry]);
+ assert.equal(old.scaling.phase,'stopped');assert.equal(old.scaling.completedSymbols.length,15);
+ assert.equal(evidence.verified,4);assert.equal(evidence.partial,1);assert.equal(old.reservations,2);
+ const settings=options(100,'16000','16002');
+ const calls=providerCalls(db), before=writes(db);
+ const read=(env=settings)=>main({env,fetchImpl:db.fetchImpl,now:()=>day,mode:'recovery-preflight'});
+ const ready=await read();assert.equal(ready.recovery.verifiedJob.verified,4);assert.equal(writes(db),before);
+ const symbol=ready.recovery.verifiedJob.verifiedSymbols[0], row=db.registry.get(symbol);
+ const saved=row.guard_status;row.guard_status='suspect';
+ await assert.rejects(read(),e=>e.report.reasonCode==='SCALING_RECOVERY_SIDE_EFFECT_UNCERTAIN');
+ row.guard_status=saved;
+ const approved={...settings,GITHUB_RUN_ID:'16003',SETSCOPE_SCALE_CONFIRMATION:'RECOVER COVERAGE 16000',
+  SETSCOPE_SCALE_RECOVERY_FINGERPRINT:ready.recovery.fingerprint};
+ const result=await main({env:approved,fetchImpl:db.fetchImpl,now:()=>day,mode:'recover'});
+ assert.equal(result.jobsStarted,0);assert.equal(providerCalls(db),calls);
+ const meta=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ assert.equal(meta.scaling.completedSymbols.length,19);
+ assert.deepEqual(meta.scaling.completedSymbols.slice(0,15),old.scaling.completedSymbols);
+ assert.deepEqual(meta.scaling.acceptedStages,old.scaling.acceptedStages);
+ assert.equal(meta.reservations,3);
+ assert.deepEqual(db.runs.get(key),evidence);assert.deepEqual([...db.registry],registry);
+ const fresh=await main({env:options(100,'16000','16004'),fetchImpl:db.fetchImpl,now:()=>day});
+ assert.equal(fresh.preflight.stageProgress.completed,19);
+ assert.equal(fresh.plan.runKeys.length,1);
+ assert.ok(fresh.plan.targets.every(t=>!ready.recovery.receipt.excludedSymbols.includes(t.symbol)));
+ assert.equal(providerCalls(db),calls);
+ await assert.rejects(main({env:approved,fetchImpl:db.fetchImpl,now:()=>day,mode:'recover'}));
+});
+
+test('a lost progress acknowledgement preserves the committed receipt and stops the round',async()=>{
+ const db=fixture(20);
+ let lost=false;
+ const transport=async(input,init={})=>{
+  const response=await db.fetchImpl(input,init);
+  const payload=init.method==='PATCH'?JSON.parse(init.body):null;
+  const metadata=payload?.automation_state?.metadata;
+  if(!lost&&metadata?.manualBatch?.next===1&&metadata?.scaling?.completedSymbols.length===5){
+   lost=true;
+   throw Error('lost progress acknowledgement');
+  }
+  return response;
+ };
+ await assert.rejects(main({env:options(20,'17000'),fetchImpl:transport,now:()=>NOW,mode:'run',roundJobs:2}));
+ assert.equal(lost,true);
+ const metadata=db.runs.get(CONTROL_KEY).automation_state.metadata;
+ assert.equal(metadata.scaling.completedSymbols.length,5);
+ assert.equal(metadata.manualBatch.next,1);
+ assert.equal(metadata.reservations,1);
+ assert.equal(providerCalls(db),5);
+ await assert.rejects(main({env:options(20,'17000','17001'),fetchImpl:db.fetchImpl,now:()=>NOW,mode:'run'}));
+ assert.equal(providerCalls(db),5);
 });

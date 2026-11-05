@@ -73,8 +73,9 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
     if (recent.length >= 3) throw stopped('TRIGGER_RATE_LIMIT');
     recent.push(current);
     active = true;
-    let ownsCoordinator = false, jobStarted = false, metadata, canaryBefore, batchBefore, batchCounts, outcome='failed';
+    let ownsCoordinator = false, jobStarted = false, metadata, canaryBefore, batchBefore, batchCounts, committingProgress=false, outcome='failed';
     const coverageReserved=new Set();
+    const jobSize=batchPlan ? batchPlan.targets.slice(batchIndex*5,batchIndex*5+5).length : 5;
     try {
       // A duplicate completed job must not consume another daily reservation.
       try {
@@ -92,7 +93,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
       if(metadata.manualBatch?.phase==='recovered')await require('./scaling-recovery').assertEvidence(metadata,store);
       if(metadata.manualBatch&&metadata.manualBatch.phase!=='completed'&&!batchPlan)throw stopped('BATCH_RECOVERY_REQUIRED');
       if(metadata.scaling?.phase==='stopped'||metadata.scaling?.phase==='running'&&!batchPlan?.scaling)throw stopped('SCALING_REVIEW_REQUIRED');
-      if (metadata.denied || Date.parse(metadata.blockedUntil || '') > Number(now())) throw stopped('PROVIDER_CIRCUIT_OPEN');
+      if (metadata.denied || (batchPlan?.scaling && (metadata.providerFailures>=3 || metadata.failedSecurities>=FAILED_SECURITIES_LIMIT)) || Date.parse(metadata.blockedUntil || '') > Number(now())) throw stopped('PROVIDER_CIRCUIT_OPEN');
       if (metadata.activeJob && metadata.activeJob !== key) {
         const previous = await store.status(metadata.activeJob);
         if (previous.requiresReconciliation || !['completed','stopped'].includes(previous.phase)) throw stopped('JOB_RECOVERY_REQUIRED');
@@ -148,7 +149,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
           try {
             await store.assertActive();
             await coordinator.assertActive();
-            if (metadata.denied || Date.parse(metadata.blockedUntil || '') > Number(now())) throw stopped('PROVIDER_CIRCUIT_OPEN');
+            if (metadata.denied || (batchPlan?.scaling && (metadata.providerFailures>=3 || metadata.failedSecurities>=FAILED_SECURITIES_LIMIT)) || Date.parse(metadata.blockedUntil || '') > Number(now())) throw stopped('PROVIDER_CIRCUIT_OPEN');
             if (metrics.providerCalls >= JOB_BUDGET.providerRequests) throw stopped('PROVIDER_BUDGET');
           } catch (error) { error.notStarted = true; throw error; }
           // Reserve this stock's coverage clock before acquisition. Retry attempts
@@ -170,6 +171,8 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
                 reason: denied ? 'SOURCE_DENIED' : malformed ? 'SOURCE_MALFORMED' : 'TRANSIENT_FAILURES' } : {}) };
             await coordinator.updateMetadata({ providerFailures: failures, ...(metadata.blockedUntil ? {
               blockedUntil: metadata.blockedUntil, denied: Boolean(metadata.denied), reason: metadata.reason } : {}) });
+            if(batchPlan?.scaling && (denied || malformed || transient || error.status>=500 ||
+              error.code!=='SOURCE_NO_DATA' && !error.guardStatus)) error.stopBatch=true;
             throw error;
           }
           if (metadata.providerFailures) { metadata.providerFailures = 0; await coordinator.updateMetadata({ providerFailures: 0 }); }
@@ -196,19 +199,27 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
             await coordinator.updateMetadata(patch);metadata={...metadata,...patch};
           }
           if(failed && streak>=FAILED_SECURITIES_LIMIT) throw stopped('PROVIDER_MASS_FAILURES');
-          if(batchPlan&&result.status==='temporary_failed')throw stopped('BATCH_TEMPORARY_FAILURE');
+          if(batchPlan&&!batchPlan.scaling&&result.status==='temporary_failed')throw stopped('BATCH_TEMPORARY_FAILURE');
         },
-        checkpointStore: store.checkpointStore, batchSize: 5, concurrency: 1, verificationAttempts: batchPlan?1:2, now, ...(retrySleep ? { retrySleep } : {}) });
+        checkpointStore: store.checkpointStore, batchSize: jobSize, concurrency: 1, verificationAttempts: batchPlan?1:2, now, ...(retrySleep ? { retrySleep } : {}) });
       const result = await runner.run({ runKey: key, resume });
       if(batchPlan){
-        if(result.alreadyCompleted||result.alreadyRunning||result.attempted!==5||result.temporaryFailed)throw stopped('BATCH_JOB_NOT_SUCCESSFUL');
-        if(batchPlan.scaling&&(result.verified!==5||result.partial))throw stopped('SCALING_JOB_NOT_VERIFIED');
+        if(result.alreadyCompleted||result.alreadyRunning||result.attempted!==jobSize||!batchPlan.scaling&&result.temporaryFailed)throw stopped('BATCH_JOB_NOT_SUCCESSFUL');
         const after=await repository.listCandidates();
         if(!batchPolicy.unchangedOutside(batchBefore,after,batchPlan.targets.slice(batchIndex*5,batchIndex*5+5).map(r=>r.symbol)))throw stopped('BATCH_OUTSIDE_CHANGED');
         batchCounts={before:batchPolicy.counts(batchBefore,Number(now())),after:batchPolicy.counts(after,Number(now())),outsideUnchanged:true};
         const manualBatch={...metadata.manualBatch,next:batchIndex+1,phase:batchIndex===batchPlan.runKeys.length-1?'completed':'running'};
-        if(batchPlan.scaling)metadata.scaling=scalingPolicy.complete(metadata.scaling,batchPlan,batchIndex,result);
-        await coordinator.updateMetadata({manualBatch,...(batchPlan.scaling?{scaling:metadata.scaling}:{})});metadata.manualBatch=manualBatch;
+        let scaling=metadata.scaling;
+        if(batchPlan.scaling){
+          const {receipt}=scalingPolicy.completedEvidence(await store.inspect(key),batchPlan,batchIndex);
+          scaling=scalingPolicy.complete(scaling,batchPlan,batchIndex,receipt);
+        }
+        // An ambiguous acknowledgement must never overwrite a potentially accepted receipt.
+        committingProgress=true;
+        await coordinator.updateMetadata({manualBatch,...(batchPlan.scaling?{scaling}:{})});
+        committingProgress=false;
+        metadata.manualBatch=manualBatch;
+        metadata.scaling=scaling;
       }
       let canaryCounts;
       if (canary) {
@@ -222,7 +233,7 @@ function createControlledCoverage({ env = process.env, fetchImpl = globalThis.fe
         temporaryFailed: result.temporaryFailed || 0, metrics, ...(canaryCounts?{canaryCounts}:{}), ...(batchCounts?{batchCounts}:{}),
         schedulerEnabled: false };
     } catch (error) {
-      if(batchPlan&&ownsCoordinator&&metadata?.manualBatch?.fingerprint===batchPlan.fingerprint){
+      if(!committingProgress&&batchPlan&&ownsCoordinator&&metadata?.manualBatch?.fingerprint===batchPlan.fingerprint){
         try{await coordinator.updateMetadata({manualBatch:{...metadata.manualBatch,phase:'stopped'},...(batchPlan.scaling&&metadata.scaling?{scaling:{...metadata.scaling,phase:'stopped'}}:{})});}catch{/* Preserve the last durable sequence fence. */}
       }
       // Preserve uncertain entries; never turn a failed response into a replay.

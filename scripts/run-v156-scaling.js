@@ -31,7 +31,7 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
     ||['reconcile','recover'].includes(mode)&&env.SETSCOPE_SCALE_CONFIRMATION!==`${reconciling?'RECONCILE':'RECOVER'} COVERAGE ${id}`)throw stopped('SCALING_RECOVERY_REVIEW_REQUIRED');
    const control=await store.inspect('v156:control');
    const inspected=await deadline.run(()=>recovery.inspect({store,repository,metadata:control.automation_state.metadata,context,now:Number(now()),reconciliation:reconciling}));
-   report[reconciling?'reconciliation':'recovery']={fingerprint:inspected.fingerprint,receipt:inspected.receipt};
+   report[reconciling?'reconciliation':'recovery']={fingerprint:inspected.fingerprint,receipt:inspected.receipt,...(inspected.verifiedJob?{verifiedJob:inspected.verifiedJob}:{})};
    if(['recovery-preflight','reconciliation-preflight'].includes(mode)){report.status=reconciling?'RECONCILIATION_READY':'RECOVERY_READY';return report;}
    // Recovery is a separate, explicitly approved metadata operation, never a batch run.
    let requests=reads;
@@ -55,9 +55,9 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
     const progress=scaling.progress(metadata,context,{requireReview:mode==='run',canary:priorCanary});
     const remaining=stage-progress.completedSymbols.length;
     check.stageProgress={id,stage,completed:progress.completedSymbols.length,remaining,continuationReviewRequired:progress.completedSymbols.length>0};
-    const jobs=Math.min(roundJobs,remaining/5,check.quotaRemaining.jobs);
+    const jobs=Math.min(roundJobs,Math.ceil(remaining/5),check.quotaRemaining.jobs);
     if(jobs<1)throw stopped('SCALING_DAILY_CAPACITY');
-    return {targetSize:jobs*5,excludeSymbols:[...progress.completedSymbols,...(progress.recoveries||[]).flatMap(r=>r.excludedSymbols)],scaling:context};
+    return {targetSize:Math.min(jobs*5,remaining),excludeSymbols:[...progress.completedSymbols,...(progress.recoveries||[]).flatMap(r=>r.excludedSymbols)],scaling:context};
    }}));
   report.preflight=prepared.preflight;report.plan=prepared.plan;report.before=batch.counts(prepared.rows,Number(now()));
   if(mode==='preflight'){report.status='READY';return report;}
@@ -67,12 +67,12 @@ async function main({env=process.env,fetchImpl=globalThis.fetch,now=Date.now,dea
    const controller=createControlledCoverage({env:settings,fetchImpl:deadline.wrap(fetchImpl),now,batchPlan:plan,batchIndex:index,
     initialDatabaseReads:index===0?reads:0,retrySleep:deadline.sleep,onJobStarted:()=>{jobStarted=true;report.jobsStarted++;}});
    const result=await deadline.run(()=>controller.execute({tag:plan.runKeys[index].split(':')[3]}));
-   if(result.alreadyRunning||result.alreadyCompleted||result.skipped||result.verified!==5||result.partial||result.temporaryFailed)throw stopped('SCALING_JOB_NOT_VERIFIED');
+   if(result.alreadyRunning||result.alreadyCompleted||result.skipped||result.attempted!==plan.targets.slice(index*5,index*5+5).length)throw stopped('SCALING_JOB_NOT_VERIFIED');
    const receipt={runKey:result.runKey,attempted:result.attempted,verified:result.verified,partial:result.partial,temporaryFailed:result.temporaryFailed,metrics:result.metrics};
    report.jobs.push(receipt);for(const k of ['attempted','verified','partial','temporaryFailed'])report[k]+=receipt[k];
    report.after=result.batchCounts.after;
   }
-  const completed=report.preflight.stageProgress.completed+report.attempted;
+  const completed=report.preflight.stageProgress.completed+report.verified;
   report.stageProgress={stage,id,completed,remaining:stage-completed,phase:completed===stage?'completed':'awaiting_approval'};
   report.status=completed===stage?'STAGE_PASS':'ROUND_PASS';report.afterStatus='PASS';report.countsScope='this-round';return report;
  }catch(error){

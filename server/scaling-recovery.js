@@ -19,10 +19,11 @@ function validateBatch(b){
  require('./manual-batch-policy').validatePlan(plan);
 }
 function validateReceipt(r){
- if(!r||Object.keys(r).some(k=>!['roundId','sourceSha','reviewedAt','priorBatch','jobKey','jobRevision','checkpointDigest','excludedSymbols','quotaBefore','quotaAfter'].includes(k))
+ if(!r||Object.keys(r).some(k=>!['roundId','sourceSha','reviewedAt','priorBatch','jobKey','jobRevision','checkpointDigest','excludedSymbols','quotaBefore','quotaAfter','completedJob'].includes(k))
   ||!/^\d{1,15}$/.test(r.roundId||'')||r.sourceSha!==null&&!/^[a-f0-9]{40}$/.test(r.sourceSha||'')
   ||!Number.isFinite(Date.parse(r.reviewedAt||''))||!Number.isSafeInteger(r.jobRevision)||r.jobRevision<0||!/^[a-f0-9]{64}$/.test(r.checkpointDigest||'')
-  ||!Array.isArray(r.excludedSymbols)||r.excludedSymbols.length!==5||new Set(r.excludedSymbols).size!==5)throw stopped('SCALING_RECOVERY_INVALID');
+  ||r.completedJob!==undefined&&r.completedJob!==true
+  ||!Array.isArray(r.excludedSymbols)||new Set(r.excludedSymbols).size!==r.excludedSymbols.length)throw stopped('SCALING_RECOVERY_INVALID');
  for(const q of [r.quotaBefore,r.quotaAfter])if(!q||Object.keys(q).some(k=>!['day','reservations'].includes(k))||!/^\d{4}-\d\d-\d\d$/.test(q.day||'')||!Number.isSafeInteger(q.reservations)||q.reservations<0||q.reservations>4)throw stopped('SCALING_RECOVERY_INVALID');
  if(r.quotaAfter.day!==bangkokDay(Date.parse(r.reviewedAt))||r.quotaAfter.reservations!==(r.quotaBefore.day===r.quotaAfter.day?r.quotaBefore.reservations:0)+1)throw stopped('SCALING_RECOVERY_INVALID');
  const b=r.priorBatch;validateBatch(b);
@@ -38,7 +39,8 @@ function isRecovered(metadata){
 async function assertEvidence(metadata,store){
  if(!isRecovered(metadata))throw stopped('SCALING_RECOVERY_INVALID');
  const r=metadata.scaling.recoveries.at(-1),row=await store.inspect(r.jobKey),state=row.automation_state;
- if(state.phase!=='stopped'||state.revision!==r.jobRevision||hash(state.documents)!==r.checkpointDigest||row.failure_reason!=='OPERATOR_RECONCILED_WITHOUT_REPLAY')throw stopped('SCALING_RECOVERY_STATE_CHANGED');
+ if(state.revision!==r.jobRevision||hash(r.completedJob?row:state.documents)!==r.checkpointDigest||
+  (r.completedJob?state.phase!=='completed':state.phase!=='stopped'||row.failure_reason!=='OPERATOR_RECONCILED_WITHOUT_REPLAY'))throw stopped('SCALING_RECOVERY_STATE_CHANGED');
 }
 function validateReservation(r){
  if(!r||Object.keys(r).some(k=>!['id','jobKey','roundId','sourceSha','reviewedAt','originalQuota','quotaBefore','quotaAfter','evidenceDigest'].includes(k))
@@ -67,56 +69,74 @@ async function inspect({store,repository,metadata,context,now,held=false,reconci
  if(hash(control.automation_state.metadata)!==hash(metadata))throw stopped('SCALING_RECOVERY_STATE_CHANGED');
  const key=b.runKeys[b.next];if(metadata.activeJob!==key)throw stopped('SCALING_RECOVERY_STATE_CONFLICT');
  const failed=await store.inspect(key),state=failed.automation_state;
- if(failed.batch_size!==5||failed.concurrency!==1||state.metadata?.mode!=='coverage'||state.metadata?.session!==b.day)throw stopped('SCALING_RECOVERY_STATE_CONFLICT');
- if((reconciliation?state.phase!=='failed'||failed.failure_reason!=='CONTROLLED_RUN_INTERRUPTED':state.phase!=='stopped'||failed.failure_reason!=='OPERATOR_RECONCILED_WITHOUT_REPLAY')||Date.parse(state.leaseUntil)>now)
-  throw stopped('SCALING_RECONCILIATION_REQUIRED');
- if(reconciliation&&reservation)throw stopped('SCALING_RECONCILIATION_UNCERTAIN');
- const manifest=state.documents['coverage-manifest:'+key],checkpoint=state.documents['coverage-items:'+key];
- safeCheckpoint(manifest);
- batch.validateRecoveryRows(manifest.rows);
- if(!checkpoint||checkpoint.version!==1||checkpoint.status!=='running'||checkpoint.fingerprint!==batchKey(manifest.rows)
-  ||Object.keys(state.documents).some(k=>!['coverage-manifest:'+key,'coverage-items:'+key].includes(k))
-  ||!checkpoint.entries||Array.isArray(checkpoint.entries)||!Object.keys(checkpoint.entries).length
-  ||Object.entries(checkpoint.entries).some(([symbol,e])=>!manifest.rows.some(r=>r.symbol===symbol)||e.status!==(reconciliation?'inflight':'abandoned')||Object.keys(e).some(k=>k!=='status')))
-  throw stopped('SCALING_RECOVERY_SIDE_EFFECT_UNCERTAIN');
- if(reconciliation)safeCheckpoint(checkpoint);
- else{
-  const audit=state.metadata?.reconciliation;
-  if(!audit||!reservation||hash(audit.reservation)!==hash(reservation)||audit.priorPhase!=='failed'||audit.priorFailureReason!=='CONTROLLED_RUN_INTERRUPTED'
-   ||audit.priorRevision+1!==state.revision)throw stopped('SCALING_RECONCILIATION_EVIDENCE_REQUIRED');
-  const prior=structuredClone(audit.priorDocuments);
-  safeCheckpoint(prior?.['coverage-manifest:'+key]);safeCheckpoint(prior?.['coverage-items:'+key]);
-  for(const e of Object.values(prior['coverage-items:'+key].entries))if(e.status==='inflight')e.status='abandoned';
-  if(hash(prior)!==hash(state.documents))throw stopped('SCALING_RECONCILIATION_EVIDENCE_REQUIRED');
- }
  const targets=b.targets.slice(b.next*5,b.next*5+5);
- if(manifest.rows.length!==5||manifest.batchSize!==5||JSON.stringify(manifest.rows.map(batch.identity))!==JSON.stringify(targets.map(batch.identity)))throw stopped('SCALING_RECOVERY_STATE_CONFLICT');
+ const completedJob=!reconciliation&&state.phase==='completed';
+ let evidence;
+ if(completedJob){
+  if(Date.parse(state.leaseUntil)>now)throw stopped('SCALING_RECOVERY_STATE_CONFLICT');
+  evidence=policy.completedEvidence(failed,b,b.next);
+  if(evidence.receipt.partial===0||evidence.receipt.temporaryFailed!==0)throw stopped('SCALING_RECOVERY_STATE_CONFLICT');
+ }else{
+  if(failed.batch_size!==targets.length||failed.concurrency!==1||state.metadata?.mode!=='coverage'||state.metadata?.session!==b.day)throw stopped('SCALING_RECOVERY_STATE_CONFLICT');
+  if((reconciliation?state.phase!=='failed'||failed.failure_reason!=='CONTROLLED_RUN_INTERRUPTED':state.phase!=='stopped'||failed.failure_reason!=='OPERATOR_RECONCILED_WITHOUT_REPLAY')||Date.parse(state.leaseUntil)>now)
+   throw stopped('SCALING_RECONCILIATION_REQUIRED');
+  if(reconciliation&&reservation)throw stopped('SCALING_RECONCILIATION_UNCERTAIN');
+  const manifest=state.documents['coverage-manifest:'+key],checkpoint=state.documents['coverage-items:'+key];
+  safeCheckpoint(manifest);
+  batch.validateRecoveryRows(manifest.rows);
+  if(!checkpoint||checkpoint.version!==1||checkpoint.status!=='running'||checkpoint.fingerprint!==batchKey(manifest.rows)
+   ||Object.keys(state.documents).some(k=>!['coverage-manifest:'+key,'coverage-items:'+key].includes(k))
+   ||!checkpoint.entries||Array.isArray(checkpoint.entries)||!Object.keys(checkpoint.entries).length
+   ||Object.entries(checkpoint.entries).some(([symbol,e])=>!manifest.rows.some(r=>r.symbol===symbol)||e.status!==(reconciliation?'inflight':'abandoned')||Object.keys(e).some(k=>k!=='status')))
+   throw stopped('SCALING_RECOVERY_SIDE_EFFECT_UNCERTAIN');
+  if(reconciliation)safeCheckpoint(checkpoint);
+  else{
+   const audit=state.metadata?.reconciliation;
+   if(!audit||!reservation||hash(audit.reservation)!==hash(reservation)||audit.priorPhase!=='failed'||audit.priorFailureReason!=='CONTROLLED_RUN_INTERRUPTED'
+    ||audit.priorRevision+1!==state.revision)throw stopped('SCALING_RECONCILIATION_EVIDENCE_REQUIRED');
+   const prior=structuredClone(audit.priorDocuments);
+   safeCheckpoint(prior?.['coverage-manifest:'+key]);safeCheckpoint(prior?.['coverage-items:'+key]);
+   for(const e of Object.values(prior['coverage-items:'+key].entries))if(e.status==='inflight')e.status='abandoned';
+   if(hash(prior)!==hash(state.documents))throw stopped('SCALING_RECONCILIATION_EVIDENCE_REQUIRED');
+  }
+  if(manifest.rows.length!==targets.length||manifest.batchSize!==targets.length||JSON.stringify(manifest.rows.map(batch.identity))!==JSON.stringify(targets.map(batch.identity)))throw stopped('SCALING_RECOVERY_STATE_CONFLICT');
+ }
  const rows=await repository.listCandidates();
  batch.validateRecoveryRows(rows);
  // An inflight record alone never authorizes overwriting a changed registry row.
- if(manifest.rows.some(old=>{const current=rows.find(r=>r.symbol===old.symbol);return !current||Object.keys(old).some(k=>JSON.stringify(old[k])!==JSON.stringify(current[k]));}))
+ const expected=evidence?.results||state.documents['coverage-manifest:'+key].rows;
+ if(expected.some(old=>{
+  const current=rows.find(r=>r.symbol===old.symbol);
+  return !current||Object.keys(old).some(k=>{
+   if(k==='updated_at'&&!Object.hasOwn(current,k))return false;
+   if(k.endsWith('_at')&&old[k]!=null&&current[k]!=null)return Date.parse(old[k])!==Date.parse(current[k]);
+   return old[k]!==current[k];
+  });
+ }))
   throw stopped('SCALING_RECOVERY_SIDE_EFFECT_UNCERTAIN');
- const priorKeys=b.runKeys.slice(0,b.next),tail=s.completedJobs.slice(-b.next||s.completedJobs.length).map(j=>j.runKey);
+ const priorKeys=b.runKeys.slice(0,b.next),tail=s.completedJobs.slice(s.completedJobs.length-b.next).map(j=>j.runKey);
  if(b.next&&JSON.stringify(priorKeys)!==JSON.stringify(tail))throw stopped('SCALING_RECOVERY_RECEIPT_CONFLICT');
  for(let i=0;i<b.next;i++){
   const row=await store.inspect(priorKeys[i]);
-  const cp=row.automation_state.documents['coverage-items:'+priorKeys[i]];
-  if(row.automation_state.phase!=='completed'||row.attempted!==5||row.verified!==5||Number(row.partial||0)!==0||Number(row.temporary_failed||0)!==0
-   ||cp?.status!=='completed'||Object.keys(cp.entries||{}).length!==5
-   ||b.targets.slice(i*5,i*5+5).some(t=>cp.entries[t.symbol]?.status!=='applied'||cp.entries[t.symbol]?.result?.status!=='verified'||!s.completedSymbols.includes(t.symbol)))
-   throw stopped('SCALING_RECOVERY_RECEIPT_CONFLICT');
+  const {receipt}=policy.completedEvidence(row,b,i);
+  const jobIndex=s.completedJobs.length-b.next+i;
+  const accepted=s.completedJobs[jobIndex];
+  const offset=s.completedJobs.slice(0,jobIndex).reduce((sum,j)=>sum+j.verified,0);
+  const {verifiedSymbols,...legacy}=receipt;
+  if(hash(accepted)!==hash(accepted?.verifiedSymbols===undefined?legacy:receipt)||
+   hash(verifiedSymbols)!==hash(s.completedSymbols.slice(offset,offset+receipt.verified)))throw stopped('SCALING_RECOVERY_RECEIPT_CONFLICT');
  }
  for(const unused of b.runKeys.slice(b.next+1)){try{await store.inspect(unused);}catch(e){if(e.code==='JOB_NOT_FOUND')continue;throw e;}throw stopped('SCALING_RECOVERY_STATE_CONFLICT');}
  const excludedSymbols=targets.map(t=>t.symbol);
  const reserved=batch.assertCapacity(metadata,now,1,100);
- // Exclude the entire failed job from this stage, including unattempted targets;
- // this conservative choice makes any replay impossible without reducing 100.
+ // Exclude all targets of the stopped job from later plans to prevent replay.
  const receipt={roundId:context.roundId,sourceSha:context.sourceSha||null,reviewedAt:new Date(now).toISOString(),priorBatch:structuredClone(b),jobKey:key,
-  jobRevision:state.revision,checkpointDigest:hash(state.documents),excludedSymbols,
+  jobRevision:state.revision,checkpointDigest:hash(completedJob?failed:state.documents),excludedSymbols,
+  ...(completedJob?{completedJob:true}:{}),
   quotaBefore:{day:metadata.day,reservations:metadata.reservations},quotaAfter:{day:bangkokDay(now),reservations:reserved+1}};
  validateReceipt(receipt);
  const fingerprint=hash({metadata,failed,rows,reviewDay:bangkokDay(now),sourceSha:context.sourceSha||null,operation:reconciliation?'reconcile':'recover'});
- return {receipt,fingerprint,...(reconciliation?{failed,originalQuota}: {})};
+ return {receipt,fingerprint,...(evidence?{verifiedJob:evidence.receipt}:{}),...(reconciliation?{failed,originalQuota}: {})};
 }
 async function reconcile({store,repository,context,now,fingerprint}){
  let held=false,outcome='failed';
@@ -153,8 +173,12 @@ async function recover({store,repository,context,now,fingerprint}){
   if(checked.fingerprint!==fingerprint)throw stopped('SCALING_RECOVERY_STATE_CHANGED');
   // Reserve one existing capacity slot for this bounded maintenance operation;
   // it is not a verification job and never manufactures a job receipt.
-  await store.updateMetadata({...checked.receipt.quotaAfter,manualBatch:{...latest.manualBatch,phase:'recovered'},scaling:{...latest.scaling,phase:'awaiting_approval',roundId:context.roundId,
-   recoveries:[...(latest.scaling.recoveries||[]),checked.receipt]}});
+  let scaling={...latest.scaling,recoveries:[...(latest.scaling.recoveries||[]),checked.receipt]};
+  if(checked.verifiedJob)scaling=require('./scaling-policy').complete(scaling,latest.manualBatch,latest.manualBatch.next,checked.verifiedJob);
+  const complete=scaling.phase==='completed';
+  await store.updateMetadata({...checked.receipt.quotaAfter,
+   manualBatch:{...latest.manualBatch,phase:complete?'completed':'recovered'},
+   scaling:{...scaling,phase:complete?'completed':'awaiting_approval',roundId:context.roundId}});
   outcome='completed';
   return {status:'RECOVERED',stage:context.stage,id:context.id,replayed:false,jobsStarted:0,requiresFreshPreflight:true};
  }finally{if(held)await store.releaseCoordinator(outcome);}

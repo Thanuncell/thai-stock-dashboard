@@ -151,9 +151,9 @@ function createControlledCoverageStore({ env = process.env, fetchImpl = globalTh
         ||Buffer.byteLength(JSON.stringify(patch.manualBatch))>16384)throw stopped('INVALID_METADATA');
       const b=patch.manualBatch;
       if(Object.keys(b).some(k=>!['version','id','day','targets','runKeys','initialReservations','fingerprint','next','phase','targetSize','scaling','exclusions','eligibilityReview'].includes(k))
-        ||!Array.isArray(b.targets)||![5,10,15,20].includes(b.targets.length)||b.targets.some(r=>!r||Object.keys(r).some(k=>!['symbol','provider_symbol','provider','active'].includes(k))
+        ||!Array.isArray(b.targets)||(b.targets.length<1||b.targets.length>20||!b.scaling&&b.targets.length%5!==0)||b.targets.some(r=>!r||Object.keys(r).some(k=>!['symbol','provider_symbol','provider','active'].includes(k))
           ||!/^[A-Z0-9&.-]{1,20}$/.test(r.symbol)||r.provider_symbol!==r.symbol+'.BK'||r.provider!=='Yahoo Finance'||r.active!==true)
-        ||!Array.isArray(b.runKeys)||b.runKeys.length!==b.targets.length/5||b.runKeys.some(k=>!KEY.test(k))
+        ||!Array.isArray(b.runKeys)||b.runKeys.length!==Math.ceil(b.targets.length/5)||b.runKeys.some(k=>!KEY.test(k))
         ||!/^\d{1,15}$/.test(b.id||'')||!/^\d{4}-\d\d-\d\d$/.test(b.day||'')||!Number.isSafeInteger(b.initialReservations)
         ||b.version!==1||!/^[a-f0-9]{64}$/.test(b.fingerprint||''))throw stopped('INVALID_METADATA');
       if(b.scaling)require('./scaling-policy').validateContext(b.scaling);
