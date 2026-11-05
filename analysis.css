@@ -87,8 +87,6 @@ html[data-theme="dark"] .analysis-panel .reason-group.neutral > b { color: #f1bd
 
 .analysis-panel .rsi-meter,
 .analysis-panel .analysis-note p,
-.analysis-panel .technical-reasons > small,
-.analysis-panel .disclaimer,
 .analysis-panel .reason-group li span,
 .analysis-panel .reason-group > p {
   color: var(--technical-secondary);
@@ -100,7 +98,16 @@ html[data-theme="dark"] .analysis-panel .reason-group.neutral > b { color: #f1bd
 .analysis-panel .signal-counts span,
 .analysis-panel .signal-score small,
 .analysis-panel .evidence-status { color: var(--technical-secondary); }
-.analysis-panel .technical-plan { font-size: 13px; }
+.analysis-panel .technical-plan {
+  font-size: 10px;
+  line-height: 1.7;
+}
+.analysis-panel .technical-reasons > small,
+.analysis-panel .disclaimer {
+  color: var(--technical-secondary);
+  font-size: 9px;
+  line-height: 1.65;
+}
 .analysis-panel .technical-levels b { font-size: 13px; }
 
 .analysis-panel .compact-reasons {
