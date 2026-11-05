@@ -134,13 +134,18 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      heading:[style('h3').fontSize,style('h3').fontWeight],
      reason:[style('.technical-reason-text').fontSize,style('.technical-reason-text').fontWeight],
      indicator:style('.evidence-label').fontSize,status:[style('.evidence-status').fontSize,style('.evidence-status').fontWeight],
-     secondary:style('#analysis-note').fontSize,family:style('.technical-reason-text').fontFamily.includes('IBM Plex Sans Thai'),
+     compactText:['#technical-plan','#levels-basis','.disclaimer','#analysis-note'].map(selector=>{
+      const text=style(selector);
+      return [text.fontSize,text.lineHeight];
+     }),
+     family:style('.technical-reason-text').fontFamily.includes('IBM Plex Sans Thai'),
      columns:style('.evidence-grid').gridTemplateColumns.split(' ').length,
      hierarchy:parseFloat(style('#overall-signal').fontSize)>parseFloat(style('.technical-reason-text').fontSize)
     };
    });
    check(typography,{heading:['14px','600'],reason:['13px','400'],indicator:'13px',status:['11px','500'],
-    secondary:'12px',family:true,columns:width===1366?2:1,hierarchy:true},'technical type and evidence grid at this width');
+    compactText:[['10px','17px'],['9px','14.85px'],['9px','14.85px'],['11px','18.7px']],
+    family:true,columns:width===1366?2:1,hierarchy:true},'technical type and evidence grid at this width');
    check(await evidence.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true,'expanded evidence has no horizontal overflow');
    await page.keyboard.press('Space');
    check(await evidence.evaluate(el=>el.open),false,'indicator details collapse');
