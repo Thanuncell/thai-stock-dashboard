@@ -39,6 +39,128 @@ html[data-theme="dark"] .signal-donut.no-data{background:conic-gradient(var(--li
   .analysis-panel .signal-counts>div{gap:4px}
   .analysis-panel .signal-counts span{font-size:9px}
   .analysis-panel .signal-counts strong{font-size:12px}
-  .analysis-panel .signal-row{font-size:10px}
-  .analysis-panel .pill{font-size:8px;padding:3px 6px}
+  .analysis-panel .pill{padding:3px 6px}
+}
+
+.analysis-panel {
+  --technical-secondary: color-mix(in srgb, var(--ink) 76%, var(--paper));
+  font: 400 13px/1.6 var(--font);
+}
+
+.analysis-panel .panel-heading h2 { font-size: 16px; }
+.analysis-panel .technical-reasons h3,
+.analysis-panel .technical-evidence > summary,
+.analysis-panel .reason-group > b { font-size: 14px; }
+.analysis-panel .panel-heading h2,
+.analysis-panel .technical-reasons h3,
+.analysis-panel .technical-evidence > summary,
+.analysis-panel .reason-group > b {
+  font-family: var(--font);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.analysis-panel .reason-group.positive > b { color: #18765b; }
+.analysis-panel .reason-group.negative > b { color: #a94249; }
+.analysis-panel .reason-group.neutral > b { color: #8a530b; }
+html[data-theme="dark"] .analysis-panel .reason-group.positive > b { color: #7adab5; }
+html[data-theme="dark"] .analysis-panel .reason-group.negative > b { color: #ff9ca3; }
+html[data-theme="dark"] .analysis-panel .reason-group.neutral > b { color: #f1bd75; }
+
+.analysis-panel .signal-row {
+  height: auto;
+  min-height: 38px;
+  padding-block: 6px;
+  font-size: 13px;
+}
+.analysis-panel .signal-row > span { min-width: 0; }
+.analysis-panel .signal-score small,
+.analysis-panel .signal-donut-hole small,
+.analysis-panel .signal-counts span,
+.analysis-panel .technical-levels span,
+.analysis-panel .pill,
+.analysis-panel .evidence-status {
+  font-size: 11px;
+  font-weight: 500;
+}
+.analysis-panel .pill { white-space: normal; }
+
+.analysis-panel .rsi-meter,
+.analysis-panel .analysis-note p,
+.analysis-panel .technical-reasons > small,
+.analysis-panel .disclaimer,
+.analysis-panel .reason-group li span,
+.analysis-panel .reason-group > p {
+  color: var(--technical-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.analysis-panel .technical-levels span,
+.analysis-panel .signal-donut-hole small,
+.analysis-panel .signal-counts span,
+.analysis-panel .signal-score small,
+.analysis-panel .evidence-status { color: var(--technical-secondary); }
+.analysis-panel .technical-plan { font-size: 13px; }
+.analysis-panel .technical-levels b { font-size: 13px; }
+
+.analysis-panel .compact-reasons {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 10px 0;
+}
+.analysis-panel .technical-reason-card {
+  display: grid;
+  grid-template-columns: 2em minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.analysis-panel .technical-reason-number {
+  font: 600 12px/1.7 var(--latin);
+  text-align: center;
+  color: var(--technical-secondary);
+}
+.analysis-panel .technical-reason-text {
+  margin: 0;
+  font: 400 13px/1.6 var(--font);
+  overflow-wrap: anywhere;
+}
+
+.analysis-panel .technical-evidence > summary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.analysis-panel .evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(148px, calc((100% - 8px) / 2))), 1fr));
+  gap: 8px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+.analysis-panel .evidence-grid > li {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  overflow-wrap: anywhere;
+}
+.analysis-panel .evidence-label,
+.analysis-panel .reason-group li strong { font-size: 13px; }
+.analysis-panel .reason-group li strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+@media (max-width: 790px) {
+  .analysis-panel .evidence-grid { grid-template-columns: minmax(0, 1fr); }
 }

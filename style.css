@@ -68,6 +68,9 @@ html[data-theme="dark"] .watchlist-label select,html[data-theme="dark"] .mobile-
   .banner-stats { gap: 16px; }
   .banner-stats > div { min-width: 84px; }
 }
+.nav-icon { display: flex; align-items: center; justify-content: center; }
+.nav-icon > svg { display: block; flex: none; }
+
 @media (max-width:790px) {
   body { overflow-x: hidden; padding-bottom: env(safe-area-inset-bottom); }
   .sidebar { inset: auto 0 0; width: 100%; height: calc(64px + env(safe-area-inset-bottom)); padding: 4px 8px env(safe-area-inset-bottom); border: 0; border-top: 1px solid var(--line); flex-direction: row; background: var(--paper); box-shadow: 0 -4px 18px #142b3a0d; }
@@ -311,7 +314,7 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .atr-chart-line{stroke:#bf7910}.bb-chart-line{stroke:#8b62d7;stroke-dasharray:5 3}
 .compact-reasons{padding-left:22px;line-height:1.7}.compact-reasons li{margin:8px 0}
 .technical-evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;max-height:320px;overflow:auto}
-.technical-evidence{font-size:12px}.own-chart-wrap:has(.rsi-panel),.own-chart-wrap:has(.atr-panel){height:auto;max-height:none}.own-chart-wrap:has(.rsi-panel) .price-chart-svg,.own-chart-wrap:has(.atr-panel) .price-chart-svg{height:auto}
+.technical-evidence{font-size:12px}
 @media(max-width:470px){.indicator-fields,.drawing-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.drawing-workspace button{min-height:40px}.drawing-workspace{padding:6px}}
 .chart-grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}
 .chart-axis-text,.chart-label{fill:var(--muted);font-size:10px}
@@ -381,7 +384,7 @@ html[data-theme="dark"] .news-title-link:hover{color:#8ed2b9}
 .page-btn:disabled{opacity:.4;cursor:default}
 .promo-tag{display:inline-flex;align-items:center;border-radius:4px;padding:2px 6px;background:#fff3dc;color:#9b681f;font-size:8px;line-height:1.35}
 .rsi-meter{display:flex;flex-direction:column;gap:6px;margin:10px 0;color:var(--muted);font-size:9px}
-.rsi-meter .rsi-track{position:relative;height:6px;margin:0;border-radius:4px;background:linear-gradient(90deg,#22c55e,#eab308,#ef4444)}
+.rsi-meter .rsi-track{position:relative;height:6px;margin:0;border-radius:4px;background:linear-gradient(90deg,#22c55e 0%,#65c83b 20%,#d7ca22 40%,#eab308 50%,#f1a21a 65%,#ef7138 82%,#ef4444 100%)}
 .rsi-meter .rsi-track i{position:absolute;top:-4px;width:12px;height:14px;border:1px solid #5c6872;border-radius:3px;background:var(--paper);transform:translateX(-50%)}
 .watchlist-rename{flex:0 0 auto;border:0;background:transparent;color:#5c897b;cursor:pointer;font-size:15px;line-height:1;padding:4px}
 .watchlist-rename:hover{color:#24745f}
@@ -480,5 +483,5 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 .profile-page .logout-button{font:500 12px var(--font)}.profile-page .logout-button:after{content:none}
 
 /* Optional panels retain their own vertical space at every responsive breakpoint. */
-.chart-panel .own-chart-wrap:has(.oscillator-panel){height:auto;max-height:none}
-.chart-panel .own-chart-wrap:has(.oscillator-panel) .price-chart-svg{height:auto}
+.chart-panel .own-chart-wrap.has-oscillator{height:auto;max-height:none}
+.chart-panel .own-chart-wrap.has-oscillator .price-chart-svg{height:auto}
