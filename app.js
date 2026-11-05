@@ -137,7 +137,7 @@ function technicalSnapshot() {
 }
 let chartLoadState = 'loading';
 let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
-let chartResizeTimer = null;
+let chartLayoutPending = false;
 let chartCssFullscreen = false;
 let chartViewport = null;
 let chartViewportKey = '';
@@ -309,6 +309,7 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   });
   $('#activity-section')?.classList.toggle('workspace-single', page === 'news' || page === 'watchlist');
   document.body.dataset.workspacePage = page;
+  if (page === 'chart' && previousPage !== page) scheduleChartRedraw();
   document.querySelectorAll('[data-workspace-route]').forEach(link => {
     const active = link.dataset.workspaceRoute === page;
     link.classList.toggle('active', active);
@@ -787,22 +788,28 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   if (!host) return;
   const allRows = trustedMarketBars(bars).filter(bar=>[bar.open,bar.high,bar.low,bar.close].every(value=>toFiniteNumber(value)!==null));
   if (!allRows.length) {
+    chartLayoutPending = false;
     drawings?.suspend();
     const isError = chartLoadState === 'error';
     const isUnavailable = chartLoadState === 'unavailable';
     const message = chartLoadMessage || (isUnavailable ? 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้' : isError ? 'โหลดข้อมูลไม่สำเร็จ' : 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
     host.innerHTML = `<div class="chart-empty chart-empty-${escapeHtml(chartLoadState)}"><span>${escapeHtml(message)}</span>${isError ? '<button type="button" data-chart-retry>ลองใหม่</button>' : ''}</div>`;
-    host.closest('.own-chart-wrap')?.classList.remove('has-macd');
+    host.closest('.own-chart-wrap')?.classList.remove('has-macd', 'has-oscillator');
     setText('#chart-updated', 'อัปเดตเมื่อ —');
     return;
   }
+  const hostWidth = host.clientWidth;
+  if (!hostWidth) {
+    chartLayoutPending = true;
+    return;
+  }
+  chartLayoutPending = false;
   const snapshot=technicalSnapshot(),calculationRows=snapshot.rows,analysis=snapshot.analysis;
   host.dataset.snapshotId=snapshot.id;
   host.dataset.signalCandleTime=String(snapshot.candleTime??'');
   host.dataset.latestCandleTime=String(allRows.at(-1)?.time??'');
   host.dataset.signalStatus=snapshot.summary.status;
   drawings?.bind(`${activeSymbol}:${currentRange}`);
-  const hostWidth = Math.max(320, Math.floor(host.clientWidth || host.parentElement?.clientWidth || 640));
   const viewportKey = `${activeSymbol}:${currentRange}`;
   if (chartViewportKey !== viewportKey) {
     chartViewportKey = viewportKey;
@@ -818,11 +825,19 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const macdHistogram = alignToVisibleChart(snapshot.series.histogram);
   const showMacd = chartIndicators.has('macd');
   const showRsi=chartIndicators.has('rsi'),showAtr=chartIndicators.has('atr');
+  const wrap = host.closest('.own-chart-wrap');
+  const hasOscillator = showRsi || showAtr;
+  wrap?.classList.toggle('has-macd', showMacd);
+  wrap?.classList.toggle('has-oscillator', hasOscillator);
   const geometry = chartGeometry({ rowCount: rows.length, hostWidth, range: currentRange });
   const { left, right, width, plotWidth, step, candleWidth, x } = geometry;
   const top = 22;
-  const height = 390+(showMacd?130:0)+(showRsi?130:0)+(showAtr?130:0);
-  const priceBottom = 280, volumeBottom = 340, macdTop = 375, macdBottom = 475;
+  const naturalHeight = 390 + (showMacd ? 130 : 0) + (showRsi ? 130 : 0) + (showAtr ? 130 : 0);
+  const height = hasOscillator ? naturalHeight : host.clientHeight || naturalHeight;
+  // Give the price plot the remaining height while keeping indicator panels and text at their designed size.
+  const priceHeightDelta = height - naturalHeight;
+  const priceBottom = 280 + priceHeightDelta, volumeBottom = 340 + priceHeightDelta;
+  const macdTop = 375 + priceHeightDelta, macdBottom = 475 + priceHeightDelta;
   const closes = rows.map(row => Number(row.close));
   const smaValues = alignToVisibleChart(snapshot.series.sma20);
   const indicatorSeries = [
@@ -881,24 +896,33 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   let panelTop=375+(showMacd?130:0),extraPanels='';
   for(const [key,enabled]of [['rsi',showRsi],['atr',showAtr]])if(enabled){extraPanels+=oscillatorPanel({values:alignToVisibleChart(snapshot.series[key]),x,left,right,width,top:panelTop,label:`${key.toUpperCase()} (${snapshot.parameters[key]})`,type:key});panelTop+=130;}
   const drawingSvg=`<rect class="drawing-surface" x="${left}" y="${top}" width="${plotWidth}" height="${priceBottom-top}"/>`+(drawings?.svg({rows,x,y,left,right,width,height,top,bottom:priceBottom,step,max,span})||'');
-  const labelIndices = [...new Set([0, Math.floor((rows.length - 1) / 3), Math.floor((rows.length - 1) * 2 / 3), rows.length - 1])];
+  const lastIndex = rows.length - 1;
+  const labelIndices = [...new Set(width < 360
+    ? [0, Math.floor(lastIndex / 2), lastIndex]
+    : [0, Math.floor(lastIndex / 3), Math.floor(lastIndex * 2 / 3), lastIndex])];
   const dateLabels = labelIndices.map(index => {
     const date = new Date(rows[index].time);
     const label = Number.isNaN(+date) ? '' : (currentRange === '1D' ? chartIntradayFormatter : chartDateFormatter).format(date);
-    return `<text class="chart-axis-text" x="${x(index)}" y="${height-10}" text-anchor="middle">${escapeHtml(label)}</text>`;
+    const anchor = index > 0 && index === lastIndex ? 'end' : 'middle';
+    return `<text class="chart-axis-text" x="${x(index)}" y="${height-10}" text-anchor="${anchor}">${escapeHtml(label)}</text>`;
   }).join('');
   const stateText = dataState === 'stale' ? ' · ข้อมูลเก่า' : dataState === 'suspect' || dataState === 'quarantined' ? ' · ข้อมูลต้องสงสัย' : '';
   const receipt=snapshot.receivedAt??(typeof receivedAt==='number'?receivedAt:Date.parse(receivedAt));
   const receiptText=technicalTimeText(receipt);
   setText('#chart-updated', receiptText==='—'?'อัปเดตเมื่อ —':`อัปเดตเมื่อ ${receiptText} (เวลาไทย)${stateText}`);
   $('#chart-updated').title=`แท่งราคาล่าสุดเปิด ${technicalTimeText(allRows.at(-1)?.time)} · ดูแท่งอ้างอิงสัญญาณที่สรุปด้านล่าง`;
-  host.closest('.own-chart-wrap')?.classList.toggle('has-macd', showMacd);
-  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" style="width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
+  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
 }
 
 function scheduleChartRedraw() {
-  clearTimeout(chartResizeTimer);
-  chartResizeTimer = setTimeout(updateTradingViewChart, 180);
+  const host = $('#stock-price-chart');
+  if (!host?.clientWidth) return;
+  const svg = host.querySelector('.price-chart-svg');
+  const size = svg?.viewBox.baseVal;
+  const autoHeight = host.parentElement.classList.contains('has-oscillator');
+  if (chartLayoutPending || (size && (size.width !== host.clientWidth || (!autoHeight && size.height !== host.clientHeight)))) {
+    queueChartViewportRender();
+  }
 }
 
 function queueChartViewportRender() {
@@ -2088,8 +2112,11 @@ function setupUiEventWiring() {
     if (event.key === 'Escape' && !alertsPanel.hidden) $('#alerts-close').click();
     if (event.key === 'Escape' && chartCssFullscreen) setCssChartFullscreen(false);
   });
-  window.addEventListener('resize', scheduleChartRedraw, { passive: true });
-  window.addEventListener('orientationchange', scheduleChartRedraw, { passive: true });
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(scheduleChartRedraw).observe($('#stock-price-chart'));
+  } else {
+    window.addEventListener('resize', scheduleChartRedraw, { passive: true });
+  }
   document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
     const source=button.dataset.source,current=activeSource;
     clearTimeout(newsSearchTimer);

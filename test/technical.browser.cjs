@@ -38,7 +38,77 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    });
    const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await seedPage(page,'token-a');
    await page.addInitScript(theme=>localStorage.setItem('setscope-theme',theme),theme);
-   await page.goto(base+'/?symbol=PTT&range=1D#chart');await page.waitForSelector('.price-candle');
+   const nav = route => page.locator(`.side-nav [data-workspace-route=${route}]`);
+   const svg = page.locator('.price-chart-svg');
+   const assertFit = async label => {
+    await pause(page);
+    check(await svg.evaluate(node => {
+     const host = node.closest('#stock-price-chart');
+     const {width, height} = node.viewBox.baseVal;
+     const matrix = node.getScreenCTM();
+     return Math.abs(width * matrix.a - host.clientWidth) <= 1 &&
+      Math.abs(height * matrix.d - host.clientHeight) <= 1 &&
+      node.parentElement.scrollWidth <= host.clientWidth + 1;
+    }), true, label);
+    check(await svg.evaluate(node => {
+     const {width, height} = node.viewBox.baseVal;
+     const labels = [...node.querySelectorAll(`text.chart-axis-text[y="${height-10}"]`)];
+     return labels.length > 0 && labels.every(label => {
+      const bounds = label.getBBox();
+      return bounds.x >= -1 && bounds.x + bounds.width <= width + 1;
+     });
+    }), true, 'time labels stay inside the SVG');
+   };
+   phase=`${width}-${theme}-first-fit`;
+   await page.goto(base+'/#overview');
+   await page.waitForSelector('.compact-reasons', {state:'attached'});
+   const initialCalls=marketCalls.length;
+   await nav('chart').click();
+   await page.waitForSelector('.price-candle');
+   await assertFit('first visible render fills the chart without Reset');
+   const host=page.locator('#stock-price-chart');
+   check(await page.locator('.price-candle').count(), await host.evaluate(node=>node.clientWidth<520?42:68), 'default viewport uses the visible width');
+   check(marketCalls.length,initialCalls,'revealing the chart makes no market request');
+   if ([390,1366].includes(width)) {
+    phase=`${width}-${theme}-resize-fullscreen`;
+    const viewport=page.viewportSize();
+    if (process.env.SETSCOPE_FIT_SCREENSHOT_DIR) {
+     await host.screenshot({path:path.join(process.env.SETSCOPE_FIT_SCREENSHOT_DIR,`fit-${width}-${theme}.png`),style:'.topbar,.topbar *,.sidebar,.sidebar *{visibility:hidden!important}'});
+    }
+    await page.locator('#chart-zoom-in').click();
+    await pause(page);
+    const bars=()=>page.locator('.price-candle title').allTextContents();
+    const zoomed=await bars();
+    const snapshot=await host.getAttribute('data-snapshot-id');
+    await nav('overview').click();
+    await page.setViewportSize({width:820,height:600});
+    await nav('chart').click();
+    await assertFit('re-entry after resizing a hidden chart fits at tablet width');
+    check(await bars(),zoomed,'re-entry preserves the zoomed window');
+    await page.setViewportSize({width:viewport.height,height:viewport.width});
+    await assertFit('visible resize fits in the rotated viewport');
+    check(await bars(),zoomed,'orientation change preserves the zoomed window');
+    await page.setViewportSize(viewport);
+    // Exercise the fallback on mobile and the native Fullscreen API on desktop.
+    const chartPanel=page.locator('.chart-panel');
+    if(width===390)await chartPanel.evaluate(node=>{node.requestFullscreen=undefined;});
+    await page.locator('#chart-fullscreen').click();
+    await page.waitForFunction(()=>document.body.classList.contains('chart-fullscreen-open'));
+    check(await chartPanel.evaluate(node=>document.fullscreenElement===node),width!==390);
+    await assertFit('fullscreen fills the chart area');
+    await page.locator('#chart-fullscreen').click();
+    await page.waitForFunction(()=>!document.body.classList.contains('chart-fullscreen-open'));
+    await assertFit('fullscreen exit fits');
+    check(await bars(),zoomed,'fullscreen round trip preserves the zoomed window');
+    check(await host.getAttribute('data-snapshot-id'),snapshot,'layout keeps the same technical snapshot');
+    check(marketCalls.length,initialCalls,'layout redraws use cached data');
+    const rendered=await svg.elementHandle();
+    await pause(page);
+    check(await rendered.evaluate(node=>node.isConnected),true,'stable geometry does not trigger another redraw');
+    await page.locator('#chart-reset').click();
+    await assertFit('Reset restores the default viewport at the fitted size');
+   }
+   phase=`${width}-${theme}-setup`;
    const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b;});check(await page.locator('.compact-reasons li').count(),3);};
    await parity();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal page overflow');
    check(await page.locator('.indicator-workspace small').textContent(),'ซ่อน/แสดงไม่เปลี่ยนผลวิเคราะห์ · การเปลี่ยน Period จะคำนวณจากข้อมูลเดิม · บันทึกแยกตามบัญชีบนอุปกรณ์นี้');

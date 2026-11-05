@@ -32,7 +32,7 @@ export function formatSearchCompanyName(name, symbol = '') {
 
 export function chartGeometry({ rowCount = 0, hostWidth = 640 } = {}) {
   const count = Math.max(1, Number.parseInt(rowCount, 10) || 1);
-  const width = Math.max(320, Math.floor(Number(hostWidth) || 640));
+  const width = Math.max(1, Math.floor(Number(hostWidth) || 640));
   const left = width < 520 ? 52 : 66;
   const right = width < 520 ? 10 : 16;
   const plotWidth = Math.max(1, width - left - right);

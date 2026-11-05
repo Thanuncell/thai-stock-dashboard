@@ -314,7 +314,7 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .atr-chart-line{stroke:#bf7910}.bb-chart-line{stroke:#8b62d7;stroke-dasharray:5 3}
 .compact-reasons{padding-left:22px;line-height:1.7}.compact-reasons li{margin:8px 0}
 .technical-evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;max-height:320px;overflow:auto}
-.technical-evidence{font-size:12px}.own-chart-wrap:has(.rsi-panel),.own-chart-wrap:has(.atr-panel){height:auto;max-height:none}.own-chart-wrap:has(.rsi-panel) .price-chart-svg,.own-chart-wrap:has(.atr-panel) .price-chart-svg{height:auto}
+.technical-evidence{font-size:12px}
 @media(max-width:470px){.indicator-fields,.drawing-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.drawing-workspace button{min-height:40px}.drawing-workspace{padding:6px}}
 .chart-grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}
 .chart-axis-text,.chart-label{fill:var(--muted);font-size:10px}
@@ -483,5 +483,5 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 .profile-page .logout-button{font:500 12px var(--font)}.profile-page .logout-button:after{content:none}
 
 /* Optional panels retain their own vertical space at every responsive breakpoint. */
-.chart-panel .own-chart-wrap:has(.oscillator-panel){height:auto;max-height:none}
-.chart-panel .own-chart-wrap:has(.oscillator-panel) .price-chart-svg{height:auto}
+.chart-panel .own-chart-wrap.has-oscillator{height:auto;max-height:none}
+.chart-panel .own-chart-wrap.has-oscillator .price-chart-svg{height:auto}
