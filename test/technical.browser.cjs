@@ -34,6 +34,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      const end=rows.at(-1).time+(interval==='1d'?24000000:step),observed=interval==='1d'&&['during','draft-spike'].includes(dailyState)?rows.at(-1).time+3600000:end;
      if(interval==='1d'&&dailyState==='draft-spike')Object.assign(rows.at(-1),{open:999,high:1001,low:998,close:1000,volume:999999});
      const meta={interval,receivedAt:dailyState==='unknown-receipt'?null:new Date(observed).toISOString(),regularStart:interval==='1d'?rows.at(-1).time:null,regularEnd:interval==='1d'?(dailyState==='missing'?null:dailyState==='mismatch'?end+86400000:end):null,timeZone:'Asia/Bangkok',priceBasis:'provider-quote-ohlc',adjustment:'fixture-unadjusted'};
+     if(short&&range==='3M')meta.cadence={status:'INTERVAL_CADENCE_UNVERIFIED'};
      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({stocks:[{symbol,last:rows.at(-1).close,prior:rows.at(-2).close,time:end,history:rows,guardStatus:'accepted',dataState:'delayed'}],indices:[],history:rows,indicatorHistory:rows,levelsHistory:rows,fetchedAt:meta.receivedAt,technicalMeta:{history:meta,indicator:meta,levels:meta},dataState:qualityWarning?'stale':'delayed',errors:[]})});
     }
     return mockRequest(route,base,state);
@@ -206,6 +207,9 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     if (!['1M', '3M'].includes(range)) continue;
     const candles = page.locator('.price-candle');
     check(Number(await host.getAttribute('data-source-candles')),260,'dense fixture includes 260 source candles');
+    check((await page.locator('#chart-updated').textContent()).includes('แท่งจากแหล่งข้อมูล'),false,'dense update line hides source candle count');
+    const fullReceipt = range==='1M' ? '06 ม.ค. 2568 20:00' : '12 ม.ค. 2568 06:00';
+    check(await page.locator('#chart-updated').textContent(),'อัปเดตเมื่อ '+fullReceipt+' (เวลาไทย)','header shows the fixture receipt without a candle count');
     const initialCount = await host.evaluate(node=>node.clientWidth<520?42:68);
     check(await candles.count(),initialCount,'dense default remains readable');
     check(/\d\d:\d\d/.test(await candles.first().locator('title').textContent()),true,'intraday tooltip includes candle time');
@@ -285,7 +289,13 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await page.locator('#refresh-chart').click();
     await page.waitForFunction(()=>document.querySelector('#stock-price-chart').dataset.sourceCandles==='12');
     check(await page.locator('.price-candle').count(),12,'short dense range preserves the provider rows');
-    check((await page.locator('#chart-updated').textContent()).includes('12/100'),true,'short dense range explains the limit');
+    check((await page.locator('#chart-updated').textContent()).includes('ข้อมูลแท่งเทียนยังไม่เพียงพอ'),true,'short dense range still shows insufficient data');
+    check((await page.locator('#chart-updated').textContent()).includes('12/100'),false,'short dense range hides source candle count');
+    const shortReceipt = range==='1M' ? '01 ม.ค. 2568 16:00' : '01 ม.ค. 2568 22:00';
+    const cadenceNotice = range==='3M' ? ' · ยังยืนยันความถี่ของแท่งไม่ได้' : '';
+    check(await page.locator('#chart-updated').textContent(),
+     'อัปเดตเมื่อ '+shortReceipt+' (เวลาไทย) · ข้อมูลแท่งเทียนยังไม่เพียงพอ'+cadenceNotice,
+     'short range shows the actual receipt and preserves warnings');
     short=false;
    }
    phase=`${width}-${theme}-daily-confirmation`;

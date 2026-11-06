@@ -872,8 +872,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const cadenceNotice = cadence === 'INTERVAL_CADENCE_SUSPECT' ? ' · ความถี่ของแท่งอาจไม่ตรงกับช่วงที่ขอ'
     : cadence === 'INTERVAL_CADENCE_UNVERIFIED' ? ' · ยังยืนยันความถี่ของแท่งไม่ได้' : '';
   const candleNotice = denseRange ? (allRows.length < 100
-    ? ` · มีแท่งเทียนจริง ${allRows.length}/100 (ข้อมูลยังไม่เพียงพอ)`
-    : ` · ${allRows.length} แท่งจากแหล่งข้อมูล`) + cadenceNotice : '';
+    ? ' · ข้อมูลแท่งเทียนยังไม่เพียงพอ' : '') + cadenceNotice : '';
   if (!allRows.length) {
     chartLayoutPending = false;
     drawings?.suspend();
@@ -1352,7 +1351,7 @@ function technicalTimeText(value) {
 function technicalReferenceNote(snapshot) {
   const ref=snapshot.signalReference;
   const reference=ref?`สัญญาณจากแท่งเปิด ${technicalTimeText(ref.barOpenTime)} · ${ref.barCloseTime?'ปิดแท่ง':'ยืนยันได้เมื่อ'} ${technicalTimeText(ref.availableAt)} (เวลาไทย) · ${ref.selection==='previous-confirmed'?'ใช้แท่งปิดก่อนหน้า; แท่งล่าสุดยังไม่ยืนยัน':'แท่งยืนยันแล้ว'}`:'ยังไม่มีแท่งที่ยืนยันได้';
-  return `${snapshot.summary.overall} · ${reference} · ใช้ ${snapshot.signalRows.length} แท่งยืนยัน${snapshot.summary.status==='insufficient'?` (ต้องมีอย่างน้อย ${snapshot.summary.requiredBars})`:''}${snapshot.quality.warnings.length?' · มีข้อควรตรวจสอบข้อมูล':''} · ช่วง ${snapshot.timeframe} · นับค่าเฉลี่ยเป็นหลักฐานกลุ่มเดียว`;
+  return `${snapshot.summary.overall} · ${reference} · ใช้ ${snapshot.signalRows.length} แท่งยืนยัน${snapshot.summary.status==='insufficient'?` (ต้องมีอย่างน้อย ${snapshot.summary.requiredBars})`:''} · ช่วง ${snapshot.timeframe} · นับค่าเฉลี่ยเป็นหลักฐานกลุ่มเดียว`;
 }
 function renderReasonCards(reasons) {
   const cards = reasons.map((reason, index) => `
