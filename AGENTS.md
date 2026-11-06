@@ -1,6 +1,6 @@
 # SETscope — Global Codex Rules (Compact)
 
-**Governance:** v1.3 APPROVED/EFFECTIVE 2026-10-21 · **Simplified by Owner:** 2026-10-26 · **Compact revision:** 2026-11-06\
+**Governance:** v1.3 APPROVED/EFFECTIVE 2026-10-21 · **Simplified by Owner:** 2026-10-26 · **Compact revision:** 2026-11-06  
 **Scope:** SETscope v1.5.x+ only within approved release scopes. **Master:** `/SETscope/Codex_Global_Rules/SETscope_Global_Codex_Rules.docx` (binding). **Companion:** approved Public Disclosure / PR Gate v1.0.
 
 **Code First — Evidence Sufficient — Documentation Minimal.** Govern coding/testing, not paperwork. Governance approval ≠ permission for features, PR audits, repo migration, production edits, merge or deploy.
