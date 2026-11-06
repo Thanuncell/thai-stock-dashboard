@@ -114,13 +114,13 @@ html[data-theme="dark"] .analysis-panel .reason-group.neutral > b { color: #f1bd
 }
 .analysis-panel .technical-levels b { font-size: 13px; }
 
-.analysis-panel .compact-reasons {
+:is(.analysis-panel, .watchlist-signal-detail) .compact-reasons {
   display: grid;
   gap: 8px;
   padding: 0;
   margin: 10px 0;
 }
-.analysis-panel .technical-reason-card {
+:is(.analysis-panel, .watchlist-signal-detail) .technical-reason-card {
   display: grid;
   grid-template-columns: 2em minmax(0, 1fr);
   align-items: start;
@@ -130,12 +130,12 @@ html[data-theme="dark"] .analysis-panel .reason-group.neutral > b { color: #f1bd
   border-radius: 8px;
   background: var(--bg);
 }
-.analysis-panel .technical-reason-number {
+:is(.analysis-panel, .watchlist-signal-detail) .technical-reason-number {
   font: 600 12px/1.7 var(--latin);
   text-align: center;
-  color: var(--technical-secondary);
+  color: var(--technical-secondary, color-mix(in srgb, var(--ink) 76%, var(--paper)));
 }
-.analysis-panel .technical-reason-text {
+:is(.analysis-panel, .watchlist-signal-detail) .technical-reason-text {
   margin: 0;
   font: 400 13px/1.6 var(--font);
   overflow-wrap: anywhere;

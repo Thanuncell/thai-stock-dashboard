@@ -262,6 +262,40 @@ export function quoteChange(last, prior) {
   return { change, percent: previous === 0 ? null : change / previous * 100 };
 }
 
+export function usableWatchlistQuote(quote) {
+  if (quote?.guardStatus !== 'accepted' || quote.stale || quote.fallbackFromLastKnown) return null;
+  if (quote.quoteStatus && quote.quoteStatus !== 'accepted') return null;
+  if (quote.identityStatus && quote.identityStatus !== 'accepted') return null;
+  if ([quote.provider, quote.source].some(source => source && source !== 'Yahoo Finance')) return null;
+  if (['stale', 'suspect', 'quarantined', 'unavailable'].includes(quote.dataState)) return null;
+  const last = quote.last;
+  if (!Number.isFinite(last) || last <= 0) return null;
+  const prior = Number.isFinite(quote.prior) ? quote.prior : null;
+  const { change, percent } = quoteChange(last, prior > 0 ? prior : null);
+  return { last, change, percent: Number.isFinite(percent) ? percent : null };
+}
+
+export function watchlistView(items, quotes, { query = '', sort = 'saved' } = {}) {
+  const needle = query.trim().toLocaleLowerCase('th');
+  const visible = items
+    .filter(item => !needle || `${item.symbol} ${item.name || ''}`.toLocaleLowerCase('th').includes(needle))
+    .map(item => ({ item, quote: quotes.get(item.symbol) || null }));
+  const [criterion, direction] = sort.split('-');
+  if (criterion !== 'price' && criterion !== 'change') return visible;
+  const field = criterion === 'price' ? 'last' : 'percent';
+  return visible.sort((a, b) => {
+    const first = a.quote?.[field], second = b.quote?.[field];
+    if (!Number.isFinite(first)) return Number.isFinite(second) ? 1 : 0;
+    if (!Number.isFinite(second)) return -1;
+    return direction === 'asc' ? first - second : second - first;
+  });
+}
+
+export function watchlistThresholds(pref = {}) {
+  const above = toFiniteNumber(pref.above), below = toFiniteNumber(pref.below);
+  return { above: above > 0 ? above : null, below: below > 0 ? below : null };
+}
+
 export function marketBreadthRows(groups = []) {
   const source = Array.isArray(groups) ? groups : [];
   return ['SET', 'mai'].map(market => ({ market, items: ['Gainers', 'Unchanges', 'Losers'].map(label => {

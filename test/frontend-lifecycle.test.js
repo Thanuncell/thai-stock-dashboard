@@ -321,10 +321,9 @@ test('Chart receipt label uses recorded response time, distinguishes the candle 
 });
 
 test('suspect or stale market rows cannot drive alerts or mover rankings as fresh data', () => {
-  assert.match(appSource, /if \(row\.guardStatus !== 'accepted'\) return;/);
+  assert.match(appSource, /const quote = usableWatchlistQuote\(row\);\s+if \(!quote\) return;/);
   assert.match(appSource, /item\.quote\?\.guardStatus === 'accepted'/);
-  assert.match(appSource, /quoteState === 'stale' \? 'ข้อมูลเก่า'/);
-  assert.match(appSource, /quoteState === 'suspect' \|\| quoteState === 'quarantined' \? 'ข้อมูลต้องสงสัย'/);
+  assert.match(appSource, /rows\)\.map\(row => \[row\.symbol, usableWatchlistQuote\(row\)\]\)/);
 });
 
 test('workspace wiring is one-time while owner initialization gates private UI readiness', () => {

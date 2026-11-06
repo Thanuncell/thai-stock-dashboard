@@ -39,11 +39,12 @@ import {
   TECHNICAL_DEFAULTS, normalizeTechnicalParameters, trustedMarketBars,
   zoomChartViewport,
   watchlistNewsViewState,
+  usableWatchlistQuote, watchlistView, watchlistThresholds,
   newsDisplayAnalysis,
   canRequestNewsAnalysis,
   retainWatchlistNews as retainWatchlistByPolicy
 } from './client/domain.mjs';
-import { createTechnicalSnapshot, INDICATOR_PRESETS } from './client/technical.mjs';
+import { createTechnicalSnapshot, INDICATOR_PRESETS, RANGE_INTERVAL } from './client/technical.mjs';
 import { DrawingWorkspace } from './client/drawings.mjs';
 import { seriesPath, oscillatorPanel } from './client/technical-chart.mjs';
 
@@ -160,6 +161,9 @@ let privateInitializationIdentityKey = '';
 let uiEventsWired = false;
 let watchlistQuery = '';
 let watchlistCollapsed = false;
+let watchlistCheck = null;
+let watchlistQuoteFailure = false;
+const watchlistDesktop = window.matchMedia('(min-width: 791px)');
 const workspaceScrollPositions = new Map();
 
 function setWatchlistSyncStatus(text, state = '') {
@@ -190,6 +194,14 @@ function clearPrivateDom() {
   const alertBadge = $('#alert-badge'); if (alertBadge) { alertBadge.hidden = true; alertBadge.textContent = '0'; }
   const addButton = $('#watchlist-add-active'); if (addButton) { addButton.disabled = true; addButton.textContent = '＋ เพิ่มเข้า Watchlist'; }
   const search = $('#watchlist-search'); if (search) search.value = '';
+  $('#watchlist-sort').value = 'saved';
+  watchlistCollapsed = false;
+  $('#watchlist-page').classList.remove('watchlist-collapsed');
+  $('#watchlist-toggle').setAttribute('aria-expanded', 'true');
+  setText('#watchlist-toggle', 'ย่อรายการ');
+  $('#watchlist-mobile').scrollTop = 0;
+  renderWatchlistSignal(null, null);
+  clearWatchlistCheck();
   setText('.nav-item[data-workspace-route="watchlist"] .nav-count', '0');
   setText('#watch-metric', '0');
   setText('#alerts-scope', '');
@@ -239,6 +251,8 @@ function clearPrivateState() {
   watchlistNewsFetchedAt = 0;
   hideSuggestions();
   watchlistQuery = '';
+  watchlistQuoteFailure = false;
+  workspaceScrollPositions.delete('watchlist');
   watchNewsPage = 1;
   marketRequestSequence.begin();
   latestMarket = null;
@@ -309,6 +323,7 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   });
   $('#activity-section')?.classList.toggle('workspace-single', page === 'news' || page === 'watchlist');
   document.body.dataset.workspacePage = page;
+  if (page === 'watchlist') renderWatchlist(latestMarket?.stocks || []);
   if (page === 'chart' && previousPage !== page) scheduleChartRedraw();
   document.querySelectorAll('[data-workspace-route]').forEach(link => {
     const active = link.dataset.workspaceRoute === page;
@@ -710,48 +725,112 @@ function updateWatchlistAddButton() {
   button.textContent = saved ? 'ติดตามแล้ว' : '＋ เพิ่มเข้า Watchlist';
 }
 
-function watchlistItemNode(item, quote) {
-  const quoteState = quote?.dataState;
-  const quoteStateText = quoteState === 'stale' ? 'ข้อมูลเก่า' : quoteState === 'suspect' || quoteState === 'quarantined' ? 'ข้อมูลต้องสงสัย' : '';
-  const change = quote ? Number(quote.last) - Number(quote.prior) : null;
-  const percent = quote && Number(quote.prior) ? change / Number(quote.prior) * 100 : null;
+function watchlistSignal(quote) {
+  const meta = latestMarket?.technicalMeta?.indicator;
+  if (quote?.symbol !== activeSymbol || quote.identityStatus !== 'accepted' || !usableWatchlistQuote(quote)
+    || latestMarketSymbol !== activeSymbol || latestMarketRange !== currentRange
+    || meta?.provider !== 'Yahoo Finance' || meta.interval !== RANGE_INTERVAL[currentRange]) return null;
+  const observedAt = Date.parse(meta.receivedAt);
+  const fetchedAt = Date.parse(latestMarket.fetchedAt);
+  if (!(observedAt > 0 && observedAt <= fetchedAt)) return null;
+  const snapshot = technicalSnapshot();
+  return snapshot.summary.actionable && snapshot.confirmation === 'confirmed'
+    && snapshot.asOf > 0 && snapshot.asOf <= observedAt ? snapshot : null;
+}
+
+function renderWatchlistSignal(snapshot, selected) {
+  const details = $('#watchlist-signal-detail');
+  const content = $('#watchlist-signal-content');
+  if (details.dataset.symbol !== selected?.symbol) details.open = false;
+  details.dataset.symbol = selected?.symbol || '';
+  details.hidden = !selected || watchlistCollapsed;
+  details.querySelector('summary').textContent = selected
+    ? `สัญญาณ ${selected.symbol} · ${snapshot ? `${snapshot.summary.overall} · ${snapshot.timeframe}` : 'ยังไม่พร้อม'}`
+    : 'รายละเอียดสัญญาณของหุ้นที่เลือก';
+  if (!selected) { content.replaceChildren(); return; }
+  content.innerHTML = snapshot
+    ? `<p><strong>${escapeHtml(selected.symbol)} · ${escapeHtml(snapshot.timeframe)}</strong> · ${escapeHtml(technicalReferenceNote(snapshot))}</p>
+      ${renderReasonCards(snapshot.summary.reasons)}`
+    : `<p>${escapeHtml(selected.symbol)} · ยังไม่มีสัญญาณที่ยืนยันได้จากข้อมูลกราฟ</p>`;
+}
+
+function watchlistItemNode(item, quote, table) {
+  const selected = activeSymbol === item.symbol;
+  const symbol = escapeHtml(item.symbol), name = escapeHtml(item.name || item.symbol);
+  const details = `<button class="watch-details watch-select" type="button" aria-pressed="${selected}"><span class="watch-symbol">${symbol}</span><span class="watch-name">${name}</span></button>`;
+  const price = `<span class="watch-price">${quote ? number(quote.last) : '—'}</span>`;
+  const percent = quote?.percent;
+  const change = `<span class="watch-change ${percent > 0 ? 'up' : percent < 0 ? 'down' : ''}">${percent == null ? '—' : `${percent > 0 ? '+' : ''}${percent.toFixed(2)}%`}</span>`;
+  const remove = `<button class="watch-remove" type="button" data-remove="${symbol}" aria-label="ลบ ${symbol}" title="นำออกจากรายการ">×</button>`;
+  const rowAttributes = `class="watch-item ${selected ? 'selected' : ''}" data-sym="${symbol}" data-name="${name}"`;
   const template = document.createElement('template');
-  template.innerHTML = `<div class="watch-item ${activeSymbol === item.symbol ? 'selected' : ''}" data-sym="${escapeHtml(item.symbol)}" data-name="${escapeHtml(item.name || item.symbol)}">
-    <div class="watch-details"><span class="watch-symbol">${escapeHtml(item.symbol)}</span><span class="watch-name">${escapeHtml(item.name || item.symbol)}</span></div>
-    <div class="watch-quote"><span class="watch-price">${quote ? number(quote.last) : '—'}</span>${percent === null ? '' : `<span class="watch-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>`}${quoteStateText ? `<span class="watch-data-state">${quoteStateText}</span>` : ''}</div>
-    <button class="watch-remove" type="button" data-remove="${escapeHtml(item.symbol)}" aria-label="ลบ ${escapeHtml(item.symbol)}" title="นำออกจากรายการ">×</button>
-  </div>`;
-  const node = template.content.firstElementChild;
-  node.dataset.renderKey = JSON.stringify([item.symbol, item.name, activeSymbol, quote?.last, quote?.prior, quoteState]);
+  template.innerHTML = table
+    ? `<table><tbody><tr ${rowAttributes}><th scope="row">${details}</th><td>${price}</td><td>${change}</td><td>${remove}</td></tr></tbody></table>`
+    : `<div ${rowAttributes}>${details}<div class="watch-quote">${price}${change}</div>${remove}</div>`;
+  const node = table ? template.content.querySelector('tr') : template.content.firstElementChild;
+  node.dataset.renderKey = JSON.stringify([item.symbol, item.name, selected, quote?.last, percent]);
   return node;
 }
 
-function patchWatchlistRoot(root, items, bySymbol) {
+function patchWatchlistRoot(root, rows, { table = false, workspace = false } = {}) {
   if (!root) return;
   const scrollTop = root.scrollTop;
-  const existing = new Map([...root.querySelectorAll(':scope > .watch-item')].map(node => [node.dataset.sym, node]));
-  const nodes = items.map(item => {
-    const next = watchlistItemNode(item, bySymbol[item.symbol]);
+  const changingLayout = workspace && table !== Boolean(root.querySelector('table'));
+  const visibleTop = () => root.getBoundingClientRect().top + (root.querySelector('thead')?.offsetHeight || 0);
+  const anchor = changingLayout && scrollTop > 0
+    ? [...root.querySelectorAll('.watch-item')].find(node => node.getBoundingClientRect().bottom > visibleTop()) : null;
+  const anchorOffset = anchor ? anchor.getBoundingClientRect().top - visibleTop() : 0;
+  const focused = root.contains(document.activeElement) ? document.activeElement : null;
+  const focusSymbol = focused?.closest('.watch-item')?.dataset.sym;
+  const focusAction = focused?.matches('[data-remove]') ? '[data-remove]' : '.watch-select';
+  let container = root;
+  if (table) {
+    if (!root.firstElementChild?.matches('table')) {
+      root.innerHTML = '<table class="smart-watchlist-table" aria-label="ตารางหุ้นที่ติดตาม"><thead><tr><th scope="col">หุ้น</th><th scope="col">ราคาล่าสุด</th><th scope="col">เปลี่ยนแปลง (%)</th><th scope="col">จัดการ</th></tr></thead><tbody></tbody></table>';
+    }
+    container = root.querySelector('tbody');
+  }
+  const existing = new Map([...container.children].map(node => [node.dataset.sym, node]));
+  const nodes = rows.map(({ item, quote }) => {
+    const next = watchlistItemNode(item, quote, table);
     const current = existing.get(item.symbol);
     return current?.dataset.renderKey === next.dataset.renderKey ? current : next;
   });
   if (!nodes.length) {
-    const empty = document.createElement('div');
+    const empty = document.createElement(table ? 'tr' : 'div');
     empty.className = 'watch-empty';
-    empty.textContent = watchlist.length ? 'ไม่พบหุ้นที่ตรงกับคำค้น' : 'ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist';
+    const message = watchlist.length ? 'ไม่พบหุ้นที่ตรงกับคำค้น' : 'ยังไม่มีหุ้นในรายการ · เลือกหุ้นในกราฟแล้วกดเพิ่มเข้า Watchlist';
+    if (table) {
+      const cell = empty.insertCell();
+      cell.colSpan = 4;
+      cell.textContent = message;
+    } else empty.textContent = message;
     nodes.push(empty);
   }
-  root.replaceChildren(...nodes);
+  if (nodes.length !== container.children.length || nodes.some((node, index) => node !== container.children[index])) {
+    container.replaceChildren(...nodes);
+    if (focusSymbol && !root.contains(document.activeElement)) {
+      nodes.find(node => node.dataset.sym === focusSymbol)?.querySelector(focusAction)?.focus({ preventScroll: true });
+    }
+  }
   root.scrollTop = scrollTop;
+  const restoredAnchor = anchor && nodes.find(node => node.dataset.sym === anchor.dataset.sym);
+  if (restoredAnchor) root.scrollTop += restoredAnchor.getBoundingClientRect().top - visibleTop() - anchorOffset;
 }
 
 function renderWatchlist(rows = []) {
   if (!isCurrentPrivateIdentity()) return;
-  const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
-  const normalizedQuery = watchlistQuery.trim().toLocaleLowerCase('th');
-  const visibleItems = normalizedQuery ? watchlist.filter(item => `${item.symbol} ${item.name || ''}`.toLocaleLowerCase('th').includes(normalizedQuery)) : watchlist;
-  patchWatchlistRoot($('#watchlist'), watchlist, bySymbol);
-  patchWatchlistRoot($('#watchlist-mobile'), visibleItems, bySymbol);
+  const quotes = new Map((watchlistQuoteFailure ? [] : rows).map(row => [row.symbol, usableWatchlistQuote(row)]));
+  const selected = watchlist.find(item => item.symbol === activeSymbol);
+  const snapshot = selected && !watchlistQuoteFailure ? watchlistSignal(rows.find(row => row.symbol === selected.symbol)) : null;
+  const visible = watchlistView(watchlist, quotes, {
+    query: watchlistQuery,
+    sort: $('#watchlist-sort').value
+  });
+  patchWatchlistRoot($('#watchlist'), watchlistView(watchlist, quotes));
+  patchWatchlistRoot($('#watchlist-mobile'), visible, { table: watchlistDesktop.matches, workspace: true });
+  renderWatchlistSignal(snapshot, selected);
+  if (watchlistCheck && watchlistCheck.scope !== watchlistMonitoringScope()) clearWatchlistCheck();
   renderWatchlistPicker();
   setText('.nav-count', String(watchlist.length));
   setText('#watch-metric', String(watchlist.length));
@@ -1257,6 +1336,15 @@ function technicalReferenceNote(snapshot) {
   const reference=ref?`สัญญาณจากแท่งเปิด ${technicalTimeText(ref.barOpenTime)} · ${ref.barCloseTime?'ปิดแท่ง':'ยืนยันได้เมื่อ'} ${technicalTimeText(ref.availableAt)} (เวลาไทย) · ${ref.selection==='previous-confirmed'?'ใช้แท่งปิดก่อนหน้า; แท่งล่าสุดยังไม่ยืนยัน':'แท่งยืนยันแล้ว'}`:'ยังไม่มีแท่งที่ยืนยันได้';
   return `${snapshot.summary.overall} · ${reference} · ใช้ ${snapshot.signalRows.length} แท่งยืนยัน${snapshot.summary.status==='insufficient'?` (ต้องมีอย่างน้อย ${snapshot.summary.requiredBars})`:''}${snapshot.quality.warnings.length?' · มีข้อควรตรวจสอบข้อมูล':''} · ช่วง ${snapshot.timeframe} · นับค่าเฉลี่ยเป็นหลักฐานกลุ่มเดียว`;
 }
+function renderReasonCards(reasons) {
+  const cards = reasons.map((reason, index) => `
+    <div class="technical-reason-card" role="listitem">
+      <span class="technical-reason-number" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
+      <p class="technical-reason-text">${escapeHtml(reason.text)}</p>
+    </div>`).join('');
+  return `<div class="compact-reasons" role="list">${cards}</div>`;
+}
+
 function drawSignals(bars, levelBars = bars, displayBars = bars) {
   const snapshot=bars.length?technicalSnapshot():createTechnicalSnapshot();
   const analysis = snapshot.analysis;
@@ -1311,12 +1399,7 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     const status = value.state === 'available' ? 'พร้อม' : `ข้อมูลไม่ครบ ${value.bars}/${value.required} แท่ง`;
     return `<li><span class="evidence-label">${escapeHtml(indicatorLabel(key))}:</span> <span class="evidence-status">${status}</span></li>`;
   }).join('');
-  const reasonCards = snapshot.summary.reasons.map((reason, index) => `
-    <div class="technical-reason-card" role="listitem">
-      <span class="technical-reason-number" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
-      <p class="technical-reason-text">${escapeHtml(reason.text)}</p>
-    </div>`).join('');
-  $('#technical-reasons').innerHTML = `<div class="compact-reasons" role="list">${reasonCards}</div>
+  $('#technical-reasons').innerHTML = `${renderReasonCards(snapshot.summary.reasons)}
     <details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว</summary>
       <ul class="evidence-grid" role="list">${availability}</ul>
       ${group('แรงหนุนฝั่งบวก', 'positive', supportive)}
@@ -1386,14 +1469,70 @@ function recordAlert(symbol, title, body) {
   }
   renderAlertHistory();
 }
+
+function watchlistMonitoringScope() {
+  return JSON.stringify([activeWatchlistId, watchlist.map(item => item.symbol)]);
+}
+
+function showWatchlistCheck(message) {
+  const result = $('#watchlist-check-result');
+  result.textContent = message;
+  result.hidden = !message;
+}
+
+function clearWatchlistCheck() {
+  watchlistCheck = null;
+  $('#watchlist-check').disabled = false;
+  showWatchlistCheck('');
+}
+
+async function checkWatchlistPrices() {
+  const identity = capturePrivateIdentity();
+  if (!isCurrentPrivateIdentity(identity) || watchlistCheck?.pending) return;
+  const conditions = () => watchlist.map(({ symbol }) => ({ symbol, ...watchlistThresholds(getAlertPref(symbol)) }))
+    .filter(({ above, below }) => above !== null || below !== null);
+  if (!conditions().length) {
+    watchlistCheck = { scope: watchlistMonitoringScope(), pending: false };
+    showWatchlistCheck('ตั้งเงื่อนไขราคาสูงกว่า/ต่ำกว่าในศูนย์แจ้งเตือนก่อนตรวจ');
+    return;
+  }
+  const check = { scope: watchlistMonitoringScope(), pending: true };
+  watchlistCheck = check;
+  $('#watchlist-check').disabled = true;
+  showWatchlistCheck('กำลังตรวจราคาตามเงื่อนไข…');
+  try {
+    const market = await getMarket();
+    if (!isCurrentPrivateIdentity(identity) || watchlistCheck !== check || check.scope !== watchlistMonitoringScope()) return;
+    if (!market) { showWatchlistCheck('ตรวจราคาไม่สำเร็จหรือมีการเปลี่ยนรายการ กรุณาตรวจอีกครั้ง'); return; }
+    const quotes = new Map((market.stocks || []).map(row => [row.symbol, usableWatchlistQuote(row)]));
+    const hits = [], unknown = [];
+    let checked = 0;
+    for (const { symbol, above, below } of conditions()) {
+      const quote = quotes.get(symbol);
+      if (!quote) { unknown.push(symbol); continue; }
+      checked++;
+      if ((above !== null && quote.last >= above) || (below !== null && quote.last <= below)) hits.push(symbol);
+    }
+    const match = hits.length ? hits.join(', ') : 'ไม่มี';
+    const missing = unknown.length ? ` · ตรวจราคาไม่ได้: ${unknown.join(', ')}` : '';
+    showWatchlistCheck(`ตรวจราคาได้ ${checked} หุ้น · ถึงเงื่อนไข: ${match}${missing}`);
+  } finally {
+    if (watchlistCheck === check) {
+      check.pending = false;
+      $('#watchlist-check').disabled = false;
+    }
+  }
+}
+
 function evaluateWatchlistAlerts(rows) {
   if (!isCurrentPrivateIdentity()) return;
   const current = new Set(watchlist.map(item => item.symbol));
   const now = Date.now();
   rows.filter(row => current.has(row.symbol)).forEach(row => {
-    if (row.guardStatus !== 'accepted') return;
+    const quote = usableWatchlistQuote(row);
+    if (!quote) return;
     const analysis = analyseTechnicals(row.history || []);
-    const price = Number(row.last);
+    const price = quote.last;
     const previous = alertStates[row.symbol];
     const fresh = previous && now - Number(previous.updatedAt || 0) < 6 * 60 * 60 * 1000;
     const pref = getAlertPref(row.symbol);
@@ -1401,10 +1540,10 @@ function evaluateWatchlistAlerts(rows) {
       const side = analysis.overall === 'ซื้อ' ? analysis.reasons.filter(item => item.signal === 'ซื้อ') : analysis.reasons.filter(item => item.signal === 'ขาย');
       recordAlert(row.symbol, `สัญญาณเอน${analysis.overall}`, `${side.slice(0, 2).map(item => item.key).join(' และ ')} · ราคา ${number(price)}`);
     }
-    const above = Number(pref.above), below = Number(pref.below);
-    if (fresh && Number.isFinite(price) && Number(previous.price) > 0) {
-      if (Number.isFinite(above) && above > 0 && previous.price < above && price >= above) recordAlert(row.symbol, 'ผ่านระดับราคาขาขึ้น', `ราคา ${number(price)} สูงกว่าระดับที่ตั้ง ${number(above)}`);
-      if (Number.isFinite(below) && below > 0 && previous.price > below && price <= below) recordAlert(row.symbol, 'ผ่านระดับราคาขาลง', `ราคา ${number(price)} ต่ำกว่าระดับที่ตั้ง ${number(below)}`);
+    const { above, below } = watchlistThresholds(pref);
+    if (fresh && Number(previous.price) > 0) {
+      if (above !== null && previous.price < above && price >= above) recordAlert(row.symbol, 'ผ่านระดับราคาขาขึ้น', `ราคา ${number(price)} สูงกว่าระดับที่ตั้ง ${number(above)}`);
+      if (below !== null && previous.price > below && price <= below) recordAlert(row.symbol, 'ผ่านระดับราคาขาลง', `ราคา ${number(price)} ต่ำกว่าระดับที่ตั้ง ${number(below)}`);
     }
     alertStates[row.symbol] = { price, technical: analysis?.overall || previous?.technical || '', updatedAt: now };
   });
@@ -1486,6 +1625,7 @@ async function getMarket() {
     if (!response.ok) throw new Error(data.error || 'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');
     if (!isCurrentPrivateIdentity(identity) || !marketRequestSequence.isCurrent(requestId) || requestedSymbol !== activeSymbol || requestedRange !== currentRange) return;
     latestMarket = data;
+    watchlistQuoteFailure = false;
     latestMarketSymbol = requestedSymbol;
     latestMarketRange = requestedRange;
     setChartLoadState((data.history || []).length ? 'ready' : 'unavailable', (data.history || []).length ? '' : 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้');
@@ -1494,9 +1634,12 @@ async function getMarket() {
     updateStockCards(stocks);
     renderMovers(stocks);
     renderMarketBanner();
+    return data;
   } catch (error) {
     if (!isCurrentPrivateIdentity(identity) || !marketRequestSequence.isCurrent(requestId)) return;
     console.warn('Market data refresh failed', error);
+    watchlistQuoteFailure = true;
+    renderWatchlist([]);
     setChartLoadState('error', 'โหลดข้อมูลไม่สำเร็จ');
     setTechnicalPanelState('error');
     renderPriceChart([]);
@@ -2061,6 +2204,7 @@ function setupUiEventWiring() {
     const symbol = stock.dataset.alertSymbol, pref = getAlertPref(symbol);
     pref[field] = field === 'technical' ? event.target.checked : event.target.value;
     alertPrefs[symbol] = pref; writeScopedLocal('setscope-alert-prefs', alertPrefs);
+    if (field !== 'technical' && !watchlistCheck?.pending) clearWatchlistCheck();
   });
   $('#alerts-settings').addEventListener('input', event => {
     const field = event.target.dataset.field, stock = event.target.closest('[data-alert-symbol]');
@@ -2082,9 +2226,13 @@ function setupUiEventWiring() {
     watchlistQuery = event.target.value;
     renderWatchlist(latestMarket?.stocks || []);
   });
+  $('#watchlist-sort').addEventListener('change', () => renderWatchlist(latestMarket?.stocks || []));
+  watchlistDesktop.addEventListener('change', () => renderWatchlist(latestMarket?.stocks || []));
+  $('#watchlist-check').addEventListener('click', checkWatchlistPrices);
   $('#watchlist-toggle')?.addEventListener('click', event => {
     watchlistCollapsed = !watchlistCollapsed;
     $('#watchlist-page')?.classList.toggle('watchlist-collapsed', watchlistCollapsed);
+    $('#watchlist-signal-detail').hidden = watchlistCollapsed || !watchlist.some(item => item.symbol === activeSymbol);
     event.currentTarget.setAttribute('aria-expanded', String(!watchlistCollapsed));
     event.currentTarget.textContent = watchlistCollapsed ? 'ขยายรายการ' : 'ย่อรายการ';
   });
