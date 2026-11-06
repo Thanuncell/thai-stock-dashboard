@@ -37,7 +37,7 @@ export function chartGeometry({ rowCount = 0, hostWidth = 640 } = {}) {
   const right = width < 520 ? 10 : 16;
   const plotWidth = Math.max(1, width - left - right);
   const step = plotWidth / count;
-  const candleWidth = Math.max(1, Math.min(12, step * 0.62));
+  const candleWidth = Math.min(12, step * 0.8, Math.max(1, step * 0.62));
   return { width, left, right, plotWidth, step, candleWidth, x: index => left + step * index + step / 2 };
 }
 

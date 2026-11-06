@@ -1,7 +1,124 @@
 'use strict';
 
 const { createMarketDataGuard } = require('./data-guard');
-const {temporalBars}=require('../lib/market-time');
+const { tradingDay } = require('./automation-policy');
+const { intervalMs, temporalBars } = require('../lib/market-time');
+
+const MINUTE = 60000;
+const DAY = 24 * 60 * MINUTE;
+const BANGKOK_OFFSET = 7 * 60 * MINUTE;
+const exchangeDate = time => Math.floor((time + BANGKOK_OFFSET) / DAY);
+// SET/mai ordinary equities: earliest randomized opens, regular ends, then the closing auction.
+const EQUITY_WINDOWS = [[9 * 60 + 55, 12 * 60 + 30], [13 * 60 + 55, 16 * 60 + 30], [16 * 60 + 30, 16 * 60 + 40]];
+const SESSION_VERIFIED = 'SESSION_VERIFIED';
+const SESSION_UNVERIFIED = 'SESSION_UNVERIFIED';
+const DENSE_INTERVALS = new Set(['30m', '60m']);
+
+function monthsBefore(time, months) {
+  const date = new Date(time + BANGKOK_OFFSET);
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() - months);
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return +date - BANGKOK_OFFSET;
+}
+
+function normalEquityWindow(time) {
+  const date = exchangeDate(time);
+  const midnight = date * DAY - BANGKOK_OFFSET;
+  const minute = (time - midnight) / MINUTE;
+  return EQUITY_WINDOWS.findIndex(([start, end], index) => minute >= start
+    && (minute < end || index === EQUITY_WINDOWS.length - 1 && minute === end));
+}
+
+function regularSessions(meta) {
+  const sessions = new Map();
+  const historical = meta.tradingPeriods;
+  const regular = Array.isArray(historical) ? historical : historical?.regular;
+  const periods = [...(Array.isArray(regular) ? regular.flat() : []), meta.currentTradingPeriod?.regular];
+  for (const period of periods) {
+    const start = Number(period?.start) * 1000, end = Number(period?.end) * 1000;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end <= start
+      || exchangeDate(start) !== exchangeDate(end - 1)) continue;
+    const window = normalEquityWindow(start);
+    // A whole-day period cannot verify either side of the lunch break.
+    if (window < 0 || normalEquityWindow(end - 1) !== window) continue;
+    const key = exchangeDate(start) * EQUITY_WINDOWS.length + window;
+    const previous = sessions.get(key);
+    if (previous === null || previous?.some(item => item.start === start && item.end === end)) continue;
+    if (previous?.some(item => start < item.end && end > item.start)) sessions.set(key, null);
+    else sessions.set(key, [...(previous || []), { start, end }]);
+  }
+  return sessions;
+}
+
+function sessionKey(time) {
+  return exchangeDate(time) * EQUITY_WINDOWS.length + normalEquityWindow(time);
+}
+
+function cadenceEvidence(rows, interval, sessionFor) {
+  const duration = intervalMs(interval);
+  const sessions = new Set();
+  let nativeGaps = 0, skippedGaps = 0, offGridGaps = 0, doubleGaps = 0, alternateGridGaps = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const previous = rows[i - 1].time, time = rows[i].time;
+    const key = sessionKey(time);
+    const providerEnd = sessionFor(previous)?.end;
+    if (key !== sessionKey(previous) || (providerEnd && time >= providerEnd)) continue;
+    sessions.add(key);
+    const gap = time - previous;
+    if (gap < duration) {
+      throw Object.assign(Error('Yahoo bar cadence shorter than requested within a session'), { code: 'PARSER_MISMATCH' });
+    }
+    if (gap === duration) nativeGaps++;
+    else if (gap % duration === 0) skippedGaps++;
+    else offGridGaps++;
+    if (gap === 2 * duration) doubleGaps++;
+    if (gap % (2 * duration) === 0) alternateGridGaps++;
+  }
+  const samples = nativeGaps + skippedGaps + offGridGaps;
+  const dailyLike = rows.length >= 5 && rows.every((bar, i) => i === 0
+    || bar.time % DAY === rows[0].time % DAY && exchangeDate(bar.time) !== exchangeDate(rows[i - 1].time));
+  // Repeated alternate spacing is ambiguous for illiquid symbols. Keep the
+  // provider bars visible with a warning and withhold interval-based signals.
+  const alternate = sessions.size >= 2 && doubleGaps >= 4 && alternateGridGaps === samples;
+  const repeatedOffGrid = sessions.size >= 2 && offGridGaps >= 4 && offGridGaps === samples;
+  const status = dailyLike || alternate || repeatedOffGrid ? 'INTERVAL_CADENCE_SUSPECT'
+    : nativeGaps && !offGridGaps ? 'INTERVAL_CADENCE_VERIFIED' : 'INTERVAL_CADENCE_UNVERIFIED';
+  return { status, samples, nativeGaps, skippedGaps, offGridGaps, doubleGaps, dailyLike };
+}
+
+function densityHistoryPolicy(result, interval, bounds) {
+  const meta = result?.meta || {};
+  const reported = String(meta.dataGranularity || '').toLowerCase();
+  if (reported !== interval && !(interval === '60m' && reported === '1h')) {
+    throw Object.assign(Error('Yahoo interval differs from the requested interval'), { code: 'PARSER_MISMATCH' });
+  }
+  if (meta.exchangeTimezoneName !== 'Asia/Bangkok') {
+    throw Object.assign(Error('Thai intraday chart timezone mismatch'), { code: 'PARSER_MISMATCH' });
+  }
+
+  const sessions = regularSessions(meta);
+  const calendar = new Map();
+  const sessionFor = time => sessions.get(sessionKey(time))?.find(period => time >= period.start && time < period.end);
+  const barTimeIssue = time => {
+    if (!Number.isSafeInteger(time) || time % 1000 !== 0) return 'INVALID_TIMESTAMP';
+    if (bounds && (time < bounds.start || time >= bounds.end)) return 'OUTSIDE_CHART_WINDOW';
+    if (normalEquityWindow(time) < 0) return 'OUTSIDE_TRADING_SESSION';
+    const date = exchangeDate(time);
+    if (!calendar.has(date)) {
+      const day = new Date(date * DAY);
+      const weekday = day.getUTCDay();
+      calendar.set(date, weekday !== 0 && weekday !== 6 && tradingDay(day.toISOString().slice(0, 10)) !== false);
+    }
+    return calendar.get(date) ? null : 'OUTSIDE_TRADING_SESSION';
+  };
+  return { barTimeIssue, sessionFor, requireVolume: true };
+}
+
+const historySessionStatus = rows => rows.length > 0 && rows.every(row => row.sessionStatus === SESSION_VERIFIED)
+  ? SESSION_VERIFIED : SESSION_UNVERIFIED;
 
 const PUBLIC_ERROR_CODES = new Set([
   'SOURCE_NO_DATA', 'SOURCE_DENIED', 'SOURCE_RATE_LIMITED', 'ACQUISITION_GAP', 'PARSER_MISMATCH',
@@ -18,8 +135,8 @@ function publicMarketError(error, context) {
 const PERIODS = Object.freeze({
   '1D': ['1d', '1m'],
   '1W': ['5d', '15m'],
-  '1M': ['1mo', '1d'],
-  '3M': ['3mo', '1d'],
+  '1M': ['1mo', '30m'],
+  '3M': ['3mo', '60m'],
   '1Y': ['1y', '1d']
 });
 const LEVEL_FALLBACK_PERIODS = Object.freeze({
@@ -41,7 +158,13 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
   });
   async function yahooChart(symbol, range, interval) {
     const endpoint = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
-    endpoint.searchParams.set('range', range);
+    if (range && typeof range === 'object') {
+      // Yahoo's 30m lookback is limited; preserve the visible 1M window separately.
+      if (!Number.isInteger(range.period1) || !Number.isInteger(range.period2) || range.period1 >= range.period2)
+        throw Error('Invalid bounded history request');
+      endpoint.searchParams.set('period1', String(range.period1));
+      endpoint.searchParams.set('period2', String(range.period2));
+    } else endpoint.searchParams.set('range', range);
     endpoint.searchParams.set('interval', interval);
     endpoint.searchParams.set('events', 'div,splits');
     const response = await fetchImpl(endpoint, {
@@ -118,17 +241,33 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       }));
   }
 
-  function shapeChart(result, symbol, contextKey = 'default', providerSymbol) {
-    const assessed = dataGuard.assess(result, symbol, { contextKey, providerSymbol });
+  function shapeChart(result, symbol, contextKey = 'default', providerSymbol, bounds) {
+    const interval = contextKey.match(/:(1m|5m|15m|30m|60m|1d)$/)?.[1] || '1d';
+    const densityPolicy = DENSE_INTERVALS.has(interval) ? densityHistoryPolicy(result, interval, bounds) : null;
+    let cadence = null;
+    const validateHistory = densityPolicy ? rows => { cadence = cadenceEvidence(rows, interval, densityPolicy.sessionFor); } : undefined;
+    const assessed = dataGuard.assess(result, symbol, { contextKey, providerSymbol, ...densityPolicy, validateHistory });
     if (assessed.value) {
-      const value=assessed.value,meta=result?.meta||{},interval=contextKey.match(/:(1m|5m|15m|1d)$/)?.[1]||'1d';
+      const value=assessed.value,meta=result?.meta||{};
       const end=!value.fallbackFromLastKnown&&Number(meta.currentTradingPeriod?.regular?.end)>0?Number(meta.currentTradingPeriod.regular.end)*1000:null;
       const start=!value.fallbackFromLastKnown&&Number(meta.currentTradingPeriod?.regular?.start)>0?Number(meta.currentTradingPeriod.regular.start)*1000:null;
       const timeZone=meta.exchangeTimezoneName||'Asia/Bangkok';
-      const history=temporalBars(value.history,{interval,observedAt:value.receivedAt,regularStart:start,regularEnd:end,timeZone});
-      return {...value,history,validatedHistory:history,provenance:{provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',adjustment:'provider-defined; no local adjustment',
+      const rows = densityPolicy ? value.history.filter(bar => !densityPolicy.barTimeIssue(bar.time)).map(bar => {
+        const period = !value.fallbackFromLastKnown && densityPolicy.sessionFor(bar.time);
+        return { ...bar, sessionEnd: period ? period.end : null, sessionStatus: period ? SESSION_VERIFIED : SESSION_UNVERIFIED };
+      }) : value.history;
+      const densityEvidence = densityPolicy ? {
+        sessionStatus: historySessionStatus(rows),
+        cadence: value.fallbackFromLastKnown ? null : cadence
+      } : {};
+      const historyReasons = [...(value.historyReasons || [])];
+      if (densityEvidence.sessionStatus === SESSION_UNVERIFIED) historyReasons.push(SESSION_UNVERIFIED);
+      if (densityEvidence.cadence?.status === 'INTERVAL_CADENCE_SUSPECT') historyReasons.push('INTERVAL_MISMATCH');
+      else if (densityEvidence.cadence?.status === 'INTERVAL_CADENCE_UNVERIFIED') historyReasons.push('INTERVAL_CADENCE_UNVERIFIED');
+      const history=temporalBars(rows,{interval,observedAt:value.receivedAt,regularStart:start,regularEnd:end,timeZone});
+      return {...value,history,validatedHistory:history,historyReasons,provenance:{provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',adjustment:'provider-defined; no local adjustment',
         interval,receivedAt:value.receivedAt,timestampKind:'bar-open',regularStart:start,regularEnd:end,timeZone,corporateActionCount:Object.keys(result?.events?.splits||{}).length,
-        dividendCount:Object.keys(result?.events?.dividends||{}).length,adjustedClosePresent:Array.isArray(result?.indicators?.adjclose?.[0]?.adjclose),historyReasons:value.historyReasons||[]}};
+        dividendCount:Object.keys(result?.events?.dividends||{}).length,adjustedClosePresent:Array.isArray(result?.indicators?.adjclose?.[0]?.adjclose),historyReasons,...densityEvidence}};
     }
     const error = Error(`Data Guard ${symbol}: ${assessed.guardReasons.join(',') || 'UNAVAILABLE'}`);
     error.code = assessed.guardReasons[0] || 'DATA_GUARD_REJECTED';
@@ -211,10 +350,14 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     }
     if (index) index.turnoverMillionBaht = turnoverMillionBaht;
 
+    const dense = DENSE_INTERVALS.has(interval);
+    const chartAt = now();
+    const visibleBounds = dense ? { start: monthsBefore(chartAt, range === '1M' ? 1 : 3), end: chartAt + 1 } : undefined;
     let selected = stocks.find(stock => stock.symbol === active);
     if (selected && (rangeName !== '1d' || interval !== '5m')) {
       try {
-        const historyResult = shapeChart(await yahooChart(`${active}.BK`, rangeName, interval), active, `chart:${rangeName}:${interval}`);
+        const historyResult = shapeChart(await yahooChart(`${active}.BK`, rangeName, interval),
+          active, `chart:${rangeName}:${interval}`, undefined, visibleBounds);
         selected = {
           ...selected,
           history: historyResult.history,
@@ -245,12 +388,13 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       }
     }
     const history = selected?.history || [];
-    const trustedTechnicalHistory = ['usable', 'usable_with_warnings'].includes(selected?.historyStatus);
+    const trustedTechnicalHistory = ['usable', 'usable_with_warnings'].includes(selected?.historyStatus)
+      && selected?.provenance?.cadence?.status !== 'INTERVAL_CADENCE_SUSPECT';
     let levelsHistory = trustedTechnicalHistory ? history : [];
     let indicatorHistory = trustedTechnicalHistory ? history : [];
     let indicatorProvenance=selected?.provenance||null;
     let levelProvenance=selected?.provenance||null;
-    if (trustedTechnicalHistory && history.length < 40) {
+    if (!dense && trustedTechnicalHistory && history.length < 40) {
       const [fallbackRange, fallbackInterval] = LEVEL_FALLBACK_PERIODS[range] || LEVEL_FALLBACK_PERIODS['1M'];
       try {
         const fallback = shapeChart(await yahooChart(`${active}.BK`, fallbackRange, fallbackInterval), active, `chart:${fallbackRange}:${fallbackInterval}`);
@@ -262,6 +406,35 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
           if (fallbackInterval === interval) { indicatorHistory = fallback.history; indicatorProvenance=fallback.provenance; }
         }
       } catch (error) { errors.push(publicMarketError(error, 'ข้อมูลย้อนหลังสำหรับการวิเคราะห์')); }
+    }
+    if (dense && trustedTechnicalHistory && selected.guardStatus === 'accepted'
+      && history.filter(bar => bar.complete).length < 200) {
+      // Acquire only the prefix missing from the visible window. The selected
+      // receipt remains the observation cutoff for confirmed signals.
+      const period1 = Math.ceil((range === '1M' ? chartAt - 59 * 86400000 : monthsBefore(chartAt, 6)) / 1000);
+      const period2 = history[0].time / 1000;
+      if (period1 < period2) {
+        try {
+          const fallback = shapeChart(await yahooChart(`${active}.BK`, { period1, period2 }, interval), active,
+            `chart:warmup:${interval}`, undefined, { start: period1 * 1000, end: history[0].time });
+          if (['usable', 'usable_with_warnings'].includes(fallback.historyStatus)
+            && fallback.guardStatus === 'accepted' && fallback.identityStatus === 'accepted'
+            && fallback.provenance.cadence?.status !== 'INTERVAL_CADENCE_SUSPECT') {
+            const cutoff = Date.parse(selected.provenance.receivedAt);
+            const older = fallback.history.filter(bar => bar.complete && bar.availableAt <= cutoff);
+            if (older.length) {
+              indicatorHistory = [...older, ...history];
+              levelsHistory = indicatorHistory;
+              indicatorProvenance = levelProvenance = {
+                ...selected.provenance,
+                sessionStatus: historySessionStatus(indicatorHistory),
+                historyReasons: [...new Set([...selected.provenance.historyReasons, ...fallback.provenance.historyReasons])],
+                corporateActionCount: Math.max(selected.provenance.corporateActionCount, fallback.provenance.corporateActionCount)
+              };
+            }
+          }
+        } catch (error) { errors.push(publicMarketError(error, 'ข้อมูลย้อนหลังสำหรับการวิเคราะห์')); }
+      }
     }
     const fetchedAt = new Date(now()).toISOString();
     const latestProviderTime = [...stocks, index].filter(Boolean)
@@ -281,6 +454,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       history,
       levelsHistory,
       indicatorHistory,
+      ...(dense ? { candleTarget: 100, candleCount: history.length, candleTargetMet: history.length >= 100 } : {}),
       technicalMeta:{history:selected?.provenance||null,indicator:indicatorProvenance,levels:levelProvenance},
       fetchedAt,
       asOf: latestProviderTime ? new Date(latestProviderTime).toISOString() : fetchedAt,

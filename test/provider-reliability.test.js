@@ -148,7 +148,7 @@ test('rejected incomplete bars do not zero valid chart or Technical Analysis his
     fetchImpl: async input => {
       const url = new URL(String(input));
       const isIndex = decodeURIComponent(url.pathname).includes('^SET.BK');
-      const isDailyRange = url.searchParams.get('range') === '1mo';
+      const isDailyRange = url.searchParams.get('range') === '1y';
       const count = isDailyRange ? 45 : 2;
       const timestamps = Array.from({ length: count }, (_, index) => Math.floor((now - (count - index) * day * 1000) / 1000));
       const closes = timestamps.map((_, index) => isDailyRange && index < 5 ? null : 35 + index * 0.01);
@@ -162,7 +162,7 @@ test('rejected incomplete bars do not zero valid chart or Technical Analysis his
       }], error: null } }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
   });
-  const result = await service.getMarket(['PTT'], 'PTT', '1M');
+  const result = await service.getMarket(['PTT'], 'PTT', '1Y');
   assert.equal(result.history.length, 40);
   assert.equal(result.indicatorHistory.length, 40);
   assert.equal(result.levelsHistory.length, 40);

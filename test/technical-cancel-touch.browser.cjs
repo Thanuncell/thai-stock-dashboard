@@ -19,7 +19,7 @@ const frames=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
     if(url.origin===base&&url.pathname.startsWith('/api/'))api.push(url.pathname);
     if(url.pathname==='/api/search')return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{symbol:'CPALL',name:'Fixture',type:'EQUITY',exchange:'SET'}]})});
     if(url.origin===base&&url.pathname==='/api/market'){
-     const range=url.searchParams.get('range')||'1D',symbol=url.searchParams.get('symbol')||'PTT',interval=range==='1D'?'1m':range==='1W'?'15m':'1d',step=interval==='1m'?60000:interval==='15m'?900000:86400000;
+     const range=url.searchParams.get('range')||'1D',symbol=url.searchParams.get('symbol')||'PTT',interval=range==='1D'?'1m':range==='1W'?'15m':range==='1M'?'30m':range==='3M'?'60m':'1d',step=interval==='1m'?60000:interval==='15m'?900000:interval==='30m'?1800000:interval==='60m'?3600000:86400000;
      const rows=Array.from({length:260},(_,i)=>({time:Date.UTC(2026,9,20,3)+i*step,open:100+Math.sin(i*.3)*4,close:100.4+Math.sin(i*.3)*4,high:103+Math.sin(i*.3)*4,low:98+Math.sin(i*.3)*4,volume:1000+i}));
      const end=rows.at(-1).time+(interval==='1d'?24000000:step),meta={interval,receivedAt:new Date(end).toISOString(),regularEnd:interval==='1d'?end:null};
      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({stocks:[{symbol,last:rows.at(-1).close,prior:rows.at(-2).close,time:end,history:rows,guardStatus:'accepted',dataState:'delayed'}],history:rows,indicatorHistory:rows,levelsHistory:rows,technicalMeta:{history:meta,indicator:meta,levels:meta},fetchedAt:meta.receivedAt,dataState:'delayed',indices:[],errors:[]})});

@@ -867,6 +867,13 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const host = $('#stock-price-chart');
   if (!host) return;
   const allRows = trustedMarketBars(bars).filter(bar=>[bar.open,bar.high,bar.low,bar.close].every(value=>toFiniteNumber(value)!==null));
+  const denseRange = currentRange === '1M' || currentRange === '3M';
+  const cadence = latestMarket?.technicalMeta?.history?.cadence?.status;
+  const cadenceNotice = cadence === 'INTERVAL_CADENCE_SUSPECT' ? ' · ความถี่ของแท่งอาจไม่ตรงกับช่วงที่ขอ'
+    : cadence === 'INTERVAL_CADENCE_UNVERIFIED' ? ' · ยังยืนยันความถี่ของแท่งไม่ได้' : '';
+  const candleNotice = denseRange ? (allRows.length < 100
+    ? ` · มีแท่งเทียนจริง ${allRows.length}/100 (ข้อมูลยังไม่เพียงพอ)`
+    : ` · ${allRows.length} แท่งจากแหล่งข้อมูล`) + cadenceNotice : '';
   if (!allRows.length) {
     chartLayoutPending = false;
     drawings?.suspend();
@@ -875,7 +882,8 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
     const message = chartLoadMessage || (isUnavailable ? 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้' : isError ? 'โหลดข้อมูลไม่สำเร็จ' : 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
     host.innerHTML = `<div class="chart-empty chart-empty-${escapeHtml(chartLoadState)}"><span>${escapeHtml(message)}</span>${isError ? '<button type="button" data-chart-retry>ลองใหม่</button>' : ''}</div>`;
     host.closest('.own-chart-wrap')?.classList.remove('has-macd', 'has-oscillator');
-    setText('#chart-updated', 'อัปเดตเมื่อ —');
+    host.dataset.sourceCandles = '0';
+    setText('#chart-updated', 'อัปเดตเมื่อ —' + (isUnavailable ? candleNotice : ''));
     return;
   }
   const hostWidth = host.clientWidth;
@@ -886,6 +894,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   chartLayoutPending = false;
   const snapshot=technicalSnapshot(),calculationRows=snapshot.rows,analysis=snapshot.analysis;
   host.dataset.snapshotId=snapshot.id;
+  host.dataset.sourceCandles = String(allRows.length);
   host.dataset.signalCandleTime=String(snapshot.candleTime??'');
   host.dataset.latestCandleTime=String(allRows.at(-1)?.time??'');
   host.dataset.signalStatus=snapshot.summary.status;
@@ -945,7 +954,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
     const volumeHeight = volume === null ? 0 : volume / volumeMax * (volumeBottom - priceBottom - 6);
     const volumeBar = volume === null ? '' : `<rect class="volume-bar" x="${cx - candleWidth / 2}" y="${volumeBottom - volumeHeight}" width="${candleWidth}" height="${volumeHeight}"/>`;
     const date = new Date(bar.time);
-    const dateText = Number.isNaN(+date) ? '' : (currentRange === '1D' || currentRange === '1W' ? chartIntradayFormatter : chartDateFormatter).format(date);
+    const dateText = Number.isNaN(+date) ? '' : (currentRange === '1Y' ? chartDateFormatter : chartIntradayFormatter).format(date);
     const detail = `${dateText} · O ${number(open)} · H ${number(high)} · L ${number(low)} · C ${number(close)} · Vol ${number(volume)}`;
     return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/>${volumeBar}<rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
   }).join('');
@@ -989,7 +998,8 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const stateText = dataState === 'stale' ? ' · ข้อมูลเก่า' : dataState === 'suspect' || dataState === 'quarantined' ? ' · ข้อมูลต้องสงสัย' : '';
   const receipt=snapshot.receivedAt??(typeof receivedAt==='number'?receivedAt:Date.parse(receivedAt));
   const receiptText=technicalTimeText(receipt);
-  setText('#chart-updated', receiptText==='—'?'อัปเดตเมื่อ —':`อัปเดตเมื่อ ${receiptText} (เวลาไทย)${stateText}`);
+  setText('#chart-updated', receiptText==='—' ? 'อัปเดตเมื่อ —' + candleNotice
+    : `อัปเดตเมื่อ ${receiptText} (เวลาไทย)${stateText}${candleNotice}`);
   $('#chart-updated').title=`แท่งราคาล่าสุดเปิด ${technicalTimeText(allRows.at(-1)?.time)} · ดูแท่งอ้างอิงสัญญาณที่สรุปด้านล่าง`;
   host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
 }
@@ -1054,6 +1064,13 @@ function setupChartGestures() {
   if (!host) return;
   // SVG hit targets may be replaced during redraw. Keep native scroll suppression
   // on the stable host, limited to an intentional drawing inside the price plot.
+  host.addEventListener('wheel', event => {
+    if ((!event.ctrlKey && !event.metaKey) || !event.deltaY || !chartRowCount || drawings?.tool !== 'pan') return;
+    const plot = host.querySelector('.drawing-surface')?.getBoundingClientRect();
+    if (!plot?.width || event.clientX < plot.left || event.clientX > plot.right) return;
+    event.preventDefault();
+    setChartZoom(event.deltaY < 0 ? .8 : 1.25, (event.clientX - plot.left) / plot.width);
+  }, { passive: false });
   host.addEventListener('touchstart',event=>{
     if(drawings?.tool!=='pan'&&[...event.touches].some(touch=>drawings?.anchor(touch)))event.preventDefault();
   },{passive:false});

@@ -75,8 +75,12 @@ test('actual protected manual trigger refreshes the next /api/market price, cand
   }
   const path = '/api/market?symbols=PTT&symbol=PTT&range=3M';
   const before = await request(path); assert.equal(before.status, 200); assert.equal(before.body.stocks[0].last, 35);
+  assert.equal(before.body.technicalMeta.history.interval, '60m');
+  assert.ok(before.body.history.length >= 100);
+  const beforeCacheHit = db.calls.filter(call => call.url.hostname === 'query1.finance.yahoo.com').length;
   db.advance(latest, 36);
   const cached = await request(path); assert.equal(cached.body.stocks[0].last, 35);
+  assert.equal(db.calls.filter(call => call.url.hostname === 'query1.finance.yahoo.com').length, beforeCacheHit);
   const run = await request('/api/automation/manual', { method: 'POST', auth: process.env.SETSCOPE_V156_TRIGGER_TOKEN, body: { tag: 'refresh' } });
   assert.equal(run.status, 200); assert.equal(run.body.verified, 1);
   const after = await request(path); assert.equal(after.status, 200);

@@ -27,7 +27,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     if(url.origin===base&&url.pathname==='/api/market'){
      const range=url.searchParams.get('range')||'1D',symbol=url.searchParams.get('symbol')||'PTT';marketCalls.push({range,symbol});
      if(pending&&pending.range===range){const held=pending;pending=null;held.started();await held.wait;}
-     const interval=range==='1D'?'1m':range==='1W'?'15m':'1d',step=interval==='1m'?60000:interval==='15m'?900000:86400000;
+     const interval=range==='1D'?'1m':range==='1W'?'15m':range==='1M'?'30m':range==='3M'?'60m':'1d',step=interval==='1m'?60000:interval==='15m'?900000:interval==='30m'?1800000:interval==='60m'?3600000:86400000;
      const start=Date.UTC(2025,0,1,3,0,17,123),rows=ranking==='nearest'?rankingRows(range):ranking==='role'?roleRankingRows():ranking==='reverse-role'?roleRankingRows().map(row=>({
       ...row,open:200-row.open,close:200-row.close,high:200-row.low,low:200-row.high
      })):ranking==='scarce'?scarceRows():Array.from({length:short?12:260},(_,i)=>({time:start+i*step,open:100+Math.sin(i*.31)*4+i*.03,close:100.4+Math.sin(i*.31)*4+i*.03,high:103+Math.sin(i*.31)*4+i*.03,low:98+Math.sin(i*.31)*4+i*.03,volume:i===40?0:1000+i%11*100}));
@@ -111,7 +111,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await assertFit('Reset restores the default viewport at the fitted size');
    }
    phase=`${width}-${theme}-setup`;
-   const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b;});check(await page.locator('.technical-reason-card').count(),3);};
+   const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b&&document.querySelectorAll('.technical-reason-card').length===3;});check(await page.locator('.technical-reason-card').count(),3);};
    await parity();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal page overflow');
    check(await page.locator('.indicator-workspace small').textContent(),'ซ่อน/แสดงไม่เปลี่ยนผลวิเคราะห์ · การเปลี่ยน Period จะคำนวณจากข้อมูลเดิม · บันทึกแยกตามบัญชีบนอุปกรณ์นี้');
    check(await page.locator('[data-draw-status]').textContent(),'เลื่อน/ซูมกราฟตามปกติ · ภาพวาดบันทึกแยกตามบัญชีบนอุปกรณ์นี้');
@@ -198,9 +198,99 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await page.locator('[data-draw-list] button').first().click();await page.locator('#stock-price-chart').focus();await page.keyboard.press('Delete');await pause(page);check(await page.locator('[data-draw-list] button').count(),2,'keyboard delete');
    await page.locator('[data-draw-reset]').click();await pause(page);check(await page.locator('[data-draw-list] button').count(),0);
    phase=`${width}-${theme}-range-short`;
-   for(const range of ['1W','1M','3M','1Y','1D']){await page.locator(`[data-range="${range}"]`).click();await page.waitForFunction(range=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith(range),range);await parity();check((await page.locator('#analysis-note').textContent()).includes('ยืนยันแล้ว'),true);}
+   for (const range of ['1W', '1M', '3M', '1Y', '1D']) {
+    await page.locator('[data-range="'+range+'"]').click();
+    await page.waitForFunction(range=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith(range),range);
+    await parity();
+    check((await page.locator('#analysis-note').textContent()).includes('ยืนยันแล้ว'),true);
+    if (!['1M', '3M'].includes(range)) continue;
+    const candles = page.locator('.price-candle');
+    check(Number(await host.getAttribute('data-source-candles')),260,'dense fixture includes 260 source candles');
+    const initialCount = await host.evaluate(node=>node.clientWidth<520?42:68);
+    check(await candles.count(),initialCount,'dense default remains readable');
+    check(/\d\d:\d\d/.test(await candles.first().locator('title').textContent()),true,'intraday tooltip includes candle time');
+    const widthOfCandle = async () => Number(await candles.first().locator('rect').first().getAttribute('width'));
+    const firstTitle = () => candles.first().locator('title').textContent();
+    const lastTitle = await candles.last().locator('title').textContent();
+    const initialCandleWidth = await widthOfCandle();
+    const initialSnapshot = await host.getAttribute('data-snapshot-id');
+    const callsBeforeZoom = marketCalls.length;
+    const verifyAnchors = width===390 && theme==='light' && range==='1M';
+    const drawingKey = 'setscope-drawings:PTT:' + range + ':user-a';
+    if (verifyAnchors) {
+     await draw('trend',true);
+     await page.locator('[data-draw-tool=pan]').click();
+    }
+    const anchorData = verifyAnchors ? await page.evaluate(key=>localStorage.getItem(key),drawingKey) : null;
+    for (let i=0;i<12&&await candles.count()<260;i++) {
+     const before = await candles.count();
+     await page.locator('#chart-zoom-out').click();
+     await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length>count,before);
+    }
+    check(await candles.count(),260,'zoom out reaches all cached rows');
+    check(await candles.last().locator('title').textContent(),lastTitle,'full view reaches the same last candle');
+    const fullyZoomed = await widthOfCandle();
+    check(fullyZoomed<initialCandleWidth,true,'zoom out narrows the candle body');
+    check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'full view stays within the layout');
+    await page.locator('#chart-zoom-in').click();
+    await page.waitForFunction(()=>document.querySelectorAll('.price-candle').length<260);
+    check(await widthOfCandle()>fullyZoomed,true,'zoom in widens the candle body');
+    await host.scrollIntoViewIfNeeded();
+    const box = await svg.boundingBox(), beforePan = await firstTitle();
+    const x = box.x + box.width * .42, y = box.y + 100;
+    if (width<790) {
+     const cdp=await context.newCDPSession(page);
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x+60,y}]});
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+     await page.waitForFunction(title=>document.querySelector('.price-candle title')?.textContent!==title,beforePan);
+     const beforePinch = await candles.count();
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x-30,y},{x:x+30,y}]});
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x-60,y},{x:x+60,y}]});
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+     await cdp.detach();
+     await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length<count,beforePinch);
+    } else {
+     await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+60,y,{steps:4});await page.mouse.up();
+     await page.waitForFunction(title=>document.querySelector('.price-candle title')?.textContent!==title,beforePan);
+     const scrollY=await page.evaluate(()=>window.scrollY), beforeWheel=await candles.count();
+     await page.mouse.move(x,y);
+     await page.mouse.wheel(0,100);
+     await page.waitForFunction(offset=>window.scrollY!==offset,scrollY);
+     check(await candles.count(),beforeWheel,'unmodified wheel scrolls without changing chart zoom');
+     await host.scrollIntoViewIfNeeded();
+     const wheelBox=await svg.boundingBox();
+     await page.mouse.move(wheelBox.x+wheelBox.width*.5,wheelBox.y+100);
+     await page.keyboard.down('Control');
+     try { await page.mouse.wheel(0,-120); } finally { await page.keyboard.up('Control'); }
+     await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length<count,beforeWheel);
+    }
+    check(await host.getAttribute('data-snapshot-id'),initialSnapshot,'viewport changes keep the analysis snapshot');
+    check(marketCalls.length,callsBeforeZoom,'zoom, pan and pointer gestures use cached rows');
+    check(await candles.first().evaluate(node=>{
+     const wick=Number(node.querySelector('line').getAttribute('x1')),hit=node.querySelector('.candle-hit');
+     const center=Number(hit.getAttribute('x'))+Number(hit.getAttribute('width'))/2;
+     const line=node.closest('svg').querySelector('.sma20-chart-line');
+     const startX=Number(line?.getAttribute('d')?.match(/^M([\d.]+)/)?.[1]);
+     return Math.abs(wick-center)<.01&&Math.abs(wick-startX)<.1;
+    }),true,'candle hover target and SMA align with the visible candle after zoom and pan');
+    await page.locator('#chart-reset').click();
+    await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length===count,initialCount);
+    if (verifyAnchors) {
+     check(Boolean(anchorData),true,'dense range has a saved drawing');
+     check(await page.evaluate(key=>localStorage.getItem(key),drawingKey),anchorData,'zoom and pan preserve drawing anchors');
+     await page.locator('[data-draw-reset]').click();
+    }
+    short=true;
+    await page.locator('#refresh-chart').click();
+    await page.waitForFunction(()=>document.querySelector('#stock-price-chart').dataset.sourceCandles==='12');
+    check(await page.locator('.price-candle').count(),12,'short dense range preserves the provider rows');
+    check((await page.locator('#chart-updated').textContent()).includes('12/100'),true,'short dense range explains the limit');
+    short=false;
+   }
    phase=`${width}-${theme}-daily-confirmation`;
-   for(const range of ['1M','3M','1Y']){
+   {
+    const range='1Y';
     await page.locator(`[data-range="${range}"]`).click();await page.waitForFunction(range=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith(range),range);
     let priorReasons;
     for(const mode of ['closed','during','draft-spike','missing','mismatch']){

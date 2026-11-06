@@ -20,8 +20,16 @@ test('3% close disagreement and 40% price move preserve valid quote and every ch
       assert.equal(result.value.fallbackFromLastKnown, false);
     }
     const service = createMarketService({ now: () => NOW, fetchImpl: async input => {
-      const symbol = decodeURIComponent(new URL(input).pathname.split('/').at(-1));
-      return new Response(JSON.stringify({ chart: { result: [payload(103, 100, symbol)] } }));
+      const url = new URL(input);
+      const symbol = decodeURIComponent(url.pathname.split('/').at(-1));
+      const interval = url.searchParams.get('interval');
+      const value = payload(103, 100, symbol);
+      if (['30m', '60m'].includes(interval)) {
+        value.timestamp = [Date.UTC(2026, 9, 21, 7, 30) / 1000, Date.UTC(2026, 9, 22, 7, 30) / 1000];
+        Object.assign(value.meta, { dataGranularity: interval, exchangeTimezoneName: 'Asia/Bangkok',
+          regularMarketTime: value.timestamp.at(-1) });
+      }
+      return new Response(JSON.stringify({ chart: { result: [value] } }));
     } });
     const market = await service.getMarket(['TEST'], 'TEST', range);
     assert.equal(market.history.length, 2);
@@ -63,5 +71,5 @@ test('weekend delayed EOD is usable; missing Technical history does not remove C
   } });
   assert.equal((await service.verifySymbol('TEST')).chartReady, true);
   assert.equal((await service.verifySymbol('TEST')).technicalReady, false);
-  assert.equal((await service.getMarket(['TEST'], 'TEST', '1M')).history.length, 2);
+  assert.equal((await service.getMarket(['TEST'], 'TEST', '1Y')).history.length, 2);
 });

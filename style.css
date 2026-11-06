@@ -324,7 +324,7 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .price-candle.falling>line,.price-candle.falling>rect:not(.volume-bar):not(.candle-hit){stroke:#d66569;fill:#d66569}
 .price-candle .volume-bar{opacity:.22;fill:#188b70}
 .price-candle.falling .volume-bar{fill:#d66569}
-.price-candle .candle-hit{fill:transparent;stroke:none;pointer-events:none}
+.price-candle .candle-hit{fill:transparent;stroke:none;pointer-events:all}
 .sma20-chart-line,.ema20-chart-line,.ema50-chart-line,.ema100-chart-line,.ema200-chart-line{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke}
 .sma20-chart-line{stroke:#8b76c5}.ema20-chart-line{stroke:#188b82}.ema50-chart-line{stroke:#d5943c}.ema100-chart-line{stroke:#5285c3}.ema200-chart-line{stroke:#c56f82}
 .chart-level line{stroke-width:1.2;stroke-dasharray:7 5;vector-effect:non-scaling-stroke}

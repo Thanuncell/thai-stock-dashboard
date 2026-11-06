@@ -6,11 +6,11 @@ const {createMarketService}=require('../server/market-service');
 let technical,domain;test.before(async()=>{technical=await import('../client/technical.mjs');domain=await import('../client/domain.mjs');});
 const day=86400000,lastOpen=Date.UTC(2026,10,3,3),end=lastOpen+23400000;
 function daily(n=260){const times=[];for(let t=lastOpen;times.length<n;t-=day)if(![0,6].includes(new Date(t).getUTCDay()))times.unshift(t);return times.map((time,i)=>({time,open:100+i*.1,high:102+i*.1,low:99+i*.1,close:101+i*.1,volume:1000+i}));}
-function options(rows,extra={}){return {symbol:'PTT',timeframe:'3M',history:rows,indicatorHistory:rows,levelsHistory:rows,fetchedAt:new Date(end+60000).toISOString(),technicalMeta:{indicator:{interval:'1d',timeZone:'Asia/Bangkok',regularStart:lastOpen,regularEnd:end,receivedAt:new Date(end+60000).toISOString()}},...extra};}
+function options(rows,extra={}){return {symbol:'PTT',timeframe:'1Y',history:rows,indicatorHistory:rows,levelsHistory:rows,fetchedAt:new Date(end+60000).toISOString(),technicalMeta:{indicator:{interval:'1d',timeZone:'Asia/Bangkok',regularStart:lastOpen,regularEnd:end,receivedAt:new Date(end+60000).toISOString()}},...extra};}
 const make=(rows,extra={})=>technical.createTechnicalSnapshot(options(rows,extra));
 const metadata=(extra={})=>({indicator:{interval:'1d',timeZone:'Asia/Bangkok',regularStart:lastOpen,regularEnd:end,receivedAt:new Date(end+60000).toISOString(),...extra}});
 
-for(const [interval,step]of [['1m',60000],['15m',900000]])test(`${interval} has explicit unchanged open/close/availability contract`,()=>{
+for(const [interval,step]of [['1m',60000],['15m',900000],['30m',1800000],['60m',3600000]])test(`${interval} has explicit unchanged open/close/availability contract`,()=>{
  const row=daily(1)[0],before=JSON.stringify(row),bar=temporalBars([row],{interval,observedAt:row.time+step})[0];
  assert.equal(bar.time,row.time);assert.equal(bar.barOpenTime,row.time);assert.equal(bar.barCloseTime,row.time+step);assert.equal(bar.availableAt,bar.barCloseTime);assert.equal(bar.confirmed,true);assert.equal(bar.complete,true);assert.equal(bar.confirmationBasis,'interval-end');assert.equal(JSON.stringify(row),before);
 });
@@ -39,7 +39,7 @@ test('invalid timezone and inconsistent session start fail closed',()=>{
  const row=daily(1)[0];assert.equal(temporalBars([row],{interval:'1d',timeZone:'Invalid/Zone',regularStart:lastOpen,regularEnd:end,observedAt:end+day})[0].complete,false);
  assert.equal(temporalBars([row],{interval:'1d',timeZone:'Asia/Bangkok',regularStart:lastOpen+day,regularEnd:end,observedAt:end+day})[0].complete,false);
 });
-for(const timeframe of ['1M','3M','1Y'])test(`${timeframe} selects latest confirmed daily candle and preserves complete snapshot evidence`,()=>{
+for(const timeframe of ['1Y'])test(`${timeframe} selects latest confirmed daily candle and preserves complete snapshot evidence`,()=>{
  const rows=daily(),s=make(rows,{timeframe});assert.equal(s.signalReference.barOpenTime,lastOpen);assert.equal(s.signalReference.availableAt,end);assert.equal(s.signalReference.selection,'latest-confirmed');assert.equal(s.signalReference.confirmationBasis,'provider-session-end');assert.equal(s.candleTime,lastOpen);assert.equal(s.receivedAt,end+60000);assert.ok(s.summary.reasons.every(r=>r.candleTime===s.candleTime));assert.ok(Object.isFrozen(s.signalReference));
 });
 for(const timeframe of ['1D','1W'])test(`${timeframe} uses confirmed previous intraday candle while latest is open`,()=>{
@@ -77,7 +77,7 @@ test('daily walk-forward replay cannot borrow future session observations, price
 test('confirmed signal series keep the independent indicator formulas and chart timestamp alignment',()=>{
  const rows=daily(),s=make(rows,{technicalMeta:metadata({regularEnd:null})}),expected=domain.computeTechnicalSeries(rows.slice(0,-1));assert.deepEqual(s.signalSeries,expected);assert.deepEqual(s.rows.map(r=>r.time),rows.map(r=>r.time));assert.deepEqual(s.series,domain.computeTechnicalSeries(rows));
 });
-for(const timeframe of ['1M','3M','1Y'])test(`${timeframe} service-to-snapshot flow preserves cadence, fallback provenance and the existing request budget`,async()=>{
+for(const timeframe of ['1Y'])test(`${timeframe} service-to-snapshot flow preserves cadence, fallback provenance and the existing request budget`,async()=>{
  const calls=[],received=end+3600000;
  const service=createMarketService({env:{},now:()=>received,fetchImpl:async input=>{
   const url=new URL(input),interval=url.searchParams.get('interval'),range=url.searchParams.get('range'),symbol=decodeURIComponent(url.pathname.split('/').at(-1));calls.push({range,interval});
