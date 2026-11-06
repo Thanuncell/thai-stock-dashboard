@@ -117,3 +117,117 @@ test('watchlist news cache keys cover every normalized provider input', () => {
   assert.notEqual(first, renamed);
   assert.equal(first, createWatchlistNewsCacheKey([{ symbol: 'PTT', name: 'ปตท.' }]));
 });
+
+const policy = {
+  ttlMs: 100,
+  staleIfErrorMs: 200,
+  errorBackoffMs: 1_000,
+  markStale(value) { return { ...value, stale: true, dataState: 'stale' }; }
+};
+
+test('WS3: stale cache cannot outlive its configured LKG window during cooldown', async () => {
+  let now = 1_000;
+  let loads = 0;
+  const cache = createMemoryCache({ now: () => now });
+  await cache.get('settrade:test', policy, () => ({ observedAt: now }));
+
+  now = 1_101;
+  const stale = await cache.get('settrade:test', policy, async () => {
+    loads += 1;
+    throw Error('provider unavailable');
+  });
+  assert.equal(stale.meta.status, 'stale');
+  assert.equal(stale.value.dataState, 'stale');
+
+  now = 1_301; // 1 ms beyond expiresAt + staleIfErrorMs; retry backoff remains active.
+  await assert.rejects(cache.get('settrade:test', policy, async () => {
+    loads += 1;
+    return { observedAt: now };
+  }), /provider unavailable|CACHE_STALE_BACKOFF_EXPIRED/);
+  assert.equal(loads, 1, 'an expired fallback must not trigger a new upstream call during cooldown');
+
+  now = 2_102; // After retryAt, loading is permitted again.
+  const recovered = await cache.get('settrade:test', policy, async () => {
+    loads += 1;
+    return { observedAt: now };
+  });
+  assert.equal(recovered.meta.status, 'miss');
+  assert.equal(recovered.value.observedAt, now);
+  assert.equal(loads, 2);
+});
+
+test('WS3: cache still reuses stale fallback within the permitted LKG window', async () => {
+  let now = 5_000;
+  const cache = createMemoryCache({ now: () => now });
+  await cache.get('coverage:test', policy, async () => ({ observedAt: now }));
+  now = 5_101;
+  await cache.get('coverage:test', policy, async () => { throw Error('timeout'); });
+  now = 5_300; // Exactly at expiresAt + staleIfErrorMs is still allowed.
+  const result = await cache.get('coverage:test', policy, () => { throw Error('unexpected fetch'); });
+  assert.equal(result.meta.status, 'stale');
+  assert.equal(result.value.dataState, 'stale');
+});
+
+test('WS3: no-stale market policy remains fail-closed', async () => {
+  let now = 7_000;
+  const cache = createMemoryCache({ now: () => now });
+  await cache.get('market:test', PROVIDER_POLICIES.market, async () => ({ value: 1 }));
+  now += PROVIDER_POLICIES.market.ttlMs + 1;
+  await assert.rejects(cache.get('market:test', PROVIDER_POLICIES.market, async () => { throw Error('down'); }), /down/);
+  await assert.rejects(cache.get('market:test', PROVIDER_POLICIES.market, async () => ({ value: 2 })), /down/);
+});
+
+function recordPayload(body, time = Date.parse('2026-11-06T04:30:00Z')) {
+  const output = [];
+  let finish;
+  const res = {
+    statusCode: 200,
+    setHeader() {},
+    once(_event, cb) { finish = cb; }
+  };
+  const audit = createObservability({
+    logger: { info: line => output.push(JSON.parse(line)) },
+    now: () => time,
+    requestId: () => 'test-request'
+  });
+  audit.startRequest({ method: 'GET' }, res, '/api/market-overview');
+  audit.markPayload(res, body);
+  finish();
+  return output[0];
+}
+
+test('WS5: a timestamp alone cannot prove market data is fresh', () => {
+  const log = recordPayload({ fetchedAt: '2024-01-01T00:00:00Z', provider: 'SETTRADE' });
+  assert.equal(log.dataState, 'unknown');
+  assert.ok(log.staleAgeMs > 1_000_000);
+});
+
+test('WS5: explicit stale state takes precedence over a valid timestamp', () => {
+  const log = recordPayload({ fetchedAt: '2026-11-06T04:29:00Z', stale: true });
+  assert.equal(log.dataState, 'stale');
+});
+
+test('WS5: explicitly verified fresh state remains visible', () => {
+  const log = recordPayload({ dataState: 'fresh', asOf: '2026-11-06T04:29:00Z' });
+  assert.equal(log.dataState, 'fresh');
+});
+
+test('WS5: errors without source quality state are partial', () => {
+  const log = recordPayload({ fetchedAt: '2026-11-06T04:29:00Z', errors: ['bad upstream'] });
+  assert.equal(log.dataState, 'partial');
+});
+
+test('diagnostics never log arbitrary inbound or publisher path segments', async () => {
+  const lines = [];
+  const observability = createObservability({ logger: { info: line => lines.push(JSON.parse(line)) } });
+  const res = { statusCode: 404, setHeader() {}, once(_event, cb) { this.finish = cb; } };
+  observability.startRequest({ method: 'GET' }, res, '/api/path-redaction-marker');
+  res.finish();
+  const fetch = observability.observedFetch(async () => ({ status: 200 }));
+  await fetch('https://example.test/news/path-redaction-marker?query-redaction-marker=1');
+  await fetch('https://query1.finance.yahoo.com/v8/finance/chart/path-redaction-marker');
+  assert.equal(lines[0].route, 'unknown');
+  assert.equal(lines[1].operation, 'fetch');
+  assert.equal(lines[2].operation, 'chart');
+  assert.doesNotMatch(JSON.stringify(lines), /redaction-marker/);
+});

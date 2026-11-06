@@ -754,8 +754,7 @@ function renderWatchlistSignal(snapshot, selected) {
     : `<p>${escapeHtml(selected.symbol)} · ยังไม่มีสัญญาณที่ยืนยันได้จากข้อมูลกราฟ</p>`;
 }
 
-function watchlistItemNode(item, quote, table) {
-  const selected = activeSymbol === item.symbol;
+function watchlistItemNode(item, quote, table, selected) {
   const symbol = escapeHtml(item.symbol), name = escapeHtml(item.name || item.symbol);
   const details = `<button class="watch-details watch-select" type="button" aria-pressed="${selected}"><span class="watch-symbol">${symbol}</span><span class="watch-name">${name}</span></button>`;
   const price = `<span class="watch-price">${quote ? number(quote.last) : '—'}</span>`;
@@ -767,9 +766,7 @@ function watchlistItemNode(item, quote, table) {
   template.innerHTML = table
     ? `<table><tbody><tr ${rowAttributes}><th scope="row">${details}</th><td>${price}</td><td>${change}</td><td>${remove}</td></tr></tbody></table>`
     : `<div ${rowAttributes}>${details}<div class="watch-quote">${price}${change}</div>${remove}</div>`;
-  const node = table ? template.content.querySelector('tr') : template.content.firstElementChild;
-  node.dataset.renderKey = JSON.stringify([item.symbol, item.name, selected, quote?.last, percent]);
-  return node;
+  return table ? template.content.querySelector('tr') : template.content.firstElementChild;
 }
 
 function patchWatchlistRoot(root, rows, { table = false, workspace = false } = {}) {
@@ -792,9 +789,13 @@ function patchWatchlistRoot(root, rows, { table = false, workspace = false } = {
   }
   const existing = new Map([...container.children].map(node => [node.dataset.sym, node]));
   const nodes = rows.map(({ item, quote }) => {
-    const next = watchlistItemNode(item, quote, table);
+    const selected = activeSymbol === item.symbol;
+    const renderKey = JSON.stringify([item.symbol, item.name, selected, quote?.last, quote?.percent]);
     const current = existing.get(item.symbol);
-    return current?.dataset.renderKey === next.dataset.renderKey ? current : next;
+    if (current?.dataset.renderKey === renderKey) return current;
+    const next = watchlistItemNode(item, quote, table, selected);
+    next.dataset.renderKey = renderKey;
+    return next;
   });
   if (!nodes.length) {
     const empty = document.createElement(table ? 'tr' : 'div');
