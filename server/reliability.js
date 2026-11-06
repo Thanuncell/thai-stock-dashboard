@@ -67,6 +67,11 @@ function createMemoryCache({ maxEntries = 200, now = Date.now } = {}) {
     if (!force && failure && now() < failure.retryAt) return Promise.reject(failure.error);
     if (failure) failures.delete(key);
     if (!force && cached?.retryAt && now() < cached.retryAt) {
+      // Backoff must never extend a last-known-good value beyond its policy deadline.
+      // Reject locally while cooling down, rather than fetching early or serving expired data.
+      if (!(policy.staleIfErrorMs > 0 && now() <= cached.expiresAt + policy.staleIfErrorMs)) {
+        return Promise.reject(cached.lastError || Error('CACHE_STALE_BACKOFF_EXPIRED'));
+      }
       return Promise.resolve({
         value: typeof policy.markStale === 'function' ? policy.markStale(cached.value, cached.lastError) : cached.value,
         meta: { status: 'stale', staleAgeMs: Math.max(0, now() - cached.createdAt) }

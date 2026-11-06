@@ -291,8 +291,15 @@ async function run() {
       const afterSearch = root.scrollTop;
       const firstBeforeSort = root.querySelector('.watch-item').dataset.sym;
       const sort = document.querySelector('#watchlist-sort');
+      const createElement = document.createElement;
+      let sortTemplates = 0;
+      document.createElement = function (name, ...args) {
+        if (name === 'template') sortTemplates++;
+        return createElement.call(this, name, ...args);
+      };
       sort.value = 'price-desc';
-      sort.dispatchEvent(new Event('change', { bubbles: true }));
+      try { sort.dispatchEvent(new Event('change', { bubbles: true })); }
+      finally { document.createElement = createElement; }
       const afterSort = root.scrollTop;
       const firstAfterSort = root.querySelector('.watch-item').dataset.sym;
       toggle.click();
@@ -303,7 +310,7 @@ async function run() {
       const afterSelection = root.scrollTop;
       document.querySelector('#refresh-watchlist-news').click();
       await new Promise(resolve => setTimeout(resolve, 80));
-      return { before, afterSearch, afterSort, firstBeforeSort, firstAfterSort, afterCollapse, afterSelection, afterRefresh: root.scrollTop, page: window.scrollY };
+      return { before, afterSearch, afterSort, sortTemplates, firstBeforeSort, firstAfterSort, afterCollapse, afterSelection, afterRefresh: root.scrollTop, page: window.scrollY };
     });
     await page.waitForFunction(() => !document.querySelector('#refresh-watchlist-news').disabled);
     await page.waitForTimeout(300);
@@ -456,6 +463,7 @@ async function run() {
     assert.ok(watchlistPreservation.before > 0, 'Watchlist preservation test requires an internal scroll position');
     assert.equal(watchlistPreservation.afterSearch, watchlistPreservation.before, 'Watchlist search must preserve internal scroll');
     assert.notEqual(watchlistPreservation.firstAfterSort, watchlistPreservation.firstBeforeSort, 'Sorting must reorder the fixtures');
+    assert.equal(watchlistPreservation.sortTemplates, 0, 'Sorting must reuse existing unchanged rows');
     assert.equal(watchlistPreservation.afterSort, watchlistPreservation.before, 'Watchlist sorting must preserve internal scroll');
     assert.equal(watchlistPreservation.afterCollapse, watchlistPreservation.before, 'Watchlist collapse and expand must preserve internal scroll');
     assert.equal(watchlistPreservation.afterSelection, watchlistPreservation.before, 'Watchlist rerender must preserve internal scroll');
