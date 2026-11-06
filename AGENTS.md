@@ -30,10 +30,12 @@ Parallel Codex: **separate branch + isolated worktree/checkout + named scope/fil
 
 ## Domain 2 — Source Rights & Data Integrity
 
-### 6. Practical acquisition without recurring approval gates
-For approved Scraper/Provider development, Codex may inspect sources, change parsers and run small, bounded Live Smoke checks on normally accessible sources without separate Source Rights Gate paperwork, repeated rights reviews or extra Owner approvals. Focus on code, real data and targeted tests. New production automation, private/paid access and deployment still require their own approval.
+### 6. Data Acquisition First — Pre-v1.5.0 Development Model
+**Codex must actively pursue every reasonable, lawful and technically practical method to bring real, accurate data into SETscope**, using the agile pre-v1.5.0 development approach as its working model. Review historical code and previously working acquisition paths first, but verify them against current provider behavior; old code is a reference, not proof that a method still works.
 
-An inaccessible source is a source-level result, **not a reason to STOP the entire patch**: record the limitation and continue with usable cached responses, fixtures and other approved sources. Do not circumvent authentication, paywalls, CAPTCHA or access controls. Use bounded requests and reasonable backoff; distinguish `ACQUISITION_GAP`, `SOURCE_NO_DATA` and `PARSER_MISMATCH`.
+Within the **Owner-approved scope**, Codex should independently investigate, prototype, fix and test suitable options such as HTML parsing, normally accessible APIs, structured data/JSON-LD, RSS and ordinary browser-based retrieval. Adapt parsers when pages change; restore historical news, implement checkpoints or fallbacks when within scope. Use small, bounded Live Smoke checks when useful, without repetitive Rights Gate checklists or extra routine approval. Diagnose `ACQUISITION_GAP`, `SOURCE_NO_DATA` and `PARSER_MISMATCH`; if one path fails, try another legitimate path, continue offline fixes and report Live status truthfully. **Live NOT VERIFIED alone must not halt the patch.**
+
+**Scraper First — Code First — Fix Fast:** prioritize working data and focused regression tests over paperwork. Never invent data, evade authentication/paywalls/CAPTCHA or bypass actual access controls and 401/403/repeated 429. Respect applicable law/terms, stop a genuinely prohibited acquisition path, and continue safe alternatives. This rule does **not** approve out-of-scope features, private/paid access, production scheduling, merge or deploy; those remain Owner-controlled.
 
 ### 7. Data truth, provenance and persistence
 Never fabricate market data, OHLC, rankings, news, identity, coverage, timestamps or rights. Preserve raw/source fidelity, mapping, units, session/as-of. Delay ≠ error; shadow mismatch is investigation evidence, **not** automatic quarantine/source switch unless SSOT requires. Reject proven invalid fields only.
@@ -77,6 +79,6 @@ Concise handoff: SHA, scope/files, root cause/outcome, test evidence, source/req
 ### 13. Targeted incident handling and controlled Living Rules
 **Do not STOP the entire patch** merely because a source is inaccessible, a Live Smoke attempt cannot finish or Live remains NOT VERIFIED. Mark the affected source unavailable and continue independent in-scope fixes and tests. For a real security/privacy leak, unsafe data, destructive migration, unauthorized production change or severe regression, contain the affected operation and inform Owner. Never hide a genuine failure or attempt to evade access controls.
 
-Binding policy changes need Owner approval and a dated change record. Owner direction on 2026-11-06 simplifies project decision order, acquisition, in-scope Live Smoke, testing and source-unavailability handling; formal Rights Gate and mandatory Rule 12A remain retired. The governing Word Master in Library must be kept aligned when this change is accepted. Frozen records stay immutable; no change here authorizes auto-merge/deploy.
+Binding policy changes need Owner approval and a dated change record. Owner direction on 2026-11-06 simplifies project decision order, acquisition, in-scope Live Smoke, testing and source-unavailability handling; formal Rights Gate and mandatory Rule 12A remain retired. Owner-approved Rule 6 replacement uses Data Acquisition First (the pre-v1.5.0 working model). The governing Word Master in Library was updated separately. Frozen records stay immutable; no change here authorizes auto-merge/deploy.
 
 **Scope:** v1.5.3 = Overview only; v1.5.8 = research/proposals, not implementation approval. No private-repo move or reopen of v1.5.3.2 (CLOSED/FROZEN). Historical change log remains in Word Master.
