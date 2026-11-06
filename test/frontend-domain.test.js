@@ -437,3 +437,36 @@ test('Watchlist News empty, partial and unavailable are not conflated', () => {
   assert.equal(domain.watchlistNewsViewState({items:[{title:'news'}],dataState:'fresh'}), 'fresh');
   assert.equal(domain.watchlistNewsViewState({error:'broken'}), 'error');
 });
+
+test('Smart Watchlist only uses validated Yahoo quotes and leaves an unknown percent blank', () => {
+  const quote = { provider: 'Yahoo Finance', guardStatus: 'accepted', dataState: 'delayed', last: 25, prior: 20 };
+  assert.deepEqual(domain.usableWatchlistQuote(quote), { last: 25, change: 5, percent: 25 });
+  assert.deepEqual(domain.usableWatchlistQuote({ ...quote, prior: null }), { last: 25, change: null, percent: null });
+  for (const patch of [
+    { provider: 'Other' }, { identityStatus: 'suspect' }, { quoteStatus: 'unavailable' },
+    { guardStatus: 'rejected' }, { dataState: 'stale' }, { stale: true }, { fallbackFromLastKnown: true },
+    { last: null }, { last: '25' }, { last: Infinity }, { last: 0 }
+  ]) assert.equal(domain.usableWatchlistQuote({ ...quote, ...patch }), null);
+});
+
+test('Watchlist sorts both ways with stable ties, missing criteria last and saved membership intact', () => {
+  const items = Object.freeze([{ symbol: 'PTT' }, { symbol: 'WHA', name: 'บริษัท ดับบลิวเอชเอ' },
+    { symbol: 'AMATA' }, { symbol: 'CPALL' }, { symbol: 'ROJNA' }]);
+  const quotes = new Map([
+    ['WHA', { last: 4, percent: 5 }], ['AMATA', { last: 20, percent: -2 }],
+    ['CPALL', { last: 4, percent: 5 }], ['ROJNA', { last: 2, percent: null }]
+  ]);
+  const view = options => domain.watchlistView(items, quotes, options).map(({ item }) => item.symbol);
+  assert.deepEqual(view({ sort: 'price-desc' }), ['AMATA', 'WHA', 'CPALL', 'ROJNA', 'PTT']);
+  assert.deepEqual(view({ sort: 'price-asc' }), ['ROJNA', 'WHA', 'CPALL', 'AMATA', 'PTT']);
+  assert.deepEqual(view({ sort: 'change-desc' }), ['WHA', 'CPALL', 'AMATA', 'PTT', 'ROJNA']);
+  assert.deepEqual(view({ sort: 'change-asc' }), ['AMATA', 'WHA', 'CPALL', 'PTT', 'ROJNA']);
+  assert.deepEqual(view({ query: 'ดับบลิว', sort: 'change-desc' }), ['WHA']);
+  assert.deepEqual(view({}), ['PTT', 'WHA', 'AMATA', 'CPALL', 'ROJNA']);
+});
+
+test('manual monitoring and crossing alerts share positive finite thresholds', () => {
+  assert.deepEqual(domain.watchlistThresholds({ above: '2.50', below: 1 }), { above: 2.5, below: 1 });
+  assert.deepEqual(domain.watchlistThresholds({ above: '-5', below: Infinity }), { above: null, below: null });
+  assert.deepEqual(domain.watchlistThresholds({ above: '', below: 0 }), { above: null, below: null });
+});

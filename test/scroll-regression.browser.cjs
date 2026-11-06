@@ -83,7 +83,7 @@ async function mockRequest(route, baseUrl, metrics) {
   if (url.pathname === '/api/market') {
     metrics.marketRequests += 1;
     return json(route, {
-      stocks: watchItems.map((item, index) => ({ ...item, last: 30 + index, prevClose: 29 + index, change: 1, percent: 1 })),
+      stocks: watchItems.map((item, index) => ({ ...item, last: 30 + index, prior: 29 + index, guardStatus: 'accepted' })),
       indices: [], history: chartBars, indicatorHistory: chartBars, levelsHistory: chartBars, errors: [],
       fetchedAt: new Date().toISOString(), asOf: new Date().toISOString(), source: 'fixture',
       stale: false, partial: false, delayed: true, delayMinutes: 15, dataState: 'delayed', provider: 'fixture'
@@ -289,6 +289,12 @@ async function run() {
       search.value = 'T';
       search.dispatchEvent(new Event('input', { bubbles: true }));
       const afterSearch = root.scrollTop;
+      const firstBeforeSort = root.querySelector('.watch-item').dataset.sym;
+      const sort = document.querySelector('#watchlist-sort');
+      sort.value = 'price-desc';
+      sort.dispatchEvent(new Event('change', { bubbles: true }));
+      const afterSort = root.scrollTop;
+      const firstAfterSort = root.querySelector('.watch-item').dataset.sym;
       toggle.click();
       toggle.click();
       const afterCollapse = root.scrollTop;
@@ -297,10 +303,26 @@ async function run() {
       const afterSelection = root.scrollTop;
       document.querySelector('#refresh-watchlist-news').click();
       await new Promise(resolve => setTimeout(resolve, 80));
-      return { before, afterSearch, afterCollapse, afterSelection, afterRefresh: root.scrollTop, page: window.scrollY };
+      return { before, afterSearch, afterSort, firstBeforeSort, firstAfterSort, afterCollapse, afterSelection, afterRefresh: root.scrollTop, page: window.scrollY };
     });
     await page.waitForFunction(() => !document.querySelector('#refresh-watchlist-news').disabled);
     await page.waitForTimeout(300);
+
+    const topStock = () => page.locator('#watchlist-mobile').evaluate(root => {
+      const top = root.getBoundingClientRect().top + (root.querySelector('thead')?.offsetHeight || 0);
+      return [...root.querySelectorAll('.watch-item')].find(row => row.getBoundingClientRect().bottom > top)?.dataset.sym;
+    });
+    const beforeResize = await topStock();
+    const requestsBeforeResize = metrics.marketRequests;
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.locator('#watchlist-mobile table').waitFor();
+    assert.equal(await topStock(), beforeResize, 'mobile to desktop preserves the stock at the top of the list');
+    const desktopScroll = await page.locator('#watchlist-mobile').evaluate(root => root.scrollTop);
+    assert.ok(desktopScroll > 0, 'desktop list remains internally scrollable');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#watchlist-mobile > .watch-item').first().waitFor();
+    assert.equal(await topStock(), beforeResize, 'desktop to mobile preserves the stock at the top of the list');
+    assert.equal(metrics.marketRequests, requestsBeforeResize);
 
     await page.waitForSelector('#watchlist-news-pager:not([hidden])');
     await page.evaluate(() => {
@@ -433,6 +455,8 @@ async function run() {
     assert.ok(touchDownY > 0, 'touch swipe must hand off from the Watchlist boundary to the page');
     assert.ok(watchlistPreservation.before > 0, 'Watchlist preservation test requires an internal scroll position');
     assert.equal(watchlistPreservation.afterSearch, watchlistPreservation.before, 'Watchlist search must preserve internal scroll');
+    assert.notEqual(watchlistPreservation.firstAfterSort, watchlistPreservation.firstBeforeSort, 'Sorting must reorder the fixtures');
+    assert.equal(watchlistPreservation.afterSort, watchlistPreservation.before, 'Watchlist sorting must preserve internal scroll');
     assert.equal(watchlistPreservation.afterCollapse, watchlistPreservation.before, 'Watchlist collapse and expand must preserve internal scroll');
     assert.equal(watchlistPreservation.afterSelection, watchlistPreservation.before, 'Watchlist rerender must preserve internal scroll');
     assert.equal(watchlistPreservation.afterRefresh, watchlistPreservation.before, 'Watchlist News refresh must preserve internal scroll');
