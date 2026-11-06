@@ -27,7 +27,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     if(url.origin===base&&url.pathname==='/api/market'){
      const range=url.searchParams.get('range')||'1D',symbol=url.searchParams.get('symbol')||'PTT';marketCalls.push({range,symbol});
      if(pending&&pending.range===range){const held=pending;pending=null;held.started();await held.wait;}
-     const interval=range==='1D'?'1m':range==='1W'?'15m':'1d',step=interval==='1m'?60000:interval==='15m'?900000:86400000;
+     const interval=range==='1D'?'1m':range==='1W'?'15m':range==='1M'?'30m':range==='3M'?'60m':'1d',step=interval==='1m'?60000:interval==='15m'?900000:interval==='30m'?1800000:interval==='60m'?3600000:86400000;
      const start=Date.UTC(2025,0,1,3,0,17,123),rows=ranking==='nearest'?rankingRows(range):ranking==='role'?roleRankingRows():ranking==='reverse-role'?roleRankingRows().map(row=>({
       ...row,open:200-row.open,close:200-row.close,high:200-row.low,low:200-row.high
      })):ranking==='scarce'?scarceRows():Array.from({length:short?12:260},(_,i)=>({time:start+i*step,open:100+Math.sin(i*.31)*4+i*.03,close:100.4+Math.sin(i*.31)*4+i*.03,high:103+Math.sin(i*.31)*4+i*.03,low:98+Math.sin(i*.31)*4+i*.03,volume:i===40?0:1000+i%11*100}));
@@ -111,7 +111,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await assertFit('Reset restores the default viewport at the fitted size');
    }
    phase=`${width}-${theme}-setup`;
-   const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b;});check(await page.locator('.technical-reason-card').count(),3);};
+   const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b&&document.querySelectorAll('.technical-reason-card').length===3;});check(await page.locator('.technical-reason-card').count(),3);};
    await parity();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal page overflow');
    check(await page.locator('.indicator-workspace small').textContent(),'ซ่อน/แสดงไม่เปลี่ยนผลวิเคราะห์ · การเปลี่ยน Period จะคำนวณจากข้อมูลเดิม · บันทึกแยกตามบัญชีบนอุปกรณ์นี้');
    check(await page.locator('[data-draw-status]').textContent(),'เลื่อน/ซูมกราฟตามปกติ · ภาพวาดบันทึกแยกตามบัญชีบนอุปกรณ์นี้');
@@ -198,9 +198,29 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await page.locator('[data-draw-list] button').first().click();await page.locator('#stock-price-chart').focus();await page.keyboard.press('Delete');await pause(page);check(await page.locator('[data-draw-list] button').count(),2,'keyboard delete');
    await page.locator('[data-draw-reset]').click();await pause(page);check(await page.locator('[data-draw-list] button').count(),0);
    phase=`${width}-${theme}-range-short`;
-   for(const range of ['1W','1M','3M','1Y','1D']){await page.locator(`[data-range="${range}"]`).click();await page.waitForFunction(range=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith(range),range);await parity();check((await page.locator('#analysis-note').textContent()).includes('ยืนยันแล้ว'),true);}
+   for (const range of ['1W', '1M', '3M', '1Y', '1D']) {
+    await page.locator('[data-range="'+range+'"]').click();
+    await page.waitForFunction(range=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith(range),range);
+    await parity();
+    check((await page.locator('#analysis-note').textContent()).includes('ยืนยันแล้ว'),true);
+    if (!['1M', '3M'].includes(range)) continue;
+    check(Number(await host.getAttribute('data-source-candles')),260,'dense fixture includes 260 source candles');
+    check(/\d\d:\d\d/.test(await page.locator('.price-candle title').first().textContent()),true,'intraday tooltip includes candle time');
+    const callsBeforeZoom = marketCalls.length;
+    const beforeZoom = await page.locator('.price-candle').count();
+    await page.locator('#chart-zoom-in').click();
+    await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length < count,beforeZoom);
+    check(marketCalls.length,callsBeforeZoom,'dense zoom uses cached rows');
+    short=true;
+    await page.locator('#refresh-chart').click();
+    await page.waitForFunction(()=>document.querySelector('#stock-price-chart').dataset.sourceCandles==='12');
+    check(await page.locator('.price-candle').count(),12,'short dense range preserves the provider rows');
+    check((await page.locator('#chart-updated').textContent()).includes('12/100'),true,'short dense range explains the limit');
+    short=false;
+   }
    phase=`${width}-${theme}-daily-confirmation`;
-   for(const range of ['1M','3M','1Y']){
+   {
+    const range='1Y';
     await page.locator(`[data-range="${range}"]`).click();await page.waitForFunction(range=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith(range),range);
     let priorReasons;
     for(const mode of ['closed','during','draft-spike','missing','mismatch']){

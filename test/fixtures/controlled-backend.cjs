@@ -1,5 +1,6 @@
 'use strict';
 const assert = require('node:assert/strict');
+const { barsBetween } = require('./chart-candle-density.cjs');
 const NOW = Date.parse('2026-10-26T10:00:00Z');
 
 function backend({ symbols = ['PTT'], schemaReady = true } = {}) {
@@ -13,8 +14,16 @@ function backend({ symbols = ['PTT'], schemaReady = true } = {}) {
     calls.push({ url, method });
     if (url.hostname === 'query1.finance.yahoo.com') {
       const symbol = decodeURIComponent(url.pathname.split('/').pop());
-      const times = Array.from({ length: 45 }, (_, i) => Math.floor(providerTime / 1000) - (44 - i) * 86400);
+      const interval = url.searchParams.get('interval');
+      const dense = ['30m', '60m'].includes(interval);
+      const start = url.searchParams.has('period1') ? Number(url.searchParams.get('period1')) * 1000
+        : providerTime - (interval === '30m' ? 28 : 65) * 86400000;
+      const end = url.searchParams.has('period2') ? Number(url.searchParams.get('period2')) * 1000 : providerTime;
+      const fixture = dense ? barsBetween(start, end, interval) : null;
+      const times = dense ? fixture.rows.map(row => row.time / 1000)
+        : Array.from({ length: 45 }, (_, i) => Math.floor(providerTime / 1000) - (44 - i) * 86400);
       return Response.json({ chart: { result: [{ meta: { symbol, currency: 'THB', regularMarketPrice: price,
+        ...(dense ? { dataGranularity: interval, tradingPeriods: { regular: fixture.periods } } : {}),
         regularMarketTime: Math.floor(providerTime / 1000), previousClose: price, exchangeTimezoneName: 'Asia/Bangkok' },
       timestamp: times, indicators: { quote: [{ open: times.map(() => price), high: times.map(() => price + 1),
         low: times.map(() => price - 1), close: times.map(() => price), volume: times.map(() => 1000) }] } }], error: null } });

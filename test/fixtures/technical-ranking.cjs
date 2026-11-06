@@ -1,7 +1,7 @@
 'use strict';
 // Synthetic OHLC evidence for ranking, never a market-data fallback.
 function rankingRows(range='1Y'){
- const step=range==='1D'?60000:range==='1W'?900000:86400000,start=Date.UTC(2025,0,1,3);
+ const step=range==='1D'?60000:range==='1W'?900000:range==='1M'?1800000:range==='3M'?3600000:86400000,start=Date.UTC(2025,0,1,3);
  const rows=Array.from({length:200},(_,i)=>({time:start+i*step,open:39.5,close:39.5,high:41-i*.001,low:37.5+i*.001,volume:1000}));
  for(const [indices,field,value]of [[[20,35,45],'low',35],[[50,65],'low',35.25],[[80],'low',36.25],[[110,120,130],'high',41.25],[[140,150],'high',42],[[170],'high',41.75]])for(const i of indices)rows[i][field]=value;
  return rows;

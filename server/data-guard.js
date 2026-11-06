@@ -46,7 +46,7 @@ function validMarket(meta = {}) {
   return !market || /(?:SET|Thailand|BKK)/i.test(market);
 }
 
-function normalizeHistory(result, { now, futureToleranceMs, maxPriceMoveRatio = DEFAULT_MAX_PRICE_MOVE_RATIO }) {
+function normalizeHistory(result, { now, futureToleranceMs, maxPriceMoveRatio = DEFAULT_MAX_PRICE_MOVE_RATIO, barTimeIssue, requireVolume }) {
   const quote = result?.indicators?.quote?.[0] || {};
   const timestamps = Array.isArray(result?.timestamp) ? result.timestamp : [];
   const candidates = [];
@@ -63,6 +63,11 @@ function normalizeHistory(result, { now, futureToleranceMs, maxPriceMoveRatio = 
     }
     if (time > now + futureToleranceMs) {
       reasons.add('FUTURE_TIMESTAMP');
+      return;
+    }
+    const timeIssue = barTimeIssue?.(time);
+    if (timeIssue) {
+      reasons.add(timeIssue);
       return;
     }
     if (seen.has(time)) {
@@ -84,6 +89,10 @@ function normalizeHistory(result, { now, futureToleranceMs, maxPriceMoveRatio = 
     }
     if (high < low || open < low || open > high || close < low || close > high) {
       reasons.add('INVALID_OHLC');
+      return;
+    }
+    if (requireVolume && volume === null) {
+      reasons.add('INVALID_NUMERIC');
       return;
     }
     if (volumeValue !== null && volumeValue !== undefined && volumeValue !== '' && (volume === null || volume < 0)) {
@@ -151,7 +160,7 @@ function createMarketDataGuard({
     };
   }
 
-  function assess(result, requestedSymbol, { contextKey = 'default', providerSymbol: mappedProviderSymbol } = {}) {
+  function assess(result, requestedSymbol, { contextKey = 'default', providerSymbol: mappedProviderSymbol, barTimeIssue, requireVolume } = {}) {
     const symbol = normalizeSymbol(requestedSymbol);
     const storageKey = `${symbol}|${mappedProviderSymbol || expectedProviderSymbol(symbol)}|${String(contextKey || 'default')}`;
     const timestamp = Number(now());
@@ -164,7 +173,7 @@ function createMarketDataGuard({
     else if (providerSymbol !== expectedSymbol) reasons.add('SYMBOL_MISMATCH');
     if (!validMarket(meta)) reasons.add('MARKET_MISMATCH');
 
-    const normalized = normalizeHistory(result, { now: timestamp, futureToleranceMs, maxPriceMoveRatio });
+    const normalized = normalizeHistory(result, { now: timestamp, futureToleranceMs, maxPriceMoveRatio, barTimeIssue, requireVolume });
     const latestBar = normalized.history.at(-1);
     const rawProviderTime = meta.regularMarketTime;
     const providerTime = finiteNumber(rawProviderTime);

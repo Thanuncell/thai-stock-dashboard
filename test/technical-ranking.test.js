@@ -37,7 +37,7 @@ test('equal-price cross-role zones deduplicate with confirmed strength only as a
  assert.deepEqual(technical.priceStructure(rows,112,options),s,'repeatable price and evidence selection');
 });
 for(const range of ['1D','1W','1M','3M','1Y'])test(`${range}: ranking, summary and analysis use the confirmed reference close without future prices`,()=>{
- const rows=rankingRows(range),step=range==='1D'?60000:range==='1W'?900000:86400000,interval=range==='1D'?'1m':range==='1W'?'15m':'1d';
+ const rows=rankingRows(range),step=range==='1D'?60000:range==='1W'?900000:range==='1M'?1800000:range==='3M'?3600000:86400000,interval=range==='1D'?'1m':range==='1W'?'15m':range==='1M'?'30m':range==='3M'?'60m':'1d';
  const reference=rows.at(-2),receivedAt=rows.at(-1).time+(interval==='1d'?3600000:step/2);
  const meta={interval,receivedAt,regularStart:rows.at(-1).time,regularEnd:rows.at(-1).time+23400000,timeZone:'Asia/Bangkok'};
  const snapshot=history=>technical.createTechnicalSnapshot({symbol:'PTT',timeframe:range,history,fetchedAt:receivedAt,technicalMeta:{history:meta,indicator:meta,levels:meta}});
