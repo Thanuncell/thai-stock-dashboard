@@ -127,13 +127,19 @@ test('shared-quality generation on isolated PostgreSQL 17', { skip: !process.env
       assert.equal(JSON.stringify(await rows()), before);
     });
     await t.test('old policy remains available for separately approved rollback without changing news', async () => {
-      await db.query('begin');
-      try { await db.query('select public.news_archive_query_reset($1)', [OLD_POLICY]); } finally { await db.query('rollback'); }
+      // Pool.query() can switch connections between BEGIN and ROLLBACK.
+      // Pin the rollback check to one client so teardown never drops an open transaction.
+      const tx = await db.connect();
+      try {
+        await tx.query('BEGIN');
+        try { await tx.query('select public.news_archive_query_reset($1)', [OLD_POLICY]); }
+        finally { await tx.query('ROLLBACK'); }
+      } finally { tx.release(); }
       assert.equal((await service().list()).total, 4); assert.equal(JSON.stringify(await rows()), before);
     });
   } finally {
     await rpcDb?.end(); await db?.end();
-    if (created) { assert.match(database, /^setscope_quality_[a-f0-9]{32}$/); await admin.query('drop database ' + database + ' with(force)'); }
+    if (created) { assert.match(database, /^setscope_quality_[a-f0-9]{32}$/); await admin.query('drop database ' + database); }
     await admin.end();
   }
 });
