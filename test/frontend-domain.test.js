@@ -202,6 +202,21 @@ test('chart viewport defaults to a useful latest window without changing the dat
   });
 });
 
+test('dense ranges retain responsive defaults and can zoom out to every candle', () => {
+  for (const range of ['1M', '3M']) for (const [hostWidth, visible] of [[390, 42], [1000, 68]]) {
+    let viewport = domain.defaultChartViewport({ rowCount: 330, hostWidth, range });
+    assert.equal(viewport.end - viewport.start, visible);
+    for (let i = 0; i < 12 && viewport.end - viewport.start < 330; i++) {
+      viewport = domain.zoomChartViewport(viewport, 330, 1.25);
+    }
+    assert.deepEqual(viewport, { start: 0, end: 330, followLatest: false });
+    const zoomed = domain.zoomChartViewport(viewport, 330, .8);
+    assert.equal(zoomed.end - zoomed.start, 264);
+  }
+  const geometry = domain.chartGeometry({ rowCount: 330, hostWidth: 320 });
+  assert.ok(geometry.candleWidth < geometry.step);
+});
+
 test('chart zoom preserves its anchor and pan remains bounded in cached rows', () => {
   const initial = { start: 100, end: 150, followLatest: false };
   const zoomed = domain.zoomChartViewport(initial, 200, .5, .5);

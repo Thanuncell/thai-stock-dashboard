@@ -1,5 +1,7 @@
 'use strict';
 
+const { tradingDay } = require('../../server/automation-policy');
+
 const day = 86400000;
 const received = Date.UTC(2026, 10, 6, 9, 10);
 const durations = { '1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000, '60m': 3600000, '1d': day };
@@ -9,8 +11,9 @@ const localDay = time => Math.floor((time + 7 * 3600000) / day);
 function barsBetween(start, end, interval) {
   const rows = [], periods = [];
   for (let date = Math.floor(start / day) * day; date < end; date += day) {
-    if ([0, 6].includes(new Date(date).getUTCDay())) continue;
-    const sessions = [[3, 5.5], [7.5, 9.5]].map(([open, close]) => ({
+    const dayStart = new Date(date);
+    if ([0, 6].includes(dayStart.getUTCDay()) || tradingDay(dayStart.toISOString().slice(0, 10)) === false) continue;
+    const sessions = [[3, 5.5], [7, 9.5]].map(([open, close]) => ({
       start: (date + open * 3600000) / 1000, end: (date + close * 3600000) / 1000
     }));
     periods.push(sessions);

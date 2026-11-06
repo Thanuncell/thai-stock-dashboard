@@ -867,8 +867,13 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const host = $('#stock-price-chart');
   if (!host) return;
   const allRows = trustedMarketBars(bars).filter(bar=>[bar.open,bar.high,bar.low,bar.close].every(value=>toFiniteNumber(value)!==null));
-  const candleNotice = ['1M','3M'].includes(currentRange) && allRows.length < 100
-    ? ` · มีแท่งเทียนจริง ${allRows.length}/100 (ข้อมูลยังไม่เพียงพอ)` : '';
+  const denseRange = currentRange === '1M' || currentRange === '3M';
+  const cadence = latestMarket?.technicalMeta?.history?.cadence?.status;
+  const cadenceNotice = cadence === 'INTERVAL_CADENCE_SUSPECT' ? ' · ความถี่ของแท่งอาจไม่ตรงกับช่วงที่ขอ'
+    : cadence === 'INTERVAL_CADENCE_UNVERIFIED' ? ' · ยังยืนยันความถี่ของแท่งไม่ได้' : '';
+  const candleNotice = denseRange ? (allRows.length < 100
+    ? ` · มีแท่งเทียนจริง ${allRows.length}/100 (ข้อมูลยังไม่เพียงพอ)`
+    : ` · ${allRows.length} แท่งจากแหล่งข้อมูล`) + cadenceNotice : '';
   if (!allRows.length) {
     chartLayoutPending = false;
     drawings?.suspend();
@@ -1059,6 +1064,13 @@ function setupChartGestures() {
   if (!host) return;
   // SVG hit targets may be replaced during redraw. Keep native scroll suppression
   // on the stable host, limited to an intentional drawing inside the price plot.
+  host.addEventListener('wheel', event => {
+    if ((!event.ctrlKey && !event.metaKey) || !event.deltaY || !chartRowCount || drawings?.tool !== 'pan') return;
+    const plot = host.querySelector('.drawing-surface')?.getBoundingClientRect();
+    if (!plot?.width || event.clientX < plot.left || event.clientX > plot.right) return;
+    event.preventDefault();
+    setChartZoom(event.deltaY < 0 ? .8 : 1.25, (event.clientX - plot.left) / plot.width);
+  }, { passive: false });
   host.addEventListener('touchstart',event=>{
     if(drawings?.tool!=='pan'&&[...event.touches].some(touch=>drawings?.anchor(touch)))event.preventDefault();
   },{passive:false});

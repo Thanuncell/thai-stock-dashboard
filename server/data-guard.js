@@ -160,7 +160,7 @@ function createMarketDataGuard({
     };
   }
 
-  function assess(result, requestedSymbol, { contextKey = 'default', providerSymbol: mappedProviderSymbol, barTimeIssue, requireVolume } = {}) {
+  function assess(result, requestedSymbol, { contextKey = 'default', providerSymbol: mappedProviderSymbol, barTimeIssue, requireVolume, validateHistory } = {}) {
     const symbol = normalizeSymbol(requestedSymbol);
     const storageKey = `${symbol}|${mappedProviderSymbol || expectedProviderSymbol(symbol)}|${String(contextKey || 'default')}`;
     const timestamp = Number(now());
@@ -275,6 +275,7 @@ function createMarketDataGuard({
       };
     }
 
+    validateHistory?.(normalized.history);
     const stale = reasons.has('STALE_TIMESTAMP');
     const suspect = guardReasons.length > 0;
     const guardStatus = stale ? 'stale' : suspect ? 'suspect' : 'accepted';

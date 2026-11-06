@@ -204,13 +204,83 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await parity();
     check((await page.locator('#analysis-note').textContent()).includes('ยืนยันแล้ว'),true);
     if (!['1M', '3M'].includes(range)) continue;
+    const candles = page.locator('.price-candle');
     check(Number(await host.getAttribute('data-source-candles')),260,'dense fixture includes 260 source candles');
-    check(/\d\d:\d\d/.test(await page.locator('.price-candle title').first().textContent()),true,'intraday tooltip includes candle time');
+    const initialCount = await host.evaluate(node=>node.clientWidth<520?42:68);
+    check(await candles.count(),initialCount,'dense default remains readable');
+    check(/\d\d:\d\d/.test(await candles.first().locator('title').textContent()),true,'intraday tooltip includes candle time');
+    const widthOfCandle = async () => Number(await candles.first().locator('rect').first().getAttribute('width'));
+    const firstTitle = () => candles.first().locator('title').textContent();
+    const lastTitle = await candles.last().locator('title').textContent();
+    const initialCandleWidth = await widthOfCandle();
+    const initialSnapshot = await host.getAttribute('data-snapshot-id');
     const callsBeforeZoom = marketCalls.length;
-    const beforeZoom = await page.locator('.price-candle').count();
+    const verifyAnchors = width===390 && theme==='light' && range==='1M';
+    const drawingKey = 'setscope-drawings:PTT:' + range + ':user-a';
+    if (verifyAnchors) {
+     await draw('trend',true);
+     await page.locator('[data-draw-tool=pan]').click();
+    }
+    const anchorData = verifyAnchors ? await page.evaluate(key=>localStorage.getItem(key),drawingKey) : null;
+    for (let i=0;i<12&&await candles.count()<260;i++) {
+     const before = await candles.count();
+     await page.locator('#chart-zoom-out').click();
+     await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length>count,before);
+    }
+    check(await candles.count(),260,'zoom out reaches all cached rows');
+    check(await candles.last().locator('title').textContent(),lastTitle,'full view reaches the same last candle');
+    const fullyZoomed = await widthOfCandle();
+    check(fullyZoomed<initialCandleWidth,true,'zoom out narrows the candle body');
+    check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'full view stays within the layout');
     await page.locator('#chart-zoom-in').click();
-    await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length < count,beforeZoom);
-    check(marketCalls.length,callsBeforeZoom,'dense zoom uses cached rows');
+    await page.waitForFunction(()=>document.querySelectorAll('.price-candle').length<260);
+    check(await widthOfCandle()>fullyZoomed,true,'zoom in widens the candle body');
+    await host.scrollIntoViewIfNeeded();
+    const box = await svg.boundingBox(), beforePan = await firstTitle();
+    const x = box.x + box.width * .42, y = box.y + 100;
+    if (width<790) {
+     const cdp=await context.newCDPSession(page);
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x+60,y}]});
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+     await page.waitForFunction(title=>document.querySelector('.price-candle title')?.textContent!==title,beforePan);
+     const beforePinch = await candles.count();
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:x-30,y},{x:x+30,y}]});
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x-60,y},{x:x+60,y}]});
+     await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+     await cdp.detach();
+     await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length<count,beforePinch);
+    } else {
+     await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+60,y,{steps:4});await page.mouse.up();
+     await page.waitForFunction(title=>document.querySelector('.price-candle title')?.textContent!==title,beforePan);
+     const scrollY=await page.evaluate(()=>window.scrollY), beforeWheel=await candles.count();
+     await page.mouse.move(x,y);
+     await page.mouse.wheel(0,100);
+     await page.waitForFunction(offset=>window.scrollY!==offset,scrollY);
+     check(await candles.count(),beforeWheel,'unmodified wheel scrolls without changing chart zoom');
+     await host.scrollIntoViewIfNeeded();
+     const wheelBox=await svg.boundingBox();
+     await page.mouse.move(wheelBox.x+wheelBox.width*.5,wheelBox.y+100);
+     await page.keyboard.down('Control');
+     try { await page.mouse.wheel(0,-120); } finally { await page.keyboard.up('Control'); }
+     await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length<count,beforeWheel);
+    }
+    check(await host.getAttribute('data-snapshot-id'),initialSnapshot,'viewport changes keep the analysis snapshot');
+    check(marketCalls.length,callsBeforeZoom,'zoom, pan and pointer gestures use cached rows');
+    check(await candles.first().evaluate(node=>{
+     const wick=Number(node.querySelector('line').getAttribute('x1')),hit=node.querySelector('.candle-hit');
+     const center=Number(hit.getAttribute('x'))+Number(hit.getAttribute('width'))/2;
+     const line=node.closest('svg').querySelector('.sma20-chart-line');
+     const startX=Number(line?.getAttribute('d')?.match(/^M([\d.]+)/)?.[1]);
+     return Math.abs(wick-center)<.01&&Math.abs(wick-startX)<.1;
+    }),true,'candle hover target and SMA align with the visible candle after zoom and pan');
+    await page.locator('#chart-reset').click();
+    await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length===count,initialCount);
+    if (verifyAnchors) {
+     check(Boolean(anchorData),true,'dense range has a saved drawing');
+     check(await page.evaluate(key=>localStorage.getItem(key),drawingKey),anchorData,'zoom and pan preserve drawing anchors');
+     await page.locator('[data-draw-reset]').click();
+    }
     short=true;
     await page.locator('#refresh-chart').click();
     await page.waitForFunction(()=>document.querySelector('#stock-price-chart').dataset.sourceCandles==='12');

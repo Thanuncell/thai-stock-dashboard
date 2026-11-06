@@ -23,6 +23,8 @@ for (const [range, providerRange, interval] of [['1M', '1mo', '30m'], ['3M', '3m
     assert.equal(market.candleTarget, 100);
     assert.equal(market.candleTargetMet, true);
     assert.equal(market.technicalMeta.history.interval, interval);
+    assert.equal(market.technicalMeta.history.sessionStatus, 'SESSION_VERIFIED');
+    assert.equal(market.technicalMeta.history.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
     assert.equal(market.technicalMeta.indicator.interval, interval);
     assert.equal(new Set(market.indicatorHistory.map(row => row.time)).size, market.indicatorHistory.length);
     assert.deepEqual(market.indicatorHistory.slice(-market.history.length), market.history);
@@ -66,12 +68,15 @@ for (const [interval, duration] of [['30m', 1800000], ['60m', 3600000]]) {
     const sessionEnd = time + 600000;
     const bar = { time, open: 1, high: 2, low: 1, close: 2, volume: 5 };
     assert.equal(intervalMs(interval), duration);
-    const timed = observedAt => temporalBars([{ ...bar, sessionEnd }], { interval, observedAt })[0];
+    const timed = observedAt => temporalBars([{ ...bar, sessionEnd, sessionStatus: 'SESSION_VERIFIED' }], { interval, observedAt })[0];
     assert.equal(timed(sessionEnd - 1).complete, false);
     assert.equal(timed(sessionEnd).confirmationBasis, 'provider-session-end');
     assert.equal(timed(sessionEnd).availableAt, sessionEnd);
     assert.equal(timed(sessionEnd).complete, true);
-    assert.equal(temporalBars([bar], { interval, observedAt: sessionEnd })[0].availableAt, time + duration);
+    const unverified = temporalBars([{ ...bar, sessionEnd, sessionStatus: 'SESSION_UNVERIFIED' }],
+      { interval, observedAt: sessionEnd })[0];
+    assert.equal(unverified.availableAt, time + duration);
+    assert.equal(unverified.complete, false);
   });
 }
 
@@ -142,4 +147,109 @@ test('1D, 1W and 1Y keep their provider contracts and cadence', async () => {
     assert.equal(calls.length, 3);
     assert.equal(calls.at(-1).range, providerRange);
   }
+});
+
+const fixtureBar = (date, hour, minute = 0) => ({
+  time: Date.UTC(2026, 10, date, hour - 7, minute), open: 100, high: 101, low: 99, close: 100, volume: 5
+});
+const period = (first, last) => ({ start: first.time / 1000, end: last.time / 1000 });
+const shape = (rows, periods, interval = '30m', extraMeta = {}) => {
+  const result = payload('PTT.BK', interval, rows, periods);
+  Object.assign(result.meta, extraMeta);
+  return getService([]).shapeChart(result, 'PTT', 'chart:1mo:' + interval);
+};
+
+test('missing session metadata preserves valid OHLCV and rejects off-hours, lunch, weekend and known holiday', () => {
+  const holiday = { ...fixtureBar(6, 10), time: Date.UTC(2026, 9, 23, 3) };
+  const valid = [fixtureBar(6, 9, 55), fixtureBar(6, 13, 55)];
+  const invalid = [holiday, fixtureBar(1, 10), fixtureBar(6, 0, 1), fixtureBar(6, 9, 30),
+    fixtureBar(6, 12, 30), fixtureBar(6, 13, 54)];
+  const result = shape([...valid, ...invalid].sort((a,b) => a.time - b.time), undefined);
+  assert.deepEqual(result.history.map(ohlcv), valid);
+  assert.equal(result.rejectedBars, invalid.length);
+  assert.equal(result.provenance.sessionStatus, 'SESSION_UNVERIFIED');
+  assert.ok(result.history.every(row => row.sessionStatus === 'SESSION_UNVERIFIED' && row.sessionEnd === null));
+  assert.ok(result.historyReasons.includes('OUTSIDE_TRADING_SESSION'));
+});
+
+test('partial metadata verifies individual windows and whole-day or conflicting metadata cannot verify a window', () => {
+  const morning = fixtureBar(6, 12), afternoon = fixtureBar(6, 14);
+  const open = fixtureBar(6, 10), lunch = fixtureBar(6, 12, 30), close = fixtureBar(6, 16, 30);
+  const verifiedMorning = period(open, lunch);
+  const partial = shape([morning, afternoon], [[verifiedMorning]], '60m');
+  assert.equal(partial.provenance.sessionStatus, 'SESSION_UNVERIFIED');
+  assert.deepEqual(partial.history.map(row => row.sessionStatus), ['SESSION_VERIFIED', 'SESSION_UNVERIFIED']);
+  assert.equal(partial.history[0].barCloseTime, lunch.time);
+  assert.equal(partial.history[1].barCloseTime, afternoon.time + 3600000);
+
+  const broad = shape([morning, fixtureBar(6, 13), afternoon], [[period(open, close)]], '60m');
+  assert.deepEqual(broad.history.map(ohlcv), [morning, afternoon]);
+  assert.ok(broad.history.every(row => row.sessionStatus === 'SESSION_UNVERIFIED'));
+  const conflict = shape([morning, afternoon], [[verifiedMorning]], '60m', {
+    currentTradingPeriod: { regular: period(open, fixtureBar(6, 12, 15)) }
+  });
+  assert.equal(conflict.history[0].sessionStatus, 'SESSION_UNVERIFIED');
+  assert.equal(conflict.history[0].barCloseTime, morning.time + 3600000);
+});
+
+test('provider periods cannot make a weekend or reviewed holiday tradable', () => {
+  const saturday = { ...fixtureBar(6, 10), time: Date.UTC(2026, 9, 24, 3) };
+  const holiday = { ...saturday, time: saturday.time - 86400000 };
+  const periods = [holiday, saturday].map(bar => [period(bar, { time: bar.time + 2 * 3600000 })]);
+  const result = shape([holiday, saturday], periods);
+  assert.equal(result.history.length, 0);
+  assert.equal(result.rejectedBars, 2);
+  assert.equal(result.provenance.sessionStatus, 'SESSION_UNVERIFIED');
+});
+
+test('within-session distribution permits skipped bars and excludes lunch and overnight gaps', () => {
+  const rows = [fixtureBar(5, 10), fixtureBar(5, 10, 30), fixtureBar(5, 11, 30),
+    fixtureBar(5, 14), fixtureBar(5, 15), fixtureBar(6, 10), fixtureBar(6, 10, 30)];
+  const result = shape(rows, undefined);
+  assert.deepEqual(result.history.map(ohlcv), rows);
+  assert.deepEqual(result.provenance.cadence, { status: 'INTERVAL_CADENCE_VERIFIED', samples: 4,
+    nativeGaps: 2, skippedGaps: 2, offGridGaps: 0, doubleGaps: 2, dailyLike: false });
+});
+
+test('systematic hourly cadence in a 30m response preserves source rows and withholds indicator signals', async () => {
+  const rows = [5, 6].flatMap(date => [10, 11, 12, 14, 15, 16].map(hour => fixtureBar(date, hour)));
+  const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+    if (call.visible) Object.assign(raw, payload('PTT.BK', '30m', rows, undefined));
+  } }).getMarket(['PTT'], 'PTT', '1M');
+  assert.deepEqual(market.history.map(ohlcv), rows);
+  assert.equal(market.technicalMeta.history.cadence.status, 'INTERVAL_CADENCE_SUSPECT');
+  assert.equal(market.technicalMeta.history.cadence.doubleGaps, 8);
+  assert.equal(market.technicalMeta.history.cadence.nativeGaps, 0);
+  assert.deepEqual(market.indicatorHistory, []);
+  assert.deepEqual(market.levelsHistory, []);
+  const snapshot = technicalSnapshot(market, '1M');
+  assert.equal(snapshot.summary.actionable, false);
+  assert.ok(snapshot.quality.warnings.includes('INTERVAL_MISMATCH'));
+  assert.equal(calls.length, 3);
+});
+
+test('daily-looking timestamps cannot verify a native intraday cadence', () => {
+  const rows = [2, 3, 4, 5, 6].map(date => fixtureBar(date, 10));
+  const result = shape(rows, undefined);
+  assert.equal(result.provenance.cadence.status, 'INTERVAL_CADENCE_SUSPECT');
+  assert.equal(result.provenance.cadence.dailyLike, true);
+  assert.ok(result.historyReasons.includes('INTERVAL_MISMATCH'));
+});
+
+test('a verified pause inside the trading window ends the bar without a cadence mismatch', () => {
+  const rows = [fixtureBar(6, 10), fixtureBar(6, 10, 25), fixtureBar(6, 10, 55)];
+  const periods = [[period(rows[0], fixtureBar(6, 10, 20)), period(rows[1], fixtureBar(6, 12, 30))]];
+  const result = shape(rows, periods);
+  assert.equal(result.history[0].barCloseTime, fixtureBar(6, 10, 20).time);
+  assert.equal(result.provenance.sessionStatus, 'SESSION_VERIFIED');
+  assert.equal(result.provenance.cadence.nativeGaps, 1);
+  assert.equal(result.provenance.cadence.samples, 1);
+});
+
+test('invalid OHLCV rows cannot create false cadence evidence', () => {
+  const rows = [fixtureBar(5, 10), { ...fixtureBar(5, 10, 15), volume: -1 }, fixtureBar(5, 10, 30)];
+  const result = shape(rows, undefined);
+  assert.equal(result.rejectedBars, 1);
+  assert.equal(result.provenance.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
+  assert.equal(result.provenance.cadence.nativeGaps, 1);
 });
