@@ -76,7 +76,9 @@ const check=(actual,expected,message)=>{assert.deepEqual(actual,expected,message
    await page.locator('#profile-recovery-button').click();await page.waitForFunction(text=>document.querySelector('#profile-message').textContent===text,recoveryMessage);
    check(await page.locator('#profile-message').textContent(),recoveryMessage);
    check(authCalls.length,1);check(authCalls[0].redirect,base);
-   await page.locator('#profile-logout-button').click();await page.waitForSelector('#login-form');
+   // The login form is shown before logout finishes and reloads the document.
+   await Promise.all([page.waitForEvent('load'), page.locator('#profile-logout-button').click()]);
+   await page.waitForSelector('#login-form');
    await page.locator('#forgot-password-button').click();check(await page.locator('#forgot-password-form button[type=submit]').textContent(),'รับรหัสผ่านใหม่');
    await page.locator('#forgot-password-form input[name=email]').fill('a@example.test');await page.locator('#forgot-password-form button[type=submit]').click();
    await page.waitForFunction(text=>document.querySelector('#auth-message').textContent===text,recoveryMessage);check(authCalls.length,2);check(authCalls[1].redirect,base);
