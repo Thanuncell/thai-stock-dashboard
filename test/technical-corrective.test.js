@@ -74,7 +74,7 @@ function renderSignalEvidence({warnings=[],rows=260,unconfirmed=false,reasonCoun
   document:{getElementById:node},$:node,setText:(key,value)=>{node(key).textContent=value;},setTechnicalPanelState:()=>{},
   renderPriceLevels:()=>{},updateSignalDonut:()=>{},indicatorLabel:key=>key,escapeHtml,number:String,currentRange:'1D',latestMarket:{history},history});
  vm.runInContext(renderer+'\ndrawSignals(history);',context);
- return {snapshot,before,nodes,html:node('#technical-reasons').innerHTML};
+ return {snapshot,before,nodes,html:node('#technical-reasons').innerHTML,referenceNote:context.technicalReferenceNote};
 }
 
 test('signal evidence renders three readable reason groups and indicator details without serialized snapshot JSON',()=>{
@@ -103,11 +103,16 @@ test('rendering signal evidence preserves the complete frozen calculation snapsh
  assert.ok(snapshot.quality);assert.ok(snapshot.levels);assert.ok(snapshot.crosses);assert.ok(snapshot.priceBasis);
 });
 
-test('evidence UI cleanup keeps the data quality warning and its internal INVALID_NUMERIC reason',()=>{
- const {snapshot,before,nodes,html}=renderSignalEvidence({warnings:['INVALID_NUMERIC']});
+test('reference notes omit the generic warning on every timeframe while preserving internal warnings',()=>{
+ const {snapshot,before,nodes,html,referenceNote}=renderSignalEvidence({warnings:['INVALID_NUMERIC']});
  assert.deepEqual(snapshot.quality.warnings,['INVALID_NUMERIC']);
  assert.equal(JSON.stringify(snapshot),before);
- assert.match(nodes.get('#analysis-note').textContent,/มีข้อควรตรวจสอบข้อมูล/);
+ assert.doesNotMatch(nodes.get('#analysis-note').textContent,/มีข้อควรตรวจสอบข้อมูล/);
+ for (const timeframe of Object.keys(technical.RANGE_INTERVAL)) {
+  const note=referenceNote({...snapshot,timeframe});
+  assert.doesNotMatch(note,/มีข้อควรตรวจสอบข้อมูล/);
+  assert.ok(note.includes('ช่วง '+timeframe));
+ }
  assert.doesNotMatch(html,/<pre\b/i);
 });
 
@@ -146,6 +151,22 @@ for(const [direction,source,type,value]of [[1,'Swing high','support',110],[-1,'S
   for(const d of [...snapshot.levels.supportDetails,...snapshot.levels.resistanceDetails])if(d.roleConfirmation)assert.ok(d.roleConfirmation.confirmedAt<=snapshot.asOf);
  });
 }
+
+test('confirmed structure reasons use Thai labels and retain the original event kinds',()=>{
+ const rows=roleRows(1);
+ for (const [count,kind,label] of [
+  [36,'breakout-confirmed','ยืนยันการทะลุระดับราคา'],
+  [39,'retest-confirmed','ยืนยันการกลับมาทดสอบระดับราคา']
+ ]) {
+  const history=rows.slice(0,count);
+  const snapshot=technical.createTechnicalSnapshot({symbol:'PTT',timeframe:'1D',history,
+   fetchedAt:new Date(history.at(-1).availableAt).toISOString()});
+  const reason=snapshot.summary.reasons.find(item=>item.ruleId==='STRUCTURE-CONFIRMED-1');
+  assert.equal(reason.values.event.kind,kind);
+  assert.ok(reason.text.endsWith(' · '+label));
+  assert.doesNotMatch(reason.text,/breakout-confirmed|retest-confirmed/);
+ }
+});
 
 function drawingHarness(){
  const captures=new Set(),hostHandlers={},controlHandlers={},form={elements:{},hidden:true,addEventListener(){}};

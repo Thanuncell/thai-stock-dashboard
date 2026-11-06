@@ -4,6 +4,10 @@ const {temporalBars}=timeModule.default||globalThis.SETscopeMarketTime;
 export const TECHNICAL_VERSION='setscope-ta-2';
 export const RANGE_INTERVAL=Object.freeze({'1D':'1m','1W':'15m','1M':'30m','3M':'60m','1Y':'1d'});
 export const INDICATOR_PRESETS=Object.freeze({basic:['sma20','ema20','ema50','macd'],trend:['sma20','ema20','ema50','ema100','ema200'],momentum:['macd','rsi'],volatility:['bb','atr']});
+const STRUCTURE_EVENT_LABELS = Object.freeze({
+ 'breakout-confirmed': 'ยืนยันการทะลุระดับราคา',
+ 'retest-confirmed': 'ยืนยันการกลับมาทดสอบระดับราคา'
+});
 const finite=v=>typeof v==='number'&&Number.isFinite(v);
 const sign=v=>v>0?1:v<0?-1:0;
 const side=v=>v>0?'ซื้อ':v<0?'ขาย':'เป็นกลาง';
@@ -144,7 +148,7 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
  const reasons=[
   {...common,ruleId:'TREND-MA-GROUP-1',group:'trend',direction:trend,text:`แนวโน้ม: ราคา ${number(last)} เทียบค่าเฉลี่ยที่พร้อม ${trendValues.length} เส้น · ${side(trend)}`,values:{last,averages:trendValues}},
   {...common,ruleId:'MOMENTUM-RSI-MACD-1',group:'momentum',direction:momentum,text:`โมเมนตัม: RSI ${number(rsi)} · MACD ${number(macd)} / Signal ${number(signal)}${rsiVote&&macdVote&&rsiVote!==macdVote?' · หลักฐานขัดแย้งกัน':''}`,values:{rsi,macd,signal,rsiVote,macdVote}},
-  levels.supports.length||levels.resistances.length?{...common,ruleId:'STRUCTURE-CONFIRMED-1',group:'structure',direction:structure,text:`โครงสร้างราคา: แนวรับ ${number(levels.supports[0])} · แนวต้าน ${number(levels.resistances[0])}${recentBreak?' · '+recentBreak.kind:' · รอการทะลุ/ทดสอบยืนยัน'}`,values:{support:levels.supports[0]??null,resistance:levels.resistances[0]??null,event:recentBreak||null}}
+  levels.supports.length||levels.resistances.length?{...common,ruleId:'STRUCTURE-CONFIRMED-1',group:'structure',direction:structure,text:`โครงสร้างราคา: แนวรับ ${number(levels.supports[0])} · แนวต้าน ${number(levels.resistances[0])} · ${STRUCTURE_EVENT_LABELS[recentBreak?.kind] || 'รอการทะลุ/ทดสอบยืนยัน'}`,values:{support:levels.supports[0]??null,resistance:levels.resistances[0]??null,event:recentBreak||null}}
    :{...common,ruleId:'VOLATILITY-CONTEXT-1',group:'volatility',direction:0,text:`ความผันผวน: ATR ${number(atr)} · ปริมาณเทียบ 20 แท่งก่อน ${number(volumeRatio)} เท่า (ไม่ใช่สัญญาณซื้อขาย)`,values:{atr,volumeRatio}}
  ];
  const crosses=[];
