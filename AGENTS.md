@@ -1,13 +1,13 @@
 # SETscope — Global Codex Rules (Compact)
 
-**Governance:** v1.3 APPROVED/EFFECTIVE 2026-10-21 · **Simplified by Owner:** 2026-10-26 · **Compact revision:** 2026-10-26  
+**Governance:** v1.3 APPROVED/EFFECTIVE 2026-10-21 · **Simplified by Owner:** 2026-10-26 · **Compact revision:** 2026-11-06  
 **Scope:** SETscope v1.5.x+ only within approved release scopes. **Master:** `/SETscope/Codex_Global_Rules/SETscope_Global_Codex_Rules.docx` (binding). **Companion:** approved Public Disclosure / PR Gate v1.0.
 
 **Code First — Evidence Sufficient — Documentation Minimal.** Govern coding/testing, not paperwork. Governance approval ≠ permission for features, PR audits, repo migration, production edits, merge or deploy.
 
 **Scraper First — Code First — Fix Fast.** For approved data-acquisition work, prioritize usable, accurate data: Codex may inspect, experiment, adjust parsers, fix defects, and run focused tests autonomously without extra routine approval or paperwork. “Scraper First” means practical acquisition, not forcing scraping over a suitable API. Respect actual access restrictions, preserve working modules and data truth, then **Fix → Verify → Owner-approved Release**.
 
-**Precedence:** law/terms/rights/security/privacy/data integrity → explicit Owner approval → Global Rules → approved SSOT/hotfix → technical choices. Roadmaps/history/newer versions grant no authority. On conflict cite clauses, STOP only affected work; continue safe work. Always verify live SHA, CI, closure and production status.
+**Project decision order:** explicit Owner approval → approved Global Rules → approved SSOT/hotfix → technical choices. Roadmaps/history/newer versions grant no authority. This project decision order does not override applicable law, service terms, privacy or security obligations. Handle specific problems where they arise; do not halt unrelated work. Verify current SHA, CI and production status as relevant.
 
 ## Domain 1 — Development Governance & Codex Authority
 
@@ -30,10 +30,10 @@ Parallel Codex: **separate branch + isolated worktree/checkout + named scope/fil
 
 ## Domain 2 — Source Rights & Data Integrity
 
-### 6. Simple, responsible data acquisition (no Source Rights Gate)
-**Do not require a Source Rights Gate, rights checklist, approval form, or repeated pre-clearance** for routine scraper/provider development. Work directly on the approved feature: inspect code, use existing data/fixtures, fix the issue, and test. This Governance rule does not authorize new production jobs, new paid/private access, or deployment.
+### 6. Practical acquisition without recurring approval gates
+For approved Scraper/Provider development, Codex may inspect sources, change parsers and run small, bounded Live Smoke checks on normally accessible sources without separate Source Rights Gate paperwork, repeated rights reviews or extra Owner approvals. Focus on code, real data and targeted tests. New production automation, private/paid access and deployment still require their own approval.
 
-Use sources normally and respect applicable law/terms and clear access restrictions. **Never bypass** login, paywalls, CAPTCHA, access controls, 401/403 or repeated 429 by proxy/IP/account/cookie rotation. If a source actually denies access or clearly prohibits the activity, stop **only that acquisition path** and continue offline/other approved work. Distinguish `ACQUISITION_GAP`, `SOURCE_NO_DATA`, `PARSER_MISMATCH`; use cache/reasonable rate limits and avoid repeated failing calls. No separate rights evidence packet is required for ordinary work.
+An inaccessible source is a source-level result, **not a reason to STOP the entire patch**: record the limitation and continue with usable cached responses, fixtures and other approved sources. Do not circumvent authentication, paywalls, CAPTCHA or access controls. Use bounded requests and reasonable backoff; distinguish `ACQUISITION_GAP`, `SOURCE_NO_DATA` and `PARSER_MISMATCH`.
 
 ### 7. Data truth, provenance and persistence
 Never fabricate market data, OHLC, rankings, news, identity, coverage, timestamps or rights. Preserve raw/source fidelity, mapping, units, session/as-of. Delay ≠ error; shadow mismatch is investigation evidence, **not** automatic quarantine/source switch unless SSOT requires. Reject proven invalid fields only.
@@ -48,7 +48,7 @@ Isolate Overview/Chart/News/Watchlist/Auth/Coverage providers, validation, cache
 Approved versions may extend adaptive/multi-source/fallback adapters without needless rewrite. **v1.5.3 Overview-only/shadow-only is version-scoped**, not a ban on approved later work; shadow timing mismatch must not blank healthy output.
 
 ### 9. Operations, interfaces and migration safety
-Keep approved Keepalive/scrapers working. New jobs/schedulers/true real-time stay **OFF** absent approval. Enforce budget/cost limits. Check Render auto-deploy triggers before commit/merge, even docs. No unauthorized live traffic, env/secrets, schema/RLS/grants, writes or deploy.
+Keep approved Keepalive/scrapers working. **Routine bounded Live Smoke within an approved development scope requires no separate traffic-approval step.** New production jobs/schedulers/true real-time stay **OFF** until Owner approval for activation. Use reasonable request/cost limits; check Render auto-deploy triggers before commit/merge. No unapproved production environment, secrets, schema/RLS/grants, writes or deployment changes.
 
 Preserve forward/backward migrations, schema/RLS/history, API aliases/contracts, Build/CI, vendor portability and app/data rollback. Public/Private split needs separately approved design and tested integration; **never erase migrations/history to conceal internals**.
 
@@ -70,13 +70,13 @@ Code/tests first. Public PR/README/CHANGELOG: brief change, truthful PASS/FAIL/N
 ## Domain 5 — Verification, Release & Recovery
 
 ### 12. Test, acceptance, release and rollback
-Run proportional targeted/bug regression tests and relevant full-suite, syntax/types and `git diff --check`. For scraper/provider changes, test the affected request/response behavior with fixtures first; use a few live calls **when feasible and permitted**, not as a universal release blocker. If live verification cannot run, label it NOT RUN and state the material uncertainty; do not pause offline development or demand an extra rights/risk-acceptance ceremony. Record SHA/environment/counts and truthful **PASS/FAIL/FIXING/BLOCKED/NOT RUN**; CI PASS ≠ Production PASS.
+**Keep proportionate testing:** run relevant targeted/regression checks and appropriate full-suite, syntax/types and `git diff --check`. For Scraper/Provider changes, test affected behavior with fixtures and run a few bounded Live Smoke calls when useful and feasible; Live is **not a universal gate**. Report two separate outcomes: **Technical PASS/FAIL/NOT RUN** and **Live VERIFIED/NOT VERIFIED**. Missing live evidence does not turn Technical PASS into FAIL or stop offline coding/PR preparation. Report missing evidence and actual failures truthfully. CI PASS ≠ Production PASS.
 
 Concise handoff: SHA, scope/files, root cause/outcome, test evidence, source/request/security/data impact, risks, app/data rollback and PR/deploy gate. **Owner alone approves merge/deploy/risky migration/closure**; no auto-merge/deploy. CI/security scan edits need approved scope.
 
-### 13. STOP and controlled Living Rules
-**STOP affected work** on security/privacy leak, source denial/access restrictions, unsafe data, unauthorized production/scope/deploy, destructive migration, RLS/grant risk, severe regression or authority conflict. Contain, report, mark BLOCKED; continue independent safe tasks. Never bypass STOP.
+### 13. Targeted incident handling and controlled Living Rules
+**Do not STOP the entire patch** merely because a source is inaccessible, a Live Smoke attempt cannot finish or Live remains NOT VERIFIED. Mark the affected source unavailable and continue independent in-scope fixes and tests. For a real security/privacy leak, unsafe data, destructive migration, unauthorized production change or severe regression, contain the affected operation and inform Owner. Never hide a genuine failure or attempt to evade access controls.
 
-Binding policy changes need Owner approval and a dated change record. The Owner simplified the rules on 2026-10-26: the formal Source Rights Gate and mandatory Rule 12A Provider Change Verification Gate are **retired**. The 2026-10-24 12A amendment remains historical evidence, not an active test checklist. Library file ≠ GitHub sync: repo-root `AGENTS.md` update requires approved publish/Disclosure Gate; re-read in ongoing sessions. Frozen records immutable; only approved scoped deltas.
+Binding policy changes need Owner approval and a dated change record. Owner direction on 2026-11-06 simplifies project decision order, acquisition, in-scope Live Smoke, testing and source-unavailability handling; formal Rights Gate and mandatory Rule 12A remain retired. The governing Word Master in Library must be kept aligned when this change is accepted. Frozen records stay immutable; no change here authorizes auto-merge/deploy.
 
 **Scope:** v1.5.3 = Overview only; v1.5.8 = research/proposals, not implementation approval. No private-repo move or reopen of v1.5.3.2 (CLOSED/FROZEN). Historical change log remains in Word Master.
