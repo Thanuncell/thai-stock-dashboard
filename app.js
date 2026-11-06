@@ -872,8 +872,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const cadenceNotice = cadence === 'INTERVAL_CADENCE_SUSPECT' ? ' · ความถี่ของแท่งอาจไม่ตรงกับช่วงที่ขอ'
     : cadence === 'INTERVAL_CADENCE_UNVERIFIED' ? ' · ยังยืนยันความถี่ของแท่งไม่ได้' : '';
   const candleNotice = denseRange ? (allRows.length < 100
-    ? ` · มีแท่งเทียนจริง ${allRows.length}/100 (ข้อมูลยังไม่เพียงพอ)`
-    : ` · ${allRows.length} แท่งจากแหล่งข้อมูล`) + cadenceNotice : '';
+    ? ' · ข้อมูลแท่งเทียนยังไม่เพียงพอ' : '') + cadenceNotice : '';
   if (!allRows.length) {
     chartLayoutPending = false;
     drawings?.suspend();
