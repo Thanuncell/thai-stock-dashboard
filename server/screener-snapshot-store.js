@@ -6,8 +6,8 @@ const path = require('node:path');
 const { createFileCheckpoint } = require('./coverage-checkpoint');
 const { latestSession, tradingDay } = require('./automation-policy');
 
-const VERSION = 1;
-const MAX_BYTES = 1024 * 1024;
+const VERSION = 2;
+const MAX_BYTES = 2 * 1024 * 1024;
 const READY_COUNTS = ['registered', 'eligible', 'ready', 'unavailable', 'staleSession', 'guardBlocked', 'coverageIneligible'];
 const AVAILABLE = ['price', 'changePercent', 'ema20', 'ema50', 'rsi14', 'macd'];
 
@@ -17,7 +17,7 @@ const finite = Number.isFinite;
 const optionalNumber = value => value === null || finite(value);
 const positive = value => finite(value) && value > 0;
 const iso = value => typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value)
-  && finite(Date.parse(value));
+  && finite(Date.parse(value)) && new Date(value).toISOString() === value;
 const dateInThailand = time => new Date(time + 7 * 3600000).toISOString().slice(0, 10);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -55,6 +55,8 @@ function validateSnapshot(snapshot) {
     if (row.state !== 'READY' || row.eligible !== true || row.exclusionReasons.length
       || !positive(row.price.close) || (row.price.previousClose !== null && !positive(row.price.previousClose))
       || !optionalNumber(row.price.changePercent) || !Object.values(row.technical).every(optionalNumber)
+      || ['ema20', 'ema50'].some(key => row.technical[key] !== null && row.technical[key] <= 0)
+      || row.technical.rsi14 !== null && (row.technical.rsi14 < 0 || row.technical.rsi14 > 100)
       || !Number.isSafeInteger(row.confirmedBars) || row.confirmedBars < 1 || row.confirmedBars > 300
       || !iso(row.sourceAsOf) || !iso(row.candleTime) || Date.parse(row.sourceAsOf) > cutoff
       || Date.parse(row.candleTime) >= Date.parse(row.sourceAsOf)
@@ -82,10 +84,23 @@ function createScreenerSnapshotStore(directory) {
       handle = await fs.open(path.join(directory, name + '.json'), 'r');
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > MAX_BYTES) return { corrupt: true };
-      const value = JSON.parse(await handle.readFile('utf8'));
-      if (!fields(value, ['version', 'digest', 'payload']) || value.version !== VERSION || value.digest !== digest(value.payload))
+      const buffer = Buffer.alloc(stat.size + 1);
+      let used = 0;
+      while (used < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, used, buffer.length - used, null);
+        if (!bytesRead) break;
+        used += bytesRead;
+      }
+      if (used > stat.size) return { corrupt: true };
+      const value = JSON.parse(buffer.subarray(0, used).toString('utf8'));
+      if (!fields(value, ['version', 'digest', 'payload']) || value.digest !== digest(value.payload))
         return { corrupt: true };
-      return { value: name === 'cooldown' ? value.payload : validateSnapshot(value.payload) };
+      if (value.version === 1)
+        return { value: name === 'cooldown' ? value.payload : validateSnapshot(value.payload) };
+      if (value.version !== VERSION || name !== 'published' || !fields(value.payload, ['current', 'previous']))
+        return { corrupt: true };
+      return { value: validateSnapshot(value.payload.current),
+        previous: value.payload.previous === null ? null : validateSnapshot(value.payload.previous) };
     } catch (error) {
       if (error.code === 'ENOENT') return {};
       if (!error.code) return { corrupt: true };
@@ -93,18 +108,39 @@ function createScreenerSnapshotStore(directory) {
     } finally { await handle?.close(); }
   }
 
-  async function write(name, payload) {
-    const data = JSON.stringify({ version: VERSION, digest: digest(payload), payload });
+  async function stage(name, payload, version) {
+    const data = JSON.stringify({ version, digest: digest(payload), payload });
     if (Buffer.byteLength(data) > MAX_BYTES) throw Error('SCREENER_SNAPSHOT_TOO_LARGE');
     const staged = path.join(directory, name + '.stage');
     const handle = await fs.open(staged, 'w', 0o600);
     try { await handle.writeFile(data); await handle.sync(); }
     finally { await handle.close(); }
+    return staged;
+  }
+
+  async function commit(name, staged) {
     await fs.rename(staged, path.join(directory, name + '.json'));
     if (process.platform !== 'win32') {
       const dir = await fs.open(directory, 'r');
       try { await dir.sync(); } finally { await dir.close(); }
     }
+  }
+
+  async function write(name, payload) {
+    await commit(name, await stage(name, payload, 1));
+  }
+
+  async function revision() {
+    const versions = await Promise.all(['published', 'previous'].map(async name => {
+      try {
+        const stat = await fs.stat(path.join(directory, name + '.json'), { bigint: true });
+        return [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+      } catch (error) {
+        if (error.code === 'ENOENT') return 'missing';
+        throw error;
+      }
+    }));
+    return versions.join('|');
   }
 
   async function readPublished() {
@@ -121,15 +157,23 @@ function createScreenerSnapshotStore(directory) {
     const last = current.value || previous.value;
     if (last && (last.sessionDate > snapshot.sessionDate || Date.parse(last.generatedAt) > Date.parse(snapshot.generatedAt)))
       throw Error('SCREENER_SNAPSHOT_REGRESSION');
-    if (current.value) await write('previous', current.value);
-    await write('published', snapshot);
+    if (current.value && digest(current.value) === digest(snapshot)) return;
+    // Current and rollback move together in one atomic primary replacement.
+    // The separate previous file remains a corruption-recovery copy.
+    const staged = await stage('published', last ? { current: snapshot, previous: last } : snapshot, last ? VERSION : 1);
+    if (last) await write('previous', last);
+    await commit('published', staged);
   }
 
   async function rollback() {
+    const current = await read('published');
     const previous = await read('previous');
-    if (!previous.value) throw Error('SCREENER_ROLLBACK_UNAVAILABLE');
-    await write('published', previous.value);
-    return previous.value.id;
+    const target = current.previous || previous.value;
+    if (!target) throw Error('SCREENER_ROLLBACK_UNAVAILABLE');
+    const staged = await stage('published', { current: target, previous: target }, VERSION);
+    await write('previous', target);
+    await commit('published', staged);
+    return target.id;
   }
 
   async function readCooldown() {
@@ -139,7 +183,7 @@ function createScreenerSnapshotStore(directory) {
     return result.value || 0;
   }
 
-  return { withLease, readPublished, publish, rollback, readCooldown, saveCooldown: until => write('cooldown', until) };
+  return { withLease, revision, readPublished, publish, rollback, readCooldown, saveCooldown: until => write('cooldown', until) };
 }
 
 module.exports = { completeForEligible, createScreenerSnapshotStore };

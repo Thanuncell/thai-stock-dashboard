@@ -96,8 +96,7 @@ test('500 symbols through the actual daily adapter, Data Guard and durable snaps
 
 test('staging, process lease, checksummed recovery, retention and operator rollback', async t => {
   const { directory, store } = await fixture(t);
-  const registry = [coverage('PTT'), { ...coverage('AOT'), active: false }];
-  const run = base => makeRun(store, registry, async symbol => synthetic(symbol, dailyBars(session, 65, base)));
+  const run = base => makeRun(store, [coverage('PTT'), { ...coverage('R' + base), active: false }], async symbol => synthetic(symbol, dailyBars(session, 65, base)));
   const first = await run(25).run({ maxRequests: 1 });
   assert.equal(first.status, 'PUBLISHED');
   assert.equal((await store.readPublished()).snapshot.state, 'COMPLETE');
@@ -123,7 +122,7 @@ test('staging, process lease, checksummed recovery, retention and operator rollb
 
   const pathToPrimary = path.join(directory, 'published.json');
   const envelope = JSON.parse(await fs.readFile(pathToPrimary));
-  envelope.payload.rows.find(row => row.symbol === 'PTT').candleTime = '2026-11-05T03:00:00.000Z';
+  envelope.payload.current.rows.find(row => row.symbol === 'PTT').candleTime = '2026-11-05T03:00:00.000Z';
   // Even data with a recomputed digest cannot bypass the session/schema checks.
   envelope.digest = createHash('sha256').update(JSON.stringify(envelope.payload)).digest('hex');
   await fs.writeFile(pathToPrimary, JSON.stringify(envelope));
@@ -149,22 +148,21 @@ test('partial, invalid OHLCV, stale or wrong interval runs leave a prior publish
     return Response.json(providerChart('PTT.BK', '1d', bars));
   } });
   const missingVolume = await makeRun(store, [coverage('PTT')], withoutVolume.readScreenerDaily).run({ maxRequests: 1 });
-  assert.equal(missingVolume.status, 'INCOMPLETE');
+  assert.equal(missingVolume.status, 'INVALID_DATA');
   assert.equal((await store.readPublished()).snapshot, null);
   const ok = await makeRun(store, registry, async symbol => synthetic(symbol)).run({ maxRequests: 2 });
   assert.equal(ok.published, true);
   for (const mode of ['empty', 'invalid', 'stale', 'wrong-interval', 'incomplete']) {
     const outcome = await makeRun(store, registry, async symbol => {
-      const item = synthetic(symbol, mode === 'stale' && symbol === 'PTT' ? dailyBars('2026-11-05') : dailyBars());
+      const item = synthetic(symbol, mode === 'stale' && symbol === 'PTT' ? dailyBars('2026-11-06') : dailyBars('2026-11-09'), Date.parse('2026-11-09T11:30:00Z'));
       if (symbol !== 'PTT') return item;
       if (mode === 'empty') item.result.history = [];
       if (mode === 'invalid') item.result.history.at(-1).volume = -1;
       if (mode === 'wrong-interval') item.meta.dataGranularity = '60m';
       if (mode === 'incomplete') item.result.history.at(-1).complete = false;
       return item;
-    }).run({ maxRequests: 2 });
-    assert.equal(outcome.status, 'INCOMPLETE', mode);
-    assert.equal(outcome.ready, 1, mode);
+    }, { now: () => Date.parse('2026-11-09T11:30:00Z') }).run({ maxRequests: 2 });
+    assert.equal(outcome.status, ['invalid', 'wrong-interval'].includes(mode) ? 'INVALID_DATA' : 'INCOMPLETE', mode);
     assert.equal((await store.readPublished()).snapshot.id, ok.snapshotId, mode);
   }
 });
@@ -250,7 +248,8 @@ test('durable read API is authenticated, account-neutral, and starts no registry
   const originalNow = Date.now;
   const nativeFetch = globalThis.fetch;
   const apiCalls = [];
-  Date.now = () => observedAt;
+  let clock = observedAt;
+  Date.now = () => clock;
   Object.assign(process.env, {
     SETSCOPE_SCREENER_SNAPSHOT_DIR: directory,
     SUPABASE_URL: 'https://fixture.invalid',
@@ -279,6 +278,19 @@ test('durable read API is authenticated, account-neutral, and starts no registry
     assert.equal(JSON.parse(payloads[0]).marketFreshness, 'CURRENT_SESSION');
     assert.doesNotMatch(payloads[0], /user-[ab]|fixture-private|watchlist/);
     assert.equal(apiCalls.length, 2);
+    const originalOpen = fs.open;
+    fs.open = async (filename, ...args) => {
+      if (filename === path.join(directory, 'published.json'))
+        throw Object.assign(Error('fixture-private-storage-diagnostic'), { code: 'EACCES' });
+      return originalOpen(filename, ...args);
+    };
+    clock = observedAt + 31000;
+    try {
+      const unavailable = await nativeFetch(base, { headers: { authorization: 'Bearer fixture-user-a' } });
+      assert.equal(unavailable.status, 503);
+      assert.doesNotMatch(await unavailable.text(), /fixture-private-storage-diagnostic|fixture-private/);
+      assert.equal((await nativeFetch(base.replace('/api/screener', '/healthz'))).status, 200);
+    } finally { fs.open = originalOpen; }
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

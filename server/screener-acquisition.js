@@ -34,13 +34,20 @@ function createScreenerAcquisition({
       const cooldown = await store.readCooldown();
       if (cooldown > startedAt) return { ...outcome, status: 'COOLDOWN', cooldownUntil: new Date(cooldown).toISOString() };
 
-      const { buildScreenerSnapshot, screenerEligible } = await import('../client/screener-core.mjs');
+      const { buildScreenerSnapshot, buildDailyScreenerRow, screenerEligible } = await import('../client/screener-core.mjs');
       const registry = await listCoverage();
       const context = { registry, sessionDate: session, latestCompletedSessionDate: session };
       // Validate the full mapping before the first provider request.
       buildScreenerSnapshot({ ...context, observedAt: startedAt });
       const eligible = registry.filter(screenerEligible);
       outcome.eligible = eligible.length;
+      const { snapshot: published } = await store.readPublished();
+      if (published?.sessionDate === session && Date.parse(published.generatedAt) <= startedAt
+        && completeForEligible(published) && published.rows.length === registry.length) {
+        const bySymbol = new Map(published.rows.map(row => [row.symbol, row.eligible]));
+        if (registry.every(row => bySymbol.get(row.symbol) === screenerEligible(row)))
+          return { ...outcome, ready: published.counts.ready, status: 'ALREADY_CURRENT', snapshotId: published.id };
+      }
       const evidenceBySymbol = new Map();
       let stopped = null, limitedUntil = 0;
 
@@ -55,7 +62,12 @@ function createScreenerAcquisition({
             const { meta, result } = await readDaily(row.symbol, row.provider_symbol, { signal });
             signal.throwIfAborted();
             const evidence = guardedDailyEvidence(meta, result);
-            if (evidence) evidenceBySymbol.set(row.symbol, evidence);
+            const checked = evidence && buildDailyScreenerRow(row, evidence, { sessionDate: session, observedAt: now() });
+            if (!checked || checked.state === 'GUARD_BLOCKED') {
+              if (!stopped) stopped = 'INVALID_DATA';
+              return;
+            }
+            evidenceBySymbol.set(row.symbol, evidence);
             return;
           } catch (error) {
             if (error.status === 429 || error.code === 'SOURCE_RATE_LIMITED') {
@@ -65,6 +77,10 @@ function createScreenerAcquisition({
             }
             if (error.stopBatch || [401, 403].includes(error.status) || error.accessDenied) {
               if (stopped !== 'RATE_LIMITED') stopped = 'PROVIDER_STOPPED';
+              return;
+            }
+            if (error.guardStatus || error instanceof TypeError && error.message.startsWith('SCREENER_CONTRACT:')) {
+              if (!stopped) stopped = 'INVALID_DATA';
               return;
             }
             if (attempt || !(signal.aborted || isTransientProviderError(error) || [500, 502, 503, 504].includes(error.status)))

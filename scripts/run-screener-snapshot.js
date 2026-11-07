@@ -24,7 +24,7 @@ async function main(args, env = process.env) {
 
 if (require.main === module) main(process.argv.slice(2)).then(result => {
   process.stdout.write(JSON.stringify(result) + '\n');
-  if (!['PUBLISHED', 'ROLLED_BACK'].includes(result.status)) process.exitCode = 1;
+  if (!['PUBLISHED', 'ALREADY_CURRENT', 'ROLLED_BACK'].includes(result.status)) process.exitCode = 1;
 }).catch(() => {
   console.error('Screener operation stopped. Verify local storage and operator settings.');
   process.exitCode = 1;

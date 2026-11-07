@@ -135,7 +135,8 @@ const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch }
 const screenerSnapshotDirectory = process.env.SETSCOPE_SCREENER_SNAPSHOT_DIR;
 const screenerService = createScreenerService({
   snapshotStore: screenerSnapshotDirectory ? {
-    readPublished: () => createScreenerSnapshotStore(screenerSnapshotDirectory).readPublished()
+    readPublished: () => createScreenerSnapshotStore(screenerSnapshotDirectory).readPublished(),
+    revision: () => createScreenerSnapshotStore(screenerSnapshotDirectory).revision()
   } : null,
   listCoverage: () => coverageRepository.configured ? coverageRepository.listCandidates() : null
 });
