@@ -28,7 +28,8 @@ async function fixture() {
   const group = (...symbols) => ({ symbols, effectiveFrom: '2026-01-01', effectiveThrough: '2099-12-31' });
   const indexCatalog = buildIndexCatalog([
     ...payload.snapshot.rows.map(({ symbol }) => coverage(symbol)),
-    { ...coverage('NOPRICE'), company_name_en: 'No Price Example' }
+    { ...coverage('NOPRICE'), company_name_en: 'No Price Example',
+      name_source: 'https://example.test/noprice', name_checked_at: '2026-01-01' }
   ].filter(row => row.symbol !== 'S497'), {
     SET50: group('PTT'), SET100: group('PTT', 'CPALL'), SETHD: group('NOPRICE', 'OUTSIDE'), mai: group('S001')
   });

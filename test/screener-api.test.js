@@ -7,14 +7,20 @@ const { createScreenerService } = require('../server/screener-service');
 const { buildIndexCatalog } = require('../server/screener-index');
 
 test('index catalog joins dated membership by symbol without requiring prices or coverage eligibility', () => {
-  const registry = [coverage('PTT'), { ...coverage('CPALL'), active: false }, coverage('MAI1')];
+  const registry = [
+    { ...coverage('PTT'), company_name_en: 'Verified Company', name_source: 'https://example.test/ptt', name_checked_at: '2026-01-01' },
+    { ...coverage('CPALL'), active: false, company_name_en: 'Unverified Company' },
+    coverage('MAI1')
+  ];
   const group = (...symbols) => ({ effectiveFrom: '2026-07-01', effectiveThrough: '2026-12-31', symbols });
   const membership = {
     SET50: group(' ptt '), SET100: group('PTT', 'CPALL', 'OUTSIDE'),
     SETHD: group('PTT'), SETESG: group('CPALL'), mai: group('MAI1')
   };
   const result = buildIndexCatalog(registry, membership, '2026-12-31');
-  assert.deepEqual(result.stocks.map(row => row.symbol), ['PTT', 'CPALL', 'MAI1']);
+  assert.deepEqual(result.stocks, [
+    { symbol: 'PTT', name: 'Verified Company' }, { symbol: 'CPALL', name: '' }, { symbol: 'MAI1', name: '' }
+  ]);
   assert.deepEqual(Object.fromEntries(Object.entries(result.groups).map(([key, entry]) => [key, entry.symbols])),
     { SET50: ['PTT'], SET100: ['PTT', 'CPALL'], SETHD: ['PTT'], SETESG: ['CPALL'], mai: ['MAI1'] });
   assert.equal(result.groups.SET100.outsideCoverage, 1);

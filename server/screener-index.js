@@ -1,6 +1,7 @@
 'use strict';
 
 const { normalizeSymbol } = require('../lib/validation');
+const { registryCompanyName } = require('./search-company-names');
 const publishedMembership = require('./index-membership.json');
 
 const setLists = 'https://www.set.or.th/th/market/information/securities-list/';
@@ -36,7 +37,7 @@ function buildIndexCatalog(registry, membership = publishedMembership, today = t
   for (const row of registry) {
     const symbol = normalizeSymbol(row?.symbol);
     if (!symbol || stocks.has(symbol)) throw Error('Invalid coverage registry symbol');
-    stocks.set(symbol, { symbol, name: typeof row.company_name_en === 'string' ? row.company_name_en : '' });
+    stocks.set(symbol, { symbol, name: registryCompanyName(row) || '' });
   }
   const groups = Object.fromEntries(Object.keys(sources).map(key => [key, readGroup(membership[key], today)]));
   if (groups.SET50 && groups.SET100 && [...groups.SET50.symbols].some(symbol => !groups.SET100.symbols.has(symbol))) {
