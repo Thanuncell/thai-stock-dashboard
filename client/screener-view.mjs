@@ -131,21 +131,21 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
         throw Error('invalid snapshot');
       const latest = data.latestCompletedSessionDate;
       const session = latest ? date.format(new Date(latest + 'T00:00:00+07:00')) : 'ไม่ทราบ';
-      const message = {
-        CURRENT_SESSION: value?.state === 'PARTIAL' ? 'มีข้อมูลรอบล่าสุดบางส่วน' : 'มีข้อมูลรอบล่าสุด',
-        STALE: 'ข้อมูลเก่ากว่ารอบล่าสุด',
-        UNAVAILABLE: 'ข้อมูลคัดกรองยังไม่พร้อม'
-      }[data.marketFreshness];
+      const counts = value?.counts;
+      const ready = data.marketFreshness === 'CURRENT_SESSION' && value?.state === 'COMPLETE'
+        && counts?.ready > 0 && counts.ready === counts.eligible
+        && counts.staleSession === 0 && counts.unavailable === 0 && counts.guardBlocked === 0;
+      const message = ready ? 'มีข้อมูลรอบล่าสุด'
+        : data.marketFreshness === 'STALE' ? 'ข้อมูลเก่ากว่ารอบล่าสุด' : 'ข้อมูลคัดกรองยังไม่พร้อม';
       status.textContent = message + ' · รอบซื้อขายล่าสุดที่ปิดแล้ว ' + session
         + (value ? ' · คำนวณเมื่อ ' + dateTime.format(new Date(value.generatedAt)) + ' (เวลาไทย)' : '');
       expiryTimer = setTimeout(showExpired, expiresAt - Date.now());
       if (!value) return;
-      const counts = value.counts;
       coverage.textContent = 'หุ้นในทะเบียน ' + amount(counts.registered) + ' · เข้าเกณฑ์ Coverage ' + amount(counts.eligible)
         + ' · มีราคาปิดรอบล่าสุด ' + amount(counts.ready) + ' · ข้อมูลเก่า ' + amount(counts.staleSession)
         + ' · ไม่มีข้อมูล ' + amount(counts.unavailable) + ' · ไม่ผ่านการตรวจข้อมูล ' + amount(counts.guardBlocked)
         + ' · ไม่เข้าเกณฑ์ Coverage ' + amount(counts.coverageIneligible);
-      if (data.marketFreshness !== 'CURRENT_SESSION' || !counts.ready) return;
+      if (!ready) return;
       snapshot = value;
       form.hidden = false;
       page = 1;

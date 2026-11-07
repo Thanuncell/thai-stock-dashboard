@@ -27,7 +27,7 @@ test('snapshot coalesces registry reads and separates coverage, freshness and pe
   const { snapshot, latestCompletedSessionDate, marketFreshness, validUntil } = results[0];
   assert.ok(results.every(result => result.snapshot === snapshot));
   assert.equal(latestCompletedSessionDate, session);
-  assert.equal(marketFreshness, 'CURRENT_SESSION');
+  assert.equal(marketFreshness, 'STALE', 'an incomplete universe with stale rows is not current');
   assert.equal(validUntil, '2026-11-09T10:15:00.000Z');
   assert.deepEqual(snapshot.counts, { registered: 500, eligible: 499, ready: 496, unavailable: 1,
     staleSession: 1, guardBlocked: 1, coverageIneligible: 1 });
@@ -113,7 +113,7 @@ test('authenticated Screener API reuses a real guarded Chart response path with 
     const response = await get('/api/screener');
     assert.equal(response.status, 200);
     const data = await response.json();
-    assert.equal(data.marketFreshness, 'CURRENT_SESSION');
+    assert.equal(data.marketFreshness, 'UNAVAILABLE', 'one eligible symbol has no evidence');
     assert.equal(data.snapshot.state, 'PARTIAL');
     const ptt = data.snapshot.rows.find(row => row.symbol === 'PTT');
     assert.equal(ptt.state, 'READY');

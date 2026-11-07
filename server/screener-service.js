@@ -2,6 +2,7 @@
 
 const { latestSession, tradingDay } = require('./automation-policy');
 const { createMemoryCache } = require('./reliability');
+const { completeForEligible } = require('./screener-snapshot-store');
 
 const DAY = 86400000;
 const CACHE_POLICY = { ttlMs: 30000, staleIfErrorMs: 0, errorBackoffMs: 10000 };
@@ -18,31 +19,35 @@ function nextSessionBoundary(session, now) {
   return now + CACHE_POLICY.ttlMs;
 }
 
-function createScreenerService({ listCoverage, now = Date.now } = {}) {
+function guardedDailyEvidence(meta, result) {
+  if (meta?.dataGranularity !== '1d' || meta.exchangeTimezoneName !== 'Asia/Bangkok'
+    || result.fallbackFromLastKnown || result.identityStatus !== 'accepted'
+    || result.history.length > 300 || !Number.isFinite(Date.parse(result.provenance.receivedAt))) return null;
+  return {
+    provider: result.provenance.provider,
+    providerSymbol: meta.symbol,
+    interval: result.provenance.interval,
+    identityStatus: result.identityStatus,
+    guardStatus: result.guardStatus,
+    historyStatus: result.historyStatus,
+    dataState: result.dataState,
+    guardReasons: result.rejectedBars ? [...result.guardReasons, 'REJECTED_DAILY_BARS'] : result.guardReasons,
+    sourceFetchedAt: result.provenance.receivedAt,
+    bars: result.history
+  };
+}
+
+function createScreenerService({ listCoverage, snapshotStore, now = Date.now } = {}) {
   const evidence = new Map();
   const cache = createMemoryCache({ maxEntries: 2, now });
 
   function rememberDailyHistory(symbol, meta, result) {
-    if (meta.dataGranularity !== '1d' || meta.exchangeTimezoneName !== 'Asia/Bangkok'
-      || result.fallbackFromLastKnown || result.identityStatus !== 'accepted'
-      || result.history.length > 300) return;
-    const sourceFetchedAt = result.provenance.receivedAt;
+    if (snapshotStore) return;
+    const next = guardedDailyEvidence(meta, result);
     const last = evidence.get(symbol);
-    if (!Number.isFinite(Date.parse(sourceFetchedAt))
-      || last && Date.parse(last.sourceFetchedAt) > Date.parse(sourceFetchedAt)) return;
+    if (!next || last && Date.parse(last.sourceFetchedAt) > Date.parse(next.sourceFetchedAt)) return;
     evidence.delete(symbol);
-    evidence.set(symbol, {
-      provider: result.provenance.provider,
-      providerSymbol: meta.symbol,
-      interval: result.provenance.interval,
-      identityStatus: result.identityStatus,
-      guardStatus: result.guardStatus,
-      historyStatus: result.historyStatus,
-      dataState: result.dataState,
-      guardReasons: result.rejectedBars ? [...result.guardReasons, 'REJECTED_DAILY_BARS'] : result.guardReasons,
-      sourceFetchedAt,
-      bars: result.history
-    });
+    evidence.set(symbol, next);
     if (evidence.size > 1000) evidence.delete(evidence.keys().next().value);
   }
 
@@ -52,6 +57,7 @@ function createScreenerService({ listCoverage, now = Date.now } = {}) {
     const validUntil = new Date(nextSessionBoundary(session, startedAt)).toISOString();
     if (!session) return { snapshot: null, latestCompletedSessionDate: null, validUntil, marketFreshness: 'UNAVAILABLE' };
     const { value } = await cache.get(session, CACHE_POLICY, async () => {
+      if (snapshotStore) return (await snapshotStore.readPublished()).snapshot;
       const registry = await listCoverage();
       if (!registry) return null;
       const { buildScreenerSnapshot } = await import('../client/screener-core.mjs');
@@ -68,15 +74,19 @@ function createScreenerService({ listCoverage, now = Date.now } = {}) {
       snapshot: null, latestCompletedSessionDate: latest,
       validUntil: new Date(nextSessionBoundary(latest, current)).toISOString(), marketFreshness: 'UNAVAILABLE'
     };
+    const usable = value && value.sessionDate === session && Date.parse(value.generatedAt) <= current;
+    const ready = usable && completeForEligible(value);
+    const stale = value && (value.sessionDate < session || value.counts.staleSession > 0);
     return {
-      snapshot: value,
+      snapshot: ready ? (value.state === 'COMPLETE' ? value : { ...value, state: 'COMPLETE' })
+        : usable && !snapshotStore ? value : null,
       latestCompletedSessionDate: session,
       validUntil,
-      marketFreshness: value?.counts.ready ? 'CURRENT_SESSION' : value?.counts.staleSession ? 'STALE' : 'UNAVAILABLE'
+      marketFreshness: ready ? 'CURRENT_SESSION' : stale ? 'STALE' : 'UNAVAILABLE'
     };
   }
 
   return { rememberDailyHistory, readSnapshot };
 }
 
-module.exports = { createScreenerService };
+module.exports = { createScreenerService, guardedDailyEvidence };

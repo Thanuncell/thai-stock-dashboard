@@ -156,7 +156,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     lastKnownGoodTtlMs: Number(env.DATA_GUARD_LAST_KNOWN_TTL_MS) || undefined,
     lastCloseMismatchRatio: Number(env.DATA_GUARD_LAST_CLOSE_MISMATCH_RATIO) || undefined
   });
-  async function yahooChart(symbol, range, interval) {
+  async function yahooChart(symbol, range, interval, { signal, redirect } = {}) {
     const endpoint = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
     if (range && typeof range === 'object') {
       // Yahoo's 30m lookback is limited; preserve the visible 1M window separately.
@@ -172,7 +172,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36',
         accept: 'application/json'
       },
-      signal: AbortSignal.timeout(9000)
+      signal: signal || AbortSignal.timeout(9000),
+      ...(redirect ? { redirect } : {})
     });
     if (!response.ok) {
       const error = Error(`Yahoo Finance ${symbol}: HTTP ${response.status}`);
@@ -181,12 +182,16 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
         : [401, 403].includes(response.status) ? 'SOURCE_DENIED'
           : response.status === 429 ? 'SOURCE_RATE_LIMITED' : 'ACQUISITION_GAP';
       error.accessDenied = [401, 403].includes(response.status);
-      error.stopBatch = error.accessDenied || response.status === 429;
+      error.stopBatch = error.accessDenied || response.status === 429 || Boolean(redirect && response.status >= 300 && response.status < 400);
+      if (response.status === 429 && redirect) error.retryAfter = response.headers.get('retry-after');
       throw error;
     }
     let body;
     try { body = await response.json(); }
-    catch { throw Object.assign(Error('Yahoo Finance response schema unavailable'), { code: 'PARSER_MISMATCH', stopBatch: true }); }
+    catch {
+      signal?.throwIfAborted();
+      throw Object.assign(Error('Yahoo Finance response schema unavailable'), { code: 'PARSER_MISMATCH', stopBatch: true });
+    }
     const result = body?.chart?.result?.[0];
     if (!result) {
       const providerError = body?.chart?.error;
@@ -241,12 +246,12 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       }));
   }
 
-  function shapeChart(result, symbol, contextKey = 'default', providerSymbol, bounds) {
+  function shapeChart(result, symbol, contextKey = 'default', providerSymbol, bounds, { requireVolume } = {}) {
     const interval = contextKey.match(/:(1m|5m|15m|30m|60m|1d)$/)?.[1] || '1d';
     const densityPolicy = DENSE_INTERVALS.has(interval) ? densityHistoryPolicy(result, interval, bounds) : null;
     let cadence = null;
     const validateHistory = densityPolicy ? rows => { cadence = cadenceEvidence(rows, interval, densityPolicy.sessionFor); } : undefined;
-    const assessed = dataGuard.assess(result, symbol, { contextKey, providerSymbol, ...densityPolicy, validateHistory });
+    const assessed = dataGuard.assess(result, symbol, { contextKey, providerSymbol, requireVolume, ...densityPolicy, validateHistory });
     if (assessed.value) {
       const value=assessed.value,meta=result?.meta||{};
       const end=!value.fallbackFromLastKnown&&Number(meta.currentTradingPeriod?.regular?.end)>0?Number(meta.currentTradingPeriod.regular.end)*1000:null;
@@ -276,6 +281,15 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     error.guardStatus = assessed.guardStatus;
     error.guardReasons = assessed.guardReasons;
     throw error;
+  }
+
+  async function readScreenerDaily(symbol, providerSymbol, { signal } = {}) {
+    if (!/^[A-Z0-9&.-]{1,20}$/.test(symbol) || providerSymbol !== symbol + '.BK')
+      throw Error('Invalid screener provider mapping');
+    const raw = await yahooChart(providerSymbol, '1y', '1d', { signal, redirect: 'manual' });
+    if (!Array.isArray(raw.timestamp) || raw.timestamp.length > 300)
+      throw Object.assign(Error('Invalid daily history extent'), { code: 'PARSER_MISMATCH', stopBatch: true });
+    return { meta: raw.meta, result: shapeChart(raw, symbol, 'screener:1y:1d', providerSymbol, undefined, { requireVolume: true }) };
   }
 
   async function verifySymbol(symbol, providerSymbol) {
@@ -471,7 +485,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     };
   }
 
-  return { getMarket, search, shapeChart, verifySymbol, yahooChart };
+  return { getMarket, readScreenerDaily, search, shapeChart, verifySymbol, yahooChart };
 }
 
 module.exports = { LEVEL_FALLBACK_PERIODS, PERIODS, createMarketService };
