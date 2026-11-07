@@ -161,41 +161,136 @@ begin
 end;
 $$;
 
+create function screener_private.assert_snapshot(body text) returns void
+language plpgsql security invoker set search_path = ''
+as $$
+declare
+  d jsonb := body::jsonb; r jsonb; counts jsonb; k text;
+  generated timestamptz; candle timestamptz; fetched timestamptz; session_day date;
+  eligible integer := 0; excluded integer := 0;
+  symbol text; previous_symbol text := '';
+  n numeric;
+  count_keys text[] := array['registered','eligible','ready','coverageIneligible','unavailable','staleSession','guardBlocked'];
+  price_keys text[] := array['close','previousClose','changePercent'];
+  technical_keys text[] := array['ema20','ema50','rsi14','macd','macdSignal'];
+  availability_keys text[] := array['price','changePercent','ema20','ema50','rsi14','macd'];
+  instant_pattern text := '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$';
+  instant_format text := 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"';
+begin
+  if jsonb_typeof(d) is distinct from 'object'
+    or (select count(*) from jsonb_object_keys(d)) <> 8 then raise exception 'INVALID_SNAPSHOT'; end if;
+  foreach k in array array['schemaVersion','id','state','sessionDate','latestCompletedSessionDate','generatedAt'] loop
+    if jsonb_typeof(d->k) is distinct from 'string' then raise exception 'INVALID_SNAPSHOT'; end if;
+  end loop;
+  if d->>'schemaVersion' <> 'setscope-screener-1' or d->>'state' <> 'COMPLETE'
+    or d->>'sessionDate' is distinct from d->>'latestCompletedSessionDate'
+    or d->>'sessionDate' !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+    or d->>'id' !~ ('^setscope-screener-1:' || (d->>'sessionDate') || ':[a-f0-9]{8}$')
+    or d->>'generatedAt' !~ instant_pattern
+    or jsonb_typeof(d->'rows') is distinct from 'array'
+    or jsonb_typeof(d->'counts') is distinct from 'object' then raise exception 'INVALID_SNAPSHOT'; end if;
+  session_day := (d->>'sessionDate')::date;
+  generated := (d->>'generatedAt')::timestamptz;
+  counts := d->'counts';
+  if to_char(generated at time zone 'UTC',instant_format) is distinct from d->>'generatedAt'
+    or generated > clock_timestamp() or extract(isodow from session_day) in (6,7)
+    or session_day > (generated at time zone 'Asia/Bangkok')::date
+    or jsonb_array_length(d->'rows') > 1000
+    or (select count(*) from jsonb_object_keys(counts)) <> cardinality(count_keys) then raise exception 'INVALID_SNAPSHOT'; end if;
+  foreach k in array count_keys loop
+    if jsonb_typeof(counts->k) is distinct from 'number' then raise exception 'INVALID_SNAPSHOT_COUNTS'; end if;
+    n := (counts->>k)::numeric;
+    if n < 0 or n > 1000 or n <> trunc(n) then raise exception 'INVALID_SNAPSHOT_COUNTS'; end if;
+  end loop;
+  for r in select jsonb_array_elements(d->'rows') loop
+    if jsonb_typeof(r) is distinct from 'object' or (select count(*) from jsonb_object_keys(r)) <> 10
+      or jsonb_typeof(r->'symbol') is distinct from 'string'
+      or jsonb_typeof(r->'eligible') is distinct from 'boolean'
+      or jsonb_typeof(r->'state') is distinct from 'string'
+      or jsonb_typeof(r->'exclusionReasons') is distinct from 'array'
+      or jsonb_typeof(r->'confirmedBars') is distinct from 'number'
+      or jsonb_typeof(r->'price') is distinct from 'object'
+      or jsonb_typeof(r->'technical') is distinct from 'object'
+      or jsonb_typeof(r->'available') is distinct from 'object' then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+    symbol := r->>'symbol';
+    if symbol !~ '^[A-Z0-9&.-]{1,20}$' or symbol collate "C" <= previous_symbol collate "C"
+      or (select count(*) from jsonb_object_keys(r->'price')) <> cardinality(price_keys)
+      or (select count(*) from jsonb_object_keys(r->'technical')) <> cardinality(technical_keys)
+      or (select count(*) from jsonb_object_keys(r->'available')) <> cardinality(availability_keys)
+      then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+    previous_symbol := symbol;
+    foreach k in array price_keys loop
+      if jsonb_typeof(r->'price'->k) is distinct from 'number'
+        and jsonb_typeof(r->'price'->k) is distinct from 'null' then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+      perform (r->'price'->>k)::double precision;
+    end loop;
+    foreach k in array technical_keys loop
+      if jsonb_typeof(r->'technical'->k) is distinct from 'number'
+        and jsonb_typeof(r->'technical'->k) is distinct from 'null' then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+      perform (r->'technical'->>k)::double precision;
+    end loop;
+    foreach k in array availability_keys loop
+      if jsonb_typeof(r->'available'->k) is distinct from 'boolean' then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+    end loop;
+    n := (r->>'confirmedBars')::numeric;
+    if r->>'state' = 'READY' and (r->>'eligible')::boolean then
+      eligible := eligible+1;
+      if jsonb_typeof(r->'candleTime') is distinct from 'string' or jsonb_typeof(r->'sourceAsOf') is distinct from 'string'
+        or r->>'candleTime' !~ instant_pattern or r->>'sourceAsOf' !~ instant_pattern
+        or jsonb_array_length(r->'exclusionReasons') <> 0 or n < 1 or n > 300 or n <> trunc(n)
+        or jsonb_typeof(r->'price'->'close') is distinct from 'number' or (r->'price'->>'close')::double precision <= 0
+        or coalesce((r->'price'->>'previousClose')::double precision <= 0,false)
+        or coalesce((r->'technical'->>'ema20')::double precision <= 0,false)
+        or coalesce((r->'technical'->>'ema50')::double precision <= 0,false)
+        or coalesce((r->'technical'->>'rsi14')::double precision not between 0 and 100,false)
+        then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+      candle := (r->>'candleTime')::timestamptz;
+      fetched := (r->>'sourceAsOf')::timestamptz;
+      if to_char(candle at time zone 'UTC',instant_format) is distinct from r->>'candleTime'
+        or to_char(fetched at time zone 'UTC',instant_format) is distinct from r->>'sourceAsOf'
+        or candle >= fetched or fetched > generated
+        or (candle at time zone 'Asia/Bangkok')::date is distinct from session_day
+        or (r->'available'->>'price')::boolean is distinct from true
+        or (r->'available'->>'changePercent')::boolean is distinct from (r->'price'->>'changePercent' is not null)
+        or (r->'available'->>'macd')::boolean is distinct from
+          (r->'technical'->>'macd' is not null and r->'technical'->>'macdSignal' is not null)
+        then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+      foreach k in array array['ema20','ema50','rsi14'] loop
+        if (r->'available'->>k)::boolean is distinct from (r->'technical'->>k is not null)
+          then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+      end loop;
+    elsif r->>'state' = 'COVERAGE_INELIGIBLE' and not (r->>'eligible')::boolean then
+      excluded := excluded+1;
+      if n <> 0 or r->'exclusionReasons' is distinct from '["COVERAGE_INELIGIBLE"]'::jsonb
+        or r->'candleTime' is distinct from 'null'::jsonb or r->'sourceAsOf' is distinct from 'null'::jsonb
+        or exists (select 1 from jsonb_each(r->'price') where value is distinct from 'null'::jsonb)
+        or exists (select 1 from jsonb_each(r->'technical') where value is distinct from 'null'::jsonb)
+        or exists (select 1 from jsonb_each(r->'available') where value is distinct from 'false'::jsonb)
+        then raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+    else raise exception 'INVALID_SNAPSHOT_ROW'; end if;
+  end loop;
+  if eligible=0 or (counts->>'registered')::numeric is distinct from eligible+excluded
+    or (counts->>'eligible')::numeric is distinct from eligible or (counts->>'ready')::numeric is distinct from eligible
+    or (counts->>'coverageIneligible')::numeric is distinct from excluded
+    or (counts->>'unavailable')::numeric is distinct from 0 or (counts->>'staleSession')::numeric is distinct from 0
+    or (counts->>'guardBlocked')::numeric is distinct from 0 then raise exception 'INVALID_SNAPSHOT_COUNTS'; end if;
+exception when data_exception then raise exception 'INVALID_SNAPSHOT';
+end;
+$$;
+
 create function screener_private.publish_snapshot(candidate_hash text, expected_revision bigint) returns bigint
 language plpgsql security invoker set search_path = ''
 as $$
-declare s screener_private.state; body text; d jsonb; r jsonb; eligible integer := 0; ready integer := 0; excluded integer := 0;
+declare s screener_private.state; body text; d jsonb;
 begin
   select * into s from screener_private.state where singleton for update;
-  if s.snapshot_revision is distinct from expected_revision then raise exception 'SNAPSHOT_REVISION_CONFLICT' using errcode='40001'; end if;
+  if not found or expected_revision is null or s.snapshot_revision is distinct from expected_revision
+    then raise exception 'SNAPSHOT_REVISION_CONFLICT' using errcode='40001'; end if;
   select payload_text into body from screener_private.snapshot_candidates where content_sha256=candidate_hash;
   if body is null then raise exception 'SNAPSHOT_CANDIDATE_MISSING'; end if;
+  if screener_private.fingerprint(body) is distinct from candidate_hash then raise exception 'INVALID_SNAPSHOT_CHECKSUM'; end if;
+  perform screener_private.assert_snapshot(body);
   d := body::jsonb;
-  if not d ?& array['schemaVersion','state','sessionDate','latestCompletedSessionDate','generatedAt','counts','rows']
-    or jsonb_typeof(d->'counts') <> 'object' or not (d->'counts') ?& array[
-      'registered','eligible','ready','coverageIneligible','unavailable','staleSession','guardBlocked']
-    or d->>'schemaVersion' is distinct from 'setscope-screener-1' or d->>'state' is distinct from 'COMPLETE'
-    or d->>'sessionDate' <> d->>'latestCompletedSessionDate'
-    or jsonb_typeof(d->'rows') <> 'array' or jsonb_array_length(d->'rows') > 1000
-    or (d->>'generatedAt')::timestamptz > clock_timestamp() then raise exception 'INVALID_SNAPSHOT'; end if;
-  for r in select jsonb_array_elements(d->'rows') loop
-    if r->>'state' = 'READY' and (r->>'eligible')::boolean then
-      eligible := eligible+1; ready := ready+1;
-      if r->>'candleTime' is null or r->>'sourceAsOf' is null
-        or jsonb_typeof(r->'price'->'close') is distinct from 'number' or (r->'price'->>'close')::double precision <= 0
-        or (r->'technical'->>'rsi14')::double precision not between 0 and 100
-        or (r->>'candleTime')::timestamptz >= (r->>'sourceAsOf')::timestamptz
-        or (r->>'candleTime')::timestamptz at time zone 'Asia/Bangkok' >= (d->>'sessionDate')::date+1
-        or ((r->>'candleTime')::timestamptz at time zone 'Asia/Bangkok')::date <> (d->>'sessionDate')::date
-        or (r->>'sourceAsOf')::timestamptz > (d->>'generatedAt')::timestamptz then raise exception 'INVALID_SESSION'; end if;
-    elsif r->>'state' = 'COVERAGE_INELIGIBLE' and not (r->>'eligible')::boolean then excluded := excluded+1;
-    else raise exception 'INCOMPLETE_SNAPSHOT'; end if;
-  end loop;
-  if eligible=0 or (d->'counts'->>'registered')::integer <> eligible+excluded
-    or (d->'counts'->>'eligible')::integer <> eligible or (d->'counts'->>'ready')::integer <> ready
-    or (d->'counts'->>'coverageIneligible')::integer <> excluded
-    or (d->'counts'->>'unavailable')::integer <> 0 or (d->'counts'->>'staleSession')::integer <> 0
-    or (d->'counts'->>'guardBlocked')::integer <> 0 then raise exception 'INVALID_COUNTS'; end if;
   if s.current_hash is not null and
     (select (payload_text::jsonb->>'sessionDate') > (d->>'sessionDate')
       or (payload_text::jsonb->>'generatedAt')::timestamptz > (d->>'generatedAt')::timestamptz
@@ -212,11 +307,15 @@ $$;
 create function screener_private.rollback_snapshot(expected_revision bigint) returns bigint
 language plpgsql security invoker set search_path = ''
 as $$
-declare s screener_private.state;
+declare s screener_private.state; body text;
 begin
   select * into s from screener_private.state where singleton for update;
-  if s.snapshot_revision is distinct from expected_revision then raise exception 'SNAPSHOT_REVISION_CONFLICT' using errcode='40001'; end if;
+  if not found or expected_revision is null or s.snapshot_revision is distinct from expected_revision
+    then raise exception 'SNAPSHOT_REVISION_CONFLICT' using errcode='40001'; end if;
   if s.previous_hash is null then raise exception 'SNAPSHOT_ROLLBACK_UNAVAILABLE'; end if;
+  select payload_text into body from screener_private.snapshots where content_sha256=s.previous_hash;
+  if screener_private.fingerprint(body) is distinct from s.previous_hash then raise exception 'INVALID_SNAPSHOT_CHECKSUM'; end if;
+  perform screener_private.assert_snapshot(body);
   update screener_private.state set current_hash=previous_hash,snapshot_revision=snapshot_revision+1 where singleton;
   return (select snapshot_revision from screener_private.state where singleton);
 end;
