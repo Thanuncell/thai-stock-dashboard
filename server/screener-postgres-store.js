@@ -15,11 +15,14 @@ function createPostgresScreenerSnapshotStore({ db }) {
   async function revision() {
     return String((await db.query('select snapshot_revision from screener_private.state where singleton')).rows[0].snapshot_revision);
   }
-  async function readPublished() {
-    const row = (await db.query(
-      'select c.payload_text current_text,c.content_sha256 current_hash,p.payload_text previous_text,p.content_sha256 previous_hash ' +
+  async function readPointers() {
+    return (await db.query(
+      'select s.snapshot_revision,c.payload_text current_text,c.content_sha256 current_hash,p.payload_text previous_text,p.content_sha256 previous_hash ' +
       'from screener_private.state s left join screener_private.snapshots c on c.content_sha256=s.current_hash ' +
       'left join screener_private.snapshots p on p.content_sha256=s.previous_hash where s.singleton')).rows[0];
+  }
+  async function readPublished() {
+    const row = await readPointers();
     if (!row) return { snapshot: null, recovered: false };
     try {
       const current = row.current_text ? decode({ payload_text: row.current_text, content_sha256: row.current_hash }) : null;
@@ -39,20 +42,30 @@ function createPostgresScreenerSnapshotStore({ db }) {
   }
   async function withLease(action) {
     const client = await db.connect();
-    let acquired = false;
+    let acquired, discard;
     try {
-      acquired = (await client.query("select pg_try_advisory_lock(hashtextextended('setscope-screener-writer',0)) acquired")).rows[0].acquired;
+      try {
+        acquired = (await client.query("select pg_try_advisory_lock(hashtextextended('setscope-screener-writer',0)) acquired")).rows[0].acquired;
+      } catch (error) { discard = error; throw error; }
       if (!acquired) throw Object.assign(Error('SNAPSHOT_WRITER_BUSY'), { code: 'EEXIST' });
       return await action();
     } finally {
-      if (acquired) await client.query("select pg_advisory_unlock(hashtextextended('setscope-screener-writer',0))");
-      client.release();
+      try {
+        if (acquired) {
+          const result = await client.query("select pg_advisory_unlock(hashtextextended('setscope-screener-writer',0)) unlocked");
+          if (result.rows[0]?.unlocked !== true) throw Error('SNAPSHOT_WRITER_UNLOCK_FAILED');
+        }
+      } catch (error) { discard = error; throw error; }
+      finally { client.release(discard); }
     }
   }
   return {
     revision, readPublished, publish, withLease,
     async rollback() {
-      return db.query('select screener_private.rollback_snapshot($1::bigint)', [await revision()]);
+      const row = await readPointers();
+      if (!row?.previous_text) throw Error('SNAPSHOT_ROLLBACK_UNAVAILABLE');
+      decode({ payload_text: row.previous_text, content_sha256: row.previous_hash });
+      return db.query('select screener_private.rollback_snapshot($1::bigint)', [row.snapshot_revision]);
     },
     async readCooldown() {
       return Number((await db.query('select cooldown_until from screener_private.state where singleton')).rows[0].cooldown_until);

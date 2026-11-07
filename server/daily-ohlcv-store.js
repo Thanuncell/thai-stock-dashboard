@@ -69,12 +69,13 @@ function createMemoryDailyHistoryStore({ now = Date.now } = {}) {
       let changed = 0;
       for (const entry of kept) {
         const prior = entries.get(entry.record.symbol)?.get(entry.record.tradingDate);
-        if (!prior || prior.record.sourceFetchedAt < entry.record.sourceFetchedAt) {
+        if (!prior || (prior.record.sourceFetchedAt < entry.record.sourceFetchedAt
+          && (!prior.record.complete || entry.record.complete))) {
           if (!entries.has(entry.record.symbol)) entries.set(entry.record.symbol, new Map());
           entries.get(entry.record.symbol).set(entry.record.tradingDate, {
             text: entry.text, sha256: entry.sha256, record: {
               symbol: entry.record.symbol, tradingDate: entry.record.tradingDate,
-              time: entry.record.time, sourceFetchedAt: entry.record.sourceFetchedAt
+              time: entry.record.time, sourceFetchedAt: entry.record.sourceFetchedAt, complete: entry.record.complete
             }
           });
           changed++;
@@ -102,14 +103,18 @@ function createPostgresDailyHistoryStore({ db, now = Date.now }) {
   }
   async function withReadLease(action) {
     const client = await db.connect();
+    let discard;
     try {
       await client.query('begin isolation level repeatable read read only');
       await client.query("select pg_advisory_xact_lock_shared(hashtextextended('setscope-daily-retention',0))");
       const value = await action({ readMany: (symbols, options) => readWith(client, symbols, options) });
       await client.query('commit');
       return value;
-    } catch (error) { await client.query('rollback'); throw error; }
-    finally { client.release(); }
+    } catch (error) {
+      try { await client.query('rollback'); }
+      catch (rollbackError) { discard = rollbackError; }
+      throw error;
+    } finally { client.release(discard); }
   }
   return {
     readMany: (symbols, options) => readWith(db, symbols, options),

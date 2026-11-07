@@ -45,6 +45,11 @@ test('OHLCV and snapshots migrate, persist, isolate roles and rollback on isolat
     const source = dailySource();
     assert.equal((await history.upsert(source.records)).changed, 65);
     assert.equal((await history.upsert(source.records)).changed, 0);
+    const unconfirmed = { ...source.records.at(-1), sourceFetchedAt: observedAt + 1,
+      availableAt: null, complete: false, confirmationBasis: 'unconfirmed',
+      confirmationProof: { regularStart: null, regularEnd: null, nextObservedAt: null } };
+    assert.equal((await history.upsert([unconfirmed])).changed, 0);
+    assert.equal((await history.readMany(['PTT'])).histories.get('PTT').at(-1).complete, true);
     const conflicting = { ...source.records.at(-1), open: source.records.at(-1).open + .1 };
     await assert.rejects(history.upsert([conflicting]), /DAILY_VERSION_CONFLICT/);
     await assert.rejects(backend.query('select screener_private.ingest_daily($1::jsonb)', [
@@ -98,6 +103,8 @@ test('OHLCV and snapshots migrate, persist, isolate roles and rollback on isolat
     const revision = await snapshots.revision();
     await snapshots.publish(next, { expectedRevision: revision });
     await assert.rejects(snapshots.publish(first.snapshot, { expectedRevision: revision }), /SNAPSHOT_REVISION_CONFLICT/);
+    await assert.rejects(backend.query("select screener_private.publish_snapshot('',null)"), { code: '40001' });
+    await assert.rejects(backend.query('select screener_private.rollback_snapshot(null)'), { code: '40001' });
     assert.equal((await snapshots.readPublished()).snapshot.id, next.id);
     await snapshots.rollback();
     assert.equal((await snapshots.readPublished()).snapshot.id, first.snapshot.id);

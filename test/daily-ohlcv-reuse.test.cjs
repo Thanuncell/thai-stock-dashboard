@@ -30,6 +30,11 @@ test('history writes are idempotent, reject conflicting versions and support inc
   const source = dailySource();
   const first = await store.upsert(source.records);
   assert.equal(first.changed, 65);
+  const unconfirmed = { ...source.records.at(-1), sourceFetchedAt: observedAt + 1000,
+    availableAt: null, complete: false, confirmationBasis: 'unconfirmed',
+    confirmationProof: { regularStart: null, regularEnd: null, nextObservedAt: null } };
+  assert.equal((await store.upsert([unconfirmed])).changed, 0);
+  assert.equal((await store.readMany(['PTT'])).histories.get('PTT').at(-1).complete, true);
   assert.equal((await store.upsert(source.records)).changed, 0);
   assert.equal((await store.upsert([source.records[0], source.records[0]])).changed, 0);
   const bad = { ...source.records.at(-1), open: source.records.at(-1).close + .1 };
@@ -283,14 +288,15 @@ test('durable snapshot adapter validates recovery independently and never publis
   service.rememberDailyHistory('PTT', source.meta, source.result);
   const snapshot = (await service.readSnapshot()).snapshot;
   const text = JSON.stringify(snapshot);
-  let current = 'corrupt', previous = text, failStage = false, publishes = 0;
+  let current = 'corrupt', previous = text, failStage = false, publishes = 0, rollbacks = 0;
   const db = {
     connect() { throw Error('No actual database used by this unit fixture'); },
     async query(sql) {
       if (sql.startsWith('select snapshot_revision')) return { rows: [{ snapshot_revision: 2 }] };
       if (sql.startsWith('insert into')) { if (failStage) throw Error('STORAGE_UNAVAILABLE'); return { rows: [] }; }
       if (sql.startsWith('select screener_private.publish_snapshot')) { publishes++; return { rows: [] }; }
-      return { rows: [{ current_text: current, current_hash: fingerprint(text),
+      if (sql.startsWith('select screener_private.rollback_snapshot')) { rollbacks++; return { rows: [] }; }
+      return { rows: [{ snapshot_revision: 2, current_text: current, current_hash: fingerprint(text),
         previous_text: previous, previous_hash: fingerprint(previous) }] };
     }
   };
@@ -301,8 +307,30 @@ test('durable snapshot adapter validates recovery independently and never publis
   assert.equal((await store.readPublished()).snapshot, null);
   current = text;
   assert.equal((await store.readPublished()).recovered, false);
+  await assert.rejects(store.rollback(), /INVALID_SCREENER_SNAPSHOT/);
+  assert.equal(rollbacks, 0);
   failStage = true;
   await assert.rejects(store.publish(snapshot), /STORAGE_UNAVAILABLE/);
   assert.equal(publishes, 0);
   assert.equal((await store.readPublished()).snapshot.id, snapshot.id);
+});
+
+test('a PostgreSQL lease cleanup failure discards the affected connection', async () => {
+  const { createPostgresScreenerSnapshotStore } = require('../server/screener-postgres-store');
+  const failure = new Error('connection lost while releasing lease');
+  const released = [];
+  const client = {
+    async query(sql) {
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true }] };
+      if (sql.includes('pg_advisory_unlock') || sql === 'rollback') throw failure;
+      return { rows: [] };
+    },
+    release(error) { released.push(error); }
+  };
+  const db = { connect: async () => client, query: async () => { throw Error('unexpected query'); } };
+  await assert.rejects(createPostgresScreenerSnapshotStore({ db }).withLease(() => null), failure);
+  const readError = new Error('history read failed');
+  const { createPostgresDailyHistoryStore } = require('../server/daily-ohlcv-store');
+  await assert.rejects(createPostgresDailyHistoryStore({ db }).withReadLease(() => { throw readError; }), readError);
+  assert.deepEqual(released, [failure, failure]);
 });

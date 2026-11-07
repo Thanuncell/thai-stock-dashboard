@@ -150,7 +150,8 @@ begin
     if d->>'tradingDate' < floor_day then expired := expired+1; continue; end if;
     insert into screener_private.stock_ohlcv_daily(record_text) values(value)
       on conflict(provider_symbol,trading_date) do update set record_text=excluded.record_text
-      where excluded.source_fetched_ms > stock_ohlcv_daily.source_fetched_ms;
+      where excluded.source_fetched_ms > stock_ohlcv_daily.source_fetched_ms
+        and ((excluded.record_text::jsonb->>'complete')::boolean or not (stock_ohlcv_daily.record_text::jsonb->>'complete')::boolean);
     get diagnostics affected = row_count;
     changed := changed+affected;
   end loop;
@@ -166,7 +167,7 @@ as $$
 declare s screener_private.state; body text; d jsonb; r jsonb; eligible integer := 0; ready integer := 0; excluded integer := 0;
 begin
   select * into s from screener_private.state where singleton for update;
-  if s.snapshot_revision <> expected_revision then raise exception 'SNAPSHOT_REVISION_CONFLICT' using errcode='40001'; end if;
+  if s.snapshot_revision is distinct from expected_revision then raise exception 'SNAPSHOT_REVISION_CONFLICT' using errcode='40001'; end if;
   select payload_text into body from screener_private.snapshot_candidates where content_sha256=candidate_hash;
   if body is null then raise exception 'SNAPSHOT_CANDIDATE_MISSING'; end if;
   d := body::jsonb;
@@ -214,7 +215,7 @@ as $$
 declare s screener_private.state;
 begin
   select * into s from screener_private.state where singleton for update;
-  if s.snapshot_revision <> expected_revision then raise exception 'SNAPSHOT_REVISION_CONFLICT' using errcode='40001'; end if;
+  if s.snapshot_revision is distinct from expected_revision then raise exception 'SNAPSHOT_REVISION_CONFLICT' using errcode='40001'; end if;
   if s.previous_hash is null then raise exception 'SNAPSHOT_ROLLBACK_UNAVAILABLE'; end if;
   update screener_private.state set current_hash=previous_hash,snapshot_revision=snapshot_revision+1 where singleton;
   return (select snapshot_revision from screener_private.state where singleton);
