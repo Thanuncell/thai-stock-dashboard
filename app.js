@@ -191,7 +191,7 @@ async function openScreener() {
     }
     if (document.body.dataset.workspacePage === 'screener') screenerView.load();
   } catch (_) {
-    if (isCurrentPrivateIdentity()) setText('#screener-status', 'เปิดหน้าคัดกรองไม่สำเร็จ กรุณาโหลดหน้าใหม่');
+    if (isCurrentPrivateIdentity()) setText('#screener-index-status', 'เปิดหน้าคัดกรองไม่สำเร็จ กรุณาโหลดหน้าใหม่');
   }
 }
 
@@ -306,7 +306,7 @@ function clearPrivateState() {
 window.addEventListener('setscope:session-boundary', clearPrivateState);
 const workspaceRoutes = {
   overview: { nodes: ['#market-overview', '#market-data-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย', breadcrumb: 'ภาพรวม' },
-  screener: { nodes: ['#screener-page'], title: 'คัดกรองหุ้น', description: 'ค้นหาหุ้นตามราคาและอินดิเคเตอร์จากแท่งรายวันที่ปิดแล้ว', breadcrumb: 'คัดกรองหุ้น' },
+  screener: { nodes: ['#screener-page'], title: 'คัดกรองหุ้น', description: 'ค้นหาหุ้นในทะเบียนตามดัชนีและตลาด', breadcrumb: 'คัดกรองหุ้น' },
   chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ', breadcrumb: 'กราฟเทคนิค' },
   news: { nodes: ['#activity-section', '#news-section'], title: 'ข่าวและ<span>บทวิเคราะห์</span>', description: 'ติดตามข่าวหุ้นไทยจากแหล่งข่าวที่เลือกได้', breadcrumb: 'ข่าวและบทวิเคราะห์' },
   watchlist: { nodes: ['#watchlist-page', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูข่าวของหุ้นในรายการที่เลือก', breadcrumb: 'รายการติดตาม' },
