@@ -23,7 +23,8 @@ async function envelopes() {
       service.rememberDailyHistory(registry[i].symbol, { ...original.meta, symbol: registry[i].provider_symbol }, result);
     }
     payloads[mode] = { ...await service.readSnapshot(), validUntil: new Date(Date.now() + 3600000).toISOString() };
-    if (mode !== 'ready') assert.equal(payloads[mode].snapshot, null, 'strict complete must withhold partial snapshots');
+    if (mode === 'unavailable') assert.equal(payloads[mode].snapshot, null);
+    else assert.equal(payloads[mode].snapshot.state, mode === 'ready' ? 'COMPLETE' : 'PARTIAL');
   }
   payloads.unknown = { ...payloads.unavailable, availability: null };
   return payloads;
@@ -60,7 +61,9 @@ async function envelopes() {
       for (const nextMode of ['ready', 'missing', 'stale', 'blocked', 'unavailable', 'unknown']) {
         mode = nextMode;
         await page.goto(base + '/?fixture=' + mode + '#screener');
-        await page.locator('#screener-reload').waitFor({ state: mode === 'ready' ? 'hidden' : 'visible' });
+        await page.locator('#screener-status').filter({ hasText: mode === 'ready' ? 'มีข้อมูลรอบล่าสุด'
+          : ['missing', 'stale', 'blocked'].includes(mode) ? 'คัดกรองเฉพาะหุ้นที่ข้อมูลพร้อม 499/500'
+            : 'ข้อมูลคัดกรองยังไม่พร้อม' }).waitFor();
         await page.waitForLoadState('networkidle');
         const cards = page.locator('#screener-availability');
         if (mode === 'unknown') assert.equal(await cards.isVisible(), false);
@@ -71,11 +74,17 @@ async function envelopes() {
           assert.equal(await cards.locator('dt').count(), 4);
         }
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
-        if (mode !== 'ready') {
+        if (mode === 'unavailable' || mode === 'unknown') {
           assert.equal(await page.locator('#screener-results').isVisible(), false);
           assert.equal(await page.locator('#screener-filters').isVisible(), false);
         } else {
           await page.locator('#screener-results').waitFor();
+          if (mode !== 'ready') {
+            assert.equal(await page.locator('#screener-filters').isVisible(), true);
+            assert.equal(await page.locator('#screener-results tbody tr').count(), 20);
+            assert.equal(await page.locator('#screener-result-summary').textContent().then(t => /ประเมินได้ 499/.test(t)), true);
+            assert.equal((await page.locator('#screener-results tbody').innerText()).includes('S499'), false);
+          }
           const initialReads = reads;
           await page.getByRole('button', { name: 'ถัดไป', exact: true }).click();
           const search = page.getByRole('searchbox', { name: 'ชื่อหรือสัญลักษณ์หุ้น' });

@@ -146,6 +146,15 @@ test('WS2: invalid registry, filter and numeric boundaries reject instead of sil
   assert.throws(()=>queryScreenerSnapshot(s,{}, {pageSize:101}),/pagination/);
 });
 
+test('WS2: registered but coverage-ineligible stocks do not prevent complete eligible screening', () => {
+  const bars=tradingBars(55),ctx=context(bars);
+  const s=buildScreenerSnapshot({registry:[validCoverage('AAA'), {...validCoverage('BBB'),active:false}],
+    evidenceBySymbol:{AAA:evidence(bars)},...ctx,latestCompletedSessionDate:ctx.sessionDate});
+  assert.equal(s.state,'COMPLETE');
+  assert.deepEqual(s.counts,{registered:2,eligible:1,ready:1,unavailable:0,staleSession:0,guardBlocked:0,coverageIneligible:1});
+  assert.deepEqual(queryScreenerSnapshot(s).rows.map(row=>row.symbol),['AAA']);
+});
+
 test('WS2: partial snapshots report ready and excluded counts without claiming whole-market coverage', () => {
   const bars=tradingBars(55),ctx=context(bars);
   const s=buildScreenerSnapshot({registry:[validCoverage('AAA'),validCoverage('BBB')],evidenceBySymbol:{AAA:evidence(bars)},...ctx,latestCompletedSessionDate:ctx.sessionDate});

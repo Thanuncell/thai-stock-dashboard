@@ -92,7 +92,7 @@ test('Screener reuses stored daily bars and Chart history with no provider fetch
   assert.equal(b.snapshot.id, a.snapshot.id);
 });
 
-test('published snapshot takes precedence and missing/stale data preserve strict complete publication', async () => {
+test('published snapshot takes precedence while safe partial reads exclude missing and stale data', async () => {
   const source = dailySource();
   const chart = createScreenerService({ listCoverage: async () => [coverage('PTT')], now: () => observedAt });
   chart.rememberDailyHistory('PTT', source.meta, source.result);
@@ -116,10 +116,20 @@ test('published snapshot takes precedence and missing/stale data preserve strict
   assert.equal(stale.availability.unavailable, 1);
   missing.rememberDailyHistory('PTT', source.meta, source.result);
   const partial = await missing.readSnapshot();
-  assert.equal(partial.marketFreshness, 'UNAVAILABLE');
-  assert.equal(partial.snapshot, null);
+  assert.equal(partial.marketFreshness, 'CURRENT_SESSION');
+  assert.equal(partial.snapshot.state, 'PARTIAL');
   assert.equal(partial.availability.ready, 1);
   assert.equal(partial.availability.unavailable, 1);
+  const { queryScreenerSnapshot } = await import('../client/screener-core.mjs');
+  assert.deepEqual(queryScreenerSnapshot(partial.snapshot).rows.map(row => row.symbol), ['PTT']);
+  const { createScreenerSnapshotStore } = require('../server/screener-snapshot-store');
+  const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'setscope-partial-'));
+  try {
+    const persisted = createScreenerSnapshotStore(directory);
+    await assert.rejects(persisted.withLease(() => persisted.publish(partial.snapshot)), /INVALID_SCREENER_SNAPSHOT/);
+    assert.equal((await persisted.readPublished()).snapshot, null);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
 test('365 calendar-day retention uses Trading Date, blocks cleanup during reads and preserves snapshot data', async () => {

@@ -15,8 +15,8 @@ test('WS6-A publication preflight covers complete, missing and mixed-session uni
   const { buildScreenerSnapshot, queryScreenerSnapshot } = await import('../client/screener-core.mjs');
   for (const scenario of [
     { name: '500/500', ready: 500, unavailable: 0, stale: 0, fresh: 'CURRENT_SESSION' },
-    { name: '499/500', ready: 499, unavailable: 1, stale: 0, fresh: 'UNAVAILABLE' },
-    { name: 'mixed-session', ready: 499, unavailable: 0, stale: 1, fresh: 'STALE' }
+    { name: '499/500', ready: 499, unavailable: 1, stale: 0, fresh: 'CURRENT_SESSION' },
+    { name: 'mixed-session', ready: 499, unavailable: 0, stale: 1, fresh: 'CURRENT_SESSION' }
   ]) await t.test(scenario.name, async () => {
     const registry = universe();
     const currentBars = dailyBars();
@@ -43,6 +43,8 @@ test('WS6-A publication preflight covers complete, missing and mixed-session uni
     const envelope = await service.readSnapshot();
     assert.equal(envelope.marketFreshness, scenario.fresh);
     assert.equal(envelope.snapshot.state, scenario.ready === 500 ? 'COMPLETE' : 'PARTIAL');
+    assert.equal(envelope.snapshot.counts.ready, scenario.ready);
+    assert.equal(queryScreenerSnapshot(envelope.snapshot).counts.matched, scenario.ready);
     if (scenario.ready < 500) {
       const excluded = candidate.rows.at(-1);
       assert.equal(excluded.state, scenario.stale ? 'STALE_SESSION' : 'UNAVAILABLE');
