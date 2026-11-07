@@ -16,6 +16,18 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
   let snapshot, expiresAt, expiryTimer, request, settled = false, page = 1;
   let filters = {}, sort = {};
 
+  function renderAvailability(counts) {
+    const container = get('availability');
+    container.hidden = !counts;
+    for (const [name, key] of [['ready', 'ready'], ['unavailable', 'unavailable'], ['stale', 'staleSession'], ['blocked', 'guardBlocked']])
+      get(name + '-count').textContent = counts ? amount(counts[key]) : '—';
+    coverage.textContent = counts
+      ? 'หุ้นในทะเบียน ' + amount(counts.registered) + ' · เข้าเกณฑ์ Coverage ' + amount(counts.eligible)
+        + ' · มีราคาปิดรอบล่าสุด ' + amount(counts.ready) + ' · ข้อมูลเก่า ' + amount(counts.staleSession)
+        + ' · ไม่มีข้อมูล ' + amount(counts.unavailable) + ' · ไม่ผ่านการตรวจข้อมูล ' + amount(counts.guardBlocked)
+        + ' · ไม่เข้าเกณฑ์ Coverage ' + amount(counts.coverageIneligible) : '';
+  }
+
   function clearResults() {
     body.replaceChildren();
     results.hidden = true;
@@ -27,7 +39,7 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
     clearTimeout(expiryTimer);
     expiresAt = 0;
     snapshot = null;
-    coverage.textContent = '';
+    renderAvailability(null);
     status.textContent = 'ข้อมูลคัดกรองหมดอายุ กรุณาโหลดข้อมูลของรอบล่าสุด';
     form.hidden = true;
     reload.hidden = false;
@@ -45,7 +57,8 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
     sort = {};
     form.reset();
     form.hidden = reload.hidden = filterError.hidden = true;
-    status.textContent = coverage.textContent = '';
+    status.textContent = '';
+    renderAvailability(null);
     clearResults();
   }
 
@@ -115,7 +128,7 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
     form.hidden = reload.hidden = true;
     clearResults();
     status.textContent = 'กำลังโหลดข้อมูลคัดกรองหุ้น…';
-    coverage.textContent = '';
+    renderAvailability(null);
     try {
       const response = await fetchSnapshot(controller.signal);
       if (!response.ok) throw Error('snapshot request failed');
@@ -131,7 +144,8 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
         throw Error('invalid snapshot');
       const latest = data.latestCompletedSessionDate;
       const session = latest ? date.format(new Date(latest + 'T00:00:00+07:00')) : 'ไม่ทราบ';
-      const counts = value?.counts;
+      const counts = value?.counts || data.availability;
+      renderAvailability(counts || null);
       const ready = data.marketFreshness === 'CURRENT_SESSION' && value?.state === 'COMPLETE'
         && counts?.ready > 0 && counts.ready === counts.eligible
         && counts.staleSession === 0 && counts.unavailable === 0 && counts.guardBlocked === 0;
@@ -141,10 +155,6 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
         + (value ? ' · คำนวณเมื่อ ' + dateTime.format(new Date(value.generatedAt)) + ' (เวลาไทย)' : '');
       expiryTimer = setTimeout(showExpired, expiresAt - Date.now());
       if (!value) return;
-      coverage.textContent = 'หุ้นในทะเบียน ' + amount(counts.registered) + ' · เข้าเกณฑ์ Coverage ' + amount(counts.eligible)
-        + ' · มีราคาปิดรอบล่าสุด ' + amount(counts.ready) + ' · ข้อมูลเก่า ' + amount(counts.staleSession)
-        + ' · ไม่มีข้อมูล ' + amount(counts.unavailable) + ' · ไม่ผ่านการตรวจข้อมูล ' + amount(counts.guardBlocked)
-        + ' · ไม่เข้าเกณฑ์ Coverage ' + amount(counts.coverageIneligible);
       if (!ready) return;
       snapshot = value;
       form.hidden = false;
@@ -157,6 +167,7 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
         snapshot = null;
         form.hidden = true;
         clearResults();
+        renderAvailability(null);
         status.textContent = 'โหลดข้อมูลคัดกรองไม่สำเร็จ กรุณาลองอีกครั้ง';
       }
     } finally {

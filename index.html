@@ -81,6 +81,12 @@
           </div>
           <p id="screener-status" role="status"></p>
           <p id="screener-coverage"></p>
+          <dl id="screener-availability" class="screener-availability" aria-label="ความพร้อมของข้อมูลราคาปิด" hidden>
+            <div><dt>Ready · ราคาปิดรอบล่าสุด</dt><dd id="screener-ready-count">—</dd></div>
+            <div><dt>Unavailable · ไม่มีข้อมูล</dt><dd id="screener-unavailable-count">—</dd></div>
+            <div><dt>Stale · ข้อมูลเก่า</dt><dd id="screener-stale-count">—</dd></div>
+            <div><dt>Guard Blocked · ไม่ผ่านการตรวจ</dt><dd id="screener-blocked-count">—</dd></div>
+          </dl>
           <button type="button" id="screener-reload" hidden>โหลดข้อมูลคัดกรองใหม่</button>
           <form id="screener-filters" hidden>
             <fieldset>

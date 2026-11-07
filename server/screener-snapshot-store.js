@@ -186,4 +186,4 @@ function createScreenerSnapshotStore(directory) {
   return { withLease, revision, readPublished, publish, rollback, readCooldown, saveCooldown: until => write('cooldown', until) };
 }
 
-module.exports = { completeForEligible, createScreenerSnapshotStore };
+module.exports = { completeForEligible, validateSnapshot, createScreenerSnapshotStore };

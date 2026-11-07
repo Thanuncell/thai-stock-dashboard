@@ -538,3 +538,9 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 @media (max-width: 470px) {
   .screener th, .screener td { font-size: .78rem; padding-inline: .2rem; }
 }
+
+.screener-availability { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: .6rem; margin: .8rem 0; }
+.screener-availability>div { min-width: 0; border: 1px solid var(--line); border-radius: .5rem; padding: .65rem; }
+.screener-availability dt { overflow-wrap: anywhere; font-size: .8rem; }
+.screener-availability dd { margin: .3rem 0 0; font: 700 1.25rem var(--latin); }
+@media(max-width:790px) { .screener-availability { grid-template-columns: repeat(2,minmax(0,1fr)); } }
