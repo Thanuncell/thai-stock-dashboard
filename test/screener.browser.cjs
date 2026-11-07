@@ -9,7 +9,6 @@ const { coverage, dailyBars, guardedDaily, observedAt } = require('./fixtures/sc
 async function fixture() {
   const registry = Array.from({ length: 498 }, (_, i) => coverage('S' + String(i).padStart(3, '0')));
   registry.push(coverage('PTT'), coverage('CPALL'));
-  for (const row of registry.filter(row => ['S496', 'S497', 'CPALL'].includes(row.symbol))) row.active = false;
   const service = createScreenerService({ now: () => observedAt, listCoverage: () => registry });
   const bars = dailyBars();
   for (const row of registry) {
@@ -50,7 +49,10 @@ async function fixture() {
             ...payload.snapshot, state: 'UNAVAILABLE', counts: { ...payload.snapshot.counts, ready: 0, staleSession: 498 }, rows: []
           } } });
           if (mode === 'partial') return route.fulfill({ json: { ...payload, marketFreshness: 'CURRENT_SESSION', snapshot: {
-            ...payload.snapshot, state: 'PARTIAL', counts: { ...payload.snapshot.counts, ready: 496, unavailable: 1 }
+            ...payload.snapshot, state: 'PARTIAL', counts: { ...payload.snapshot.counts, ready: 499, unavailable: 1 }
+          } } });
+          if (mode === 'mixed') return route.fulfill({ json: { ...payload, marketFreshness: 'STALE', snapshot: {
+            ...payload.snapshot, state: 'PARTIAL', counts: { ...payload.snapshot.counts, ready: 499, staleSession: 1 }
           } } });
           if (mode === 'expired') return route.fulfill({ json: { ...payload, validUntil: new Date(Date.now() - 1000).toISOString() } });
           return route.fulfill({ json: payload });
@@ -83,10 +85,15 @@ async function fixture() {
       await page.locator('#screener-results').waitFor();
       await page.waitForLoadState('networkidle');
       const readCount = calls.length;
+      if (width === 1366) console.log(JSON.stringify({
+        screenerChartHandoffLinks: await page.locator('#screener-results tbody a').count(),
+        screenerWatchlistActionButtons: await page.locator('#screener-results tbody button').count(),
+        evidence: 'existing Screener result actions; outstanding integration audit'
+      }));
       assert.equal(calls.filter(call => call === '/api/screener').length, 1);
       const nav = page.getByRole('link', { name: 'คัดกรองหุ้น', exact: true });
       assert.equal(await nav.getAttribute('aria-current'), 'page');
-      assert.match(await page.locator('#screener-coverage').textContent(), /500.*497.*497/);
+      assert.match(await page.locator('#screener-coverage').textContent(), /500.*500.*500/);
       assert.equal(await page.locator('#screener-results tbody tr').count(), 20);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       assert.equal(await page.locator('.side-nav .nav-item').count(), 6);
@@ -147,13 +154,18 @@ async function fixture() {
         await page.locator('#screener-results').waitFor();
         assert.equal(calls.filter(call => call === '/api/screener').length, 1);
       }
-      for (const [nextMode, message] of [['stale', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['partial', 'ข้อมูลคัดกรองยังไม่พร้อม'], ['error', 'โหลดข้อมูลคัดกรองไม่สำเร็จ'],
+      for (const [nextMode, message] of [['stale', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['mixed', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['partial', 'ข้อมูลคัดกรองยังไม่พร้อม'], ['error', 'โหลดข้อมูลคัดกรองไม่สำเร็จ'],
         ['expired', 'ข้อมูลคัดกรองหมดอายุ']]) {
         mode = nextMode;
         await page.getByRole('button', { name: 'โหลดข้อมูลคัดกรองใหม่' }).click();
         await page.locator('#screener-status').filter({ hasText: message }).waitFor();
         assert.equal(await page.locator('#screener-results').isVisible(), false);
         assert.equal(await search.isVisible(), false);
+        if (['mixed', 'partial'].includes(nextMode)) {
+          assert.match(await page.locator('#screener-coverage').textContent(), /500.*500.*499/);
+          assert.match(await page.locator('#screener-status').textContent(),
+            nextMode === 'mixed' ? /ข้อมูลเก่ากว่ารอบล่าสุด/ : /ข้อมูลคัดกรองยังไม่พร้อม/);
+        }
       }
       assert.deepEqual(errors, []);
       await context.close();
