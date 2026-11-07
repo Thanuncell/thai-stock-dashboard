@@ -133,13 +133,16 @@ function createScreenerService({ listCoverage = async () => null, snapshotStore,
     };
     const usable = value && value.sessionDate === session && Date.parse(value.generatedAt) <= current;
     const ready = usable && completeForEligible(value);
+    // Safe Partial is read-only: existing Chart evidence may screen READY rows,
+    // but a partial candidate is never published to a durable snapshot store.
+    const partialReady = usable && value.state === 'PARTIAL' && value.counts.ready > 0
+      && value.rows.some(row => row.state === 'READY');
     const stale = value && (value.sessionDate < session || value.counts.staleSession > 0);
     return {
-      snapshot: ready ? (value.state === 'COMPLETE' ? value : { ...value, state: 'COMPLETE' })
-        : usable && !snapshotStore ? value : null,
+      snapshot: ready || partialReady ? value : null,
       latestCompletedSessionDate: session,
       validUntil,
-      marketFreshness: ready ? 'CURRENT_SESSION' : stale ? 'STALE' : 'UNAVAILABLE',
+      marketFreshness: ready || partialReady ? 'CURRENT_SESSION' : stale ? 'STALE' : 'UNAVAILABLE',
       availability: usable ? value.counts : null,
       reuseSources: loaded.sources
     };
