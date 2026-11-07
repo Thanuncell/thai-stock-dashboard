@@ -1,6 +1,6 @@
 // SETscope v1.6.4 WS2: offline-only, deterministic screener core.
 // No provider requests, persistence, account data, scheduler, or UI side effects.
-import { computeTechnicalSeries, trustedMarketBars, TECHNICAL_DEFAULTS } from './domain.mjs';
+import { computeTechnicalSeries, trustedMarketBars, TECHNICAL_DEFAULTS, THAI_NAMES } from './domain.mjs';
 
 export const SCREENER_SCHEMA_VERSION = 'setscope-screener-1';
 export const SCREENER_FILTERS = Object.freeze(['price', 'changePercent', 'rsi14', 'ema20', 'ema50', 'macd']);
@@ -242,7 +242,7 @@ export function queryScreenerSnapshot(snapshot, filters = {}, options = {}) {
   const results = [];
   for (const row of snapshot.rows) {
     if (row.state !== 'READY') { excluded++; continue; }
-    if (search && !row.symbol.includes(search)) continue;
+    if (search && !row.symbol.includes(search) && !THAI_NAMES[row.symbol]?.toUpperCase().includes(search)) continue;
     const needed = [
       ...(price ? [row.price.close] : []), ...(change ? [row.price.changePercent] : []),
       ...(rsi ? [row.technical.rsi14] : []), ...(ema20 ? [row.technical.ema20, row.price.close] : []),

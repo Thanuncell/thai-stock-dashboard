@@ -30,7 +30,7 @@
   function appRouteFromLocation() {
     if (location.hash.includes('access_token=')) return '';
     const route = location.hash.replace(/^#/, '');
-    if (!['overview', 'chart', 'news', 'watchlist', 'profile'].includes(route)) return '';
+    if (!['overview', 'screener', 'chart', 'news', 'watchlist', 'profile'].includes(route)) return '';
     const pathname = location.pathname === AUTH_ROUTES.login || location.pathname === AUTH_ROUTES.signup ? '/' : location.pathname;
     return `${pathname || '/'}${location.search}${location.hash}`;
   }
@@ -46,7 +46,7 @@
     const intentional = sessionStorage.getItem(APP_RETURN_INTENT_KEY) === route;
     sessionStorage.removeItem(APP_RETURN_KEY);
     sessionStorage.removeItem(APP_RETURN_INTENT_KEY);
-    if (!route || !/^\/(?:\?[^#]*)?#(?:overview|chart|news|watchlist|profile)$/.test(route)
+    if (!route || !/^\/(?:\?[^#]*)?#(?:overview|screener|chart|news|watchlist|profile)$/.test(route)
       || !intentional && route.endsWith('#profile')) return false;
     history.replaceState(null, '', route);
     return true;

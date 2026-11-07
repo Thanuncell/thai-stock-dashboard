@@ -165,6 +165,23 @@ let watchlistCheck = null;
 let watchlistQuoteFailure = false;
 const watchlistDesktop = window.matchMedia('(min-width: 791px)');
 const workspaceScrollPositions = new Map();
+let screenerView;
+
+async function openScreener() {
+  if (!isCurrentPrivateIdentity()) return;
+  try {
+    if (!screenerView) {
+      const { createScreenerView } = await import('./client/screener-view.mjs');
+      screenerView ||= createScreenerView($('#screener-page'), {
+        fetchSnapshot: signal => apiFetch('/api/screener', { signal }),
+        currentIdentity: () => isCurrentPrivateIdentity() ? privateSessionIdentity : null
+      });
+    }
+    if (document.body.dataset.workspacePage === 'screener') screenerView.load();
+  } catch (_) {
+    if (isCurrentPrivateIdentity()) setText('#screener-status', 'เปิดหน้าคัดกรองไม่สำเร็จ กรุณาโหลดหน้าใหม่');
+  }
+}
 
 function setWatchlistSyncStatus(text, state = '') {
   ['#watchlist-sync-status', '#watchlist-sync-status-mobile'].forEach(selector => {
@@ -208,6 +225,7 @@ function clearPrivateDom() {
   setWatchlistSyncStatus('', '');
 }
 function clearPrivateState() {
+  screenerView?.reset();
   technicalCache=null;technicalParameters=normalizeTechnicalParameters();drawings?.reset();
   chartIndicators.clear();INDICATOR_PRESETS.basic.forEach(key=>chartIndicators.add(key));
   mostActiveExpanded = false;
@@ -276,6 +294,7 @@ function clearPrivateState() {
 window.addEventListener('setscope:session-boundary', clearPrivateState);
 const workspaceRoutes = {
   overview: { nodes: ['#market-overview', '#market-data-overview'], title: 'ตลาดหุ้นไทย <span>วันนี้</span>', description: 'ดูภาพรวมดัชนีและข้อมูลตลาดหุ้นไทย', breadcrumb: 'ภาพรวม' },
+  screener: { nodes: ['#screener-page'], title: 'คัดกรองหุ้น', description: 'ค้นหาหุ้นตามราคาและอินดิเคเตอร์จากแท่งรายวันที่ปิดแล้ว', breadcrumb: 'คัดกรองหุ้น' },
   chart: { nodes: ['#chart-section'], title: 'กราฟ<span>เทคนิค</span>', description: 'ค้นหาหุ้น ดูกราฟราคา และอ่านเหตุผลประกอบสัญญาณ', breadcrumb: 'กราฟเทคนิค' },
   news: { nodes: ['#activity-section', '#news-section'], title: 'ข่าวและ<span>บทวิเคราะห์</span>', description: 'ติดตามข่าวหุ้นไทยจากแหล่งข่าวที่เลือกได้', breadcrumb: 'ข่าวและบทวิเคราะห์' },
   watchlist: { nodes: ['#watchlist-page', '#movers-section'], title: 'รายการ<span>ติดตาม</span>', description: 'จัดการหุ้นที่บันทึกไว้และดูข่าวของหุ้นในรายการที่เลือก', breadcrumb: 'รายการติดตาม' },
@@ -285,7 +304,7 @@ function currentNavigationState(route = document.body.dataset.workspacePage || i
   if (route === 'chart') return { route, symbol: activeSymbol, range: currentRange };
   if (route === 'news') return { route, query: newsQuery, source: activeSource, newsPage };
   if (route === 'watchlist') return { route, watchlistId: activeWatchlistId, watchPage: watchNewsPage };
-  if (route === 'profile') return { route };
+  if (route === 'profile' || route === 'screener') return { route };
   return { route: 'overview' };
 }
 function navigationLocationKey() {
@@ -318,11 +337,12 @@ function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   const previousPage = document.body.dataset.workspacePage;
   if (scroll && previousPage && previousPage !== page) workspaceScrollPositions.set(previousPage, window.scrollY);
   const visible = new Set(workspaceRoutes[page].nodes);
-  ['#market-overview', '#market-data-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page', '#profile-page'].forEach(selector => {
+  ['#market-overview', '#market-data-overview', '#screener-page', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page', '#profile-page'].forEach(selector => {
     const node = $(selector); if (node) node.classList.toggle('workspace-hidden', !visible.has(selector));
   });
   $('#activity-section')?.classList.toggle('workspace-single', page === 'news' || page === 'watchlist');
   document.body.dataset.workspacePage = page;
+  if (page === 'screener') openScreener();
   if (page === 'watchlist') renderWatchlist(latestMarket?.stocks || []);
   if (page === 'chart' && previousPage !== page) scheduleChartRedraw();
   document.querySelectorAll('[data-workspace-route]').forEach(link => {
@@ -2167,6 +2187,7 @@ async function initializeAccountSession(event) {
   renderAlertHistory();
   restoreNavigationFromLocation({ load: false });
   if (!window.setscopeAuth?.markPrivateUiReady?.(identity)) return;
+  if (document.body.dataset.workspacePage === 'screener') openScreener();
   getCoverageSummary(); updateTradingViewChart(); getMarket(); getSettradeOverview();
   getNews({ reason: 'startup' });
   getWatchlistNews({ reason: 'startup' });
