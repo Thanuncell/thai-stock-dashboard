@@ -31,7 +31,9 @@ async function fixture() {
     { ...coverage('NOPRICE'), company_name_en: 'No Price Example',
       name_source: 'https://example.test/noprice', name_checked_at: '2026-01-01' }
   ].filter(row => row.symbol !== 'S497'), {
-    SET50: group('PTT'), SET100: group('PTT', 'S002'), SETHD: group('S003', 'OUTSIDE'), mai: group('S001')
+    sourceType: 'OWNER_EXCEL',
+    SET50: group('PTT'), SET100: group('PTT', 'S002'), SETHD: group('S003', 'OUTSIDE'),
+    SETESG: group('PTT', 'S001'), mai: group('S001')
   });
   let browser;
   try {
@@ -128,16 +130,15 @@ async function fixture() {
       assert.equal(await indexList.locator('li').count(), 20);
       await page.locator('#screener-index-next').click();
       assert.match(await page.locator('#screener-index-page').textContent(), /2 \/ 25/);
-      for (const [key, symbols] of [['SET50', ['PTT']], ['SET100', ['PTT', 'S002']], ['SETHD', ['S003']], ['mai', ['S001']]]) {
+      for (const [key, symbols] of [
+        ['SET50', ['PTT']], ['SET100', ['PTT', 'S002']], ['SETHD', ['S003']], ['SETESG', ['PTT', 'S001']], ['mai', ['S001']]
+      ]) {
         await tabs.getByRole('button', { name: key, exact: true }).click();
         assert.equal(await tabs.getByRole('button', { name: key, exact: true }).getAttribute('aria-pressed'), 'true');
         assert.deepEqual(await indexList.getByRole('link').allTextContents(), symbols);
-        assert.match(await page.locator('#screener-index-source').textContent(), /ตลาดหลักทรัพย์แห่งประเทศไทย.*มีผล/);
+        assert.match(await page.locator('#screener-index-source').textContent(), /Excel ของ Owner.*ตรวจตรงกัน ณ/);
         if (key === 'SETHD') assert.match(await page.locator('#screener-index-source').textContent(), /นอกทะเบียน 1/);
       }
-      await tabs.getByRole('button', { name: 'SETESG', exact: true }).click();
-      assert.match(await indexStatus.textContent(), /SETESG ยังไม่พร้อม/);
-      assert.equal(await indexList.isVisible(), false);
       await tabs.getByRole('button', { name: 'ทั้งหมด', exact: true }).click();
       const indexSearch = page.getByRole('searchbox', { name: 'ค้นหารายชื่อหุ้น' });
       await indexSearch.fill('No Price Example');

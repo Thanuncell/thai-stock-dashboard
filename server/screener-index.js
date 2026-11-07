@@ -29,8 +29,8 @@ function readGroup(entry, today) {
   return { effectiveFrom: entry.effectiveFrom, effectiveThrough: entry.effectiveThrough, symbols };
 }
 
-// Group entries contain only verified, redistributable lists. Listing transfers
-// use separate dated notices and never establish index membership.
+// Owner Excel entries contain only workbook flags that agreed with the reference
+// check. Listing transfers use separate dated notices.
 // An absent, expired or conflicting list stays unavailable. No upstream fetch is performed.
 function buildIndexCatalog(registry, membership = publishedMembership, today = todayInThailand.format(new Date())) {
   if (!Array.isArray(registry) || !registry.length) throw Error('Coverage registry unavailable');
@@ -71,7 +71,8 @@ function buildIndexCatalog(registry, membership = publishedMembership, today = t
       if (!group) return [key, { source, available: false }];
       const { effectiveFrom, effectiveThrough } = group;
       const symbols = [...group.symbols].filter(symbol => stocks.has(symbol));
-      return [key, { source, available: true, effectiveFrom, effectiveThrough, symbols,
+      return [key, { source, sourceType: membership.sourceType === 'OWNER_EXCEL' ? 'OWNER_EXCEL' : 'SET',
+        available: true, effectiveFrom, effectiveThrough, symbols,
         outsideCoverage: group.symbols.size - symbols.length }];
     }))
   };

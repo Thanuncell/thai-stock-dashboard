@@ -6,6 +6,33 @@ const { coverage, dailyBars, guardedDaily, observedAt, providerChart, session } 
 const { createScreenerService } = require('../server/screener-service');
 const { buildIndexCatalog } = require('../server/screener-index');
 
+test('bundled Owner Excel membership opens every group and retains unmatched coverage symbols', () => {
+  const expected = { SET50: 40, SET100: 80, SETHD: 15, SETESG: 76, mai: 56 };
+  const membership = require('../server/index-membership.json');
+  const symbols = new Set([...Object.keys(expected).flatMap(group => membership[group].symbols),
+    'BBIK', 'DITTO', 'JTS', 'THCOM', 'NOPRICE']);
+  const registry = [...symbols, ...Array.from({ length: 500 - symbols.size }, (_, i) => 'XFIX' + i)].map(symbol => coverage(symbol));
+  const catalog = buildIndexCatalog(registry, undefined, '2026-11-07');
+  assert.equal(catalog.stocks.length, 500);
+  assert.equal(new Set(catalog.stocks.map(row => row.symbol)).size, 500);
+  assert.equal(catalog.stocks.filter(row => row.membershipStatus === 'UNKNOWN').length, 359);
+  for (const [key, size] of Object.entries(expected)) {
+    const group = catalog.groups[key];
+    assert.equal(group.available, true);
+    assert.equal(group.sourceType, 'OWNER_EXCEL');
+    assert.equal(group.symbols.length, size);
+    assert.equal(new Set(group.symbols).size, size);
+    assert.ok(!group.symbols.includes('TTW') && !group.symbols.includes('GST'));
+  }
+  assert.ok(catalog.groups.SET50.symbols.every(symbol => catalog.groups.SET100.symbols.includes(symbol)));
+  assert.ok(catalog.groups.SET100.symbols.includes('JMART'));
+  for (const symbol of ['BBIK', 'DITTO', 'JTS', 'THCOM', 'NOPRICE'])
+    assert.equal(catalog.stocks.find(row => row.symbol === symbol).membershipStatus, 'UNKNOWN');
+  const expired = buildIndexCatalog(registry, undefined, '2027-01-01');
+  assert.equal(expired.stocks.length, 500);
+  assert.ok(Object.values(expired.groups).every(group => !group.available));
+});
+
 test('index catalog joins dated membership by symbol without requiring prices or coverage eligibility', () => {
   const registry = [
     { ...coverage('PTT'), company_name_en: 'Verified Company', name_source: 'https://example.test/ptt', name_checked_at: '2026-01-01' },

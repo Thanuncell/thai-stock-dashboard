@@ -25,13 +25,17 @@ function createIndexView(get, { fetchCoverage, currentIdentity, chartLink }) {
     if (validFor > 0) membershipTimer = setTimeout(render, Math.min(validFor, 2147483647));
     source.replaceChildren();
     if (membership) {
+      const ownerExcel = membership.sourceType === 'OWNER_EXCEL';
+      if (ownerExcel) source.append('แหล่งข้อมูล: Excel ของ Owner · ');
       const link = document.createElement('a');
       link.href = membership.source;
-      link.textContent = 'แหล่งข้อมูล: ตลาดหลักทรัพย์แห่งประเทศไทย';
+      link.textContent = ownerExcel ? 'หลักฐานตรวจเทียบจาก SET' : 'แหล่งข้อมูล: ตลาดหลักทรัพย์แห่งประเทศไทย';
       source.append(link);
       if (membership.available) {
         const thaiDate = value => date.format(new Date(value + 'T00:00:00+07:00'));
-        source.append(' · มีผล ' + thaiDate(membership.effectiveFrom) + ' ถึง ' + thaiDate(membership.effectiveThrough));
+        if (ownerExcel) source.append(' · แสดงเฉพาะรายการที่ตรวจตรงกัน ณ ' + thaiDate(membership.effectiveFrom)
+          + ' · ใช้ชุดนี้ถึง ' + thaiDate(membership.effectiveThrough));
+        else source.append(' · มีผล ' + thaiDate(membership.effectiveFrom) + ' ถึง ' + thaiDate(membership.effectiveThrough));
         if (membership.outsideCoverage) source.append(' · นอกทะเบียน ' + amount(membership.outsideCoverage) + ' หุ้น');
       }
     } else if (catalog) source.textContent = 'แหล่งข้อมูล: ทะเบียนหลักทรัพย์ SETscope';

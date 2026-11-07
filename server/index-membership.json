@@ -1,5 +1,69 @@
 {
+  "sourceType": "OWNER_EXCEL",
+  "SET50": {
+    "effectiveFrom": "2026-11-07",
+    "effectiveThrough": "2026-12-31",
+    "symbols": [
+      "ADVANC", "AOT", "AWC", "BBL", "BCP", "BDMS", "BEM", "BH", "BJC", "CPALL",
+      "CPF", "CPN", "CRC", "DELTA", "EGCO", "GPSC", "GULF", "HMPRO", "IVL", "KBANK",
+      "KKP", "KTB", "KTC", "LH", "MINT", "MTC", "OR", "OSP", "PTT", "PTTEP",
+      "PTTGC", "RATCH", "SCB", "SCC", "SCGP", "TCAP", "TISCO", "TTB", "TU", "WHA"
+    ]
+  },
+  "SET100": {
+    "effectiveFrom": "2026-11-07",
+    "effectiveThrough": "2026-12-31",
+    "symbols": [
+      "AAV", "ADVANC", "AEONTS", "AMATA", "AOT", "AP", "AWC", "BA", "BAM", "BBL",
+      "BCH", "BCP", "BCPG", "BDMS", "BEM", "BGRIM", "BH", "BJC", "BLA", "BTG",
+      "BTS", "CBG", "CENTEL", "CK", "COM7", "CPALL", "CPF", "CPN", "CRC", "DELTA",
+      "DOHOME", "EGCO", "ERW", "GFPT", "GLOBAL", "GPSC", "GULF", "HANA", "HMPRO", "IVL",
+      "JMART", "JMT", "KBANK", "KCE", "KKP", "KTB", "KTC", "LH", "M", "MEGA",
+      "MINT", "MOSHI", "MTC", "OR", "OSP", "PLANB", "PTG", "PTT", "PTTEP", "PTTGC",
+      "RATCH", "SAWAD", "SCB", "SCC", "SCGP", "SPALI", "SPRC", "STA", "STGT", "TASCO",
+      "TCAP", "TIDLOR", "TISCO", "TLI", "TOA", "TRUE", "TTB", "TU", "WHA", "WHAUP"
+    ]
+  },
+  "SETHD": {
+    "effectiveFrom": "2026-11-07",
+    "effectiveThrough": "2026-12-31",
+    "symbols": [
+      "AP", "BBL", "HMPRO", "KBANK", "KKP", "KTB", "LH", "PTT", "PTTEP", "RATCH",
+      "SCB", "SPALI", "TCAP", "TISCO", "TTB"
+    ]
+  },
+  "SETESG": {
+    "effectiveFrom": "2026-11-07",
+    "effectiveThrough": "2026-12-31",
+    "symbols": [
+      "AAV", "ADVANC", "AMATA", "AOT", "AP", "AWC", "BA", "BAM", "BBL", "BCH",
+      "BDMS", "BEM", "BGRIM", "BH", "BJC", "BLA", "BTG", "BTS", "CBG", "CENTEL",
+      "CK", "CKP", "COM7", "CPALL", "CPF", "CPN", "CRC", "EGCO", "GFPT", "GLOBAL",
+      "GPSC", "GULF", "HANA", "HMPRO", "IVL", "JMART", "JMT", "KBANK", "KCE", "KKP",
+      "KTB", "KTC", "LH", "M", "MEGA", "MINT", "MTC", "OR", "OSP", "PLANB",
+      "PSL", "PTG", "PTT", "PTTEP", "PTTGC", "RATCH", "SAPPE", "SAWAD", "SCB", "SCC",
+      "SCGP", "SNNP", "SPALI", "SPRC", "STA", "STGT", "TASCO", "TCAP", "TIPH", "TISCO",
+      "TLI", "TOA", "TTB", "TU", "WHA", "WHAUP"
+    ]
+  },
+  "mai": {
+    "effectiveFrom": "2026-11-07",
+    "effectiveThrough": "2026-12-31",
+    "symbols": [
+      "ABM", "ADB", "ADD", "AF", "AKP", "ALPHAX", "AMA", "APP", "ARIN", "ARIP",
+      "ARROW", "ASN", "ATP30", "AU", "AUCT", "BE8", "BOL", "BPS", "BSM", "BTC",
+      "CAZ", "CHEWA", "CHOW", "CIG", "COMAN", "CRD", "DOD", "ECF", "FSMART", "GCAP",
+      "HARN", "HYDRO", "IIG", "IMH", "IND", "IRCP", "JSP", "K", "KWM", "LDC",
+      "LEO", "META", "MGT", "MORE", "MUD", "NETBAY", "PLANET", "PROEN", "PROS", "SALEE",
+      "SPVI", "TMC", "TPS", "TQR", "YGG", "ZIGA"
+    ]
+  },
   "listingTransfers": {
+    "BBIK": {
+      "market": "SET",
+      "effectiveFrom": "2025-07-22",
+      "source": "https://www.set.or.th/th/market/news-and-alert/newsdetails?id=97674701&symbol=BBIK"
+    },
     "DITTO": {
       "market": "SET",
       "effectiveFrom": "2024-01-17",
