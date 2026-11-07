@@ -1,4 +1,4 @@
-import { THAI_NAMES } from './domain.mjs';
+import { THAI_NAMES, navigationUrl } from './domain.mjs';
 import { SCREENER_SCHEMA_VERSION, queryScreenerSnapshot } from './screener-core.mjs';
 
 const number = new Intl.NumberFormat('th-TH', { maximumFractionDigits: 2 });
@@ -7,7 +7,7 @@ const date = new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeZone: '
 const amount = value => value == null ? '—' : number.format(value);
 const indicators = [['ema20', 'EMA20'], ['ema50', 'EMA50'], ['rsi14', 'RSI14'], ['macd', 'MACD']];
 
-export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
+export function createScreenerView(root, { fetchSnapshot, currentIdentity, openChart }) {
   const get = id => root.querySelector('#screener-' + id);
   const status = get('status'), coverage = get('coverage'), reload = get('reload');
   const form = get('filters'), filterError = get('filter-error'), summary = get('result-summary');
@@ -91,7 +91,17 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
       : 'ไม่พบหุ้นที่ตรงกับตัวกรอง · ประเมินได้ ' + amount(evaluated) + ' · ข้อมูลตัวกรองไม่พอ ' + amount(unevaluable);
     body.replaceChildren(...result.rows.map(stock => {
       const row = document.createElement('tr');
-      const name = textCell(row, stock.symbol, true);
+      const name = textCell(row, '', true);
+      const chartLink = document.createElement('a');
+      chartLink.href = navigationUrl({ route: 'chart', symbol: stock.symbol, range: '1D' }, location.pathname);
+      chartLink.textContent = stock.symbol;
+      chartLink.setAttribute('aria-label', 'เปิดกราฟ ' + stock.symbol);
+      chartLink.addEventListener('click', event => {
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        openChart(stock.symbol);
+      });
+      name.append(chartLink);
       if (THAI_NAMES[stock.symbol]) {
         const detail = document.createElement('small');
         detail.textContent = THAI_NAMES[stock.symbol];

@@ -174,7 +174,18 @@ async function openScreener() {
       const { createScreenerView } = await import('./client/screener-view.mjs');
       screenerView ||= createScreenerView($('#screener-page'), {
         fetchSnapshot: signal => apiFetch('/api/screener', { signal }),
-        currentIdentity: () => isCurrentPrivateIdentity() ? privateSessionIdentity : null
+        currentIdentity: () => isCurrentPrivateIdentity() ? privateSessionIdentity : null,
+        openChart: symbol => {
+          if (!isCurrentPrivateIdentity()) return;
+          activeSymbol = symbol;
+          activeName = watchlist.find(item => item.symbol === symbol)?.name || THAI_NAMES[symbol] || symbol;
+          currentRange = '1D';
+          syncTechnicalSearch();
+          syncNavigationControls();
+          setWorkspacePage('chart');
+          updateTradingViewChart();
+          getMarket();
+        }
       });
     }
     if (document.body.dataset.workspacePage === 'screener') screenerView.load();
@@ -1650,6 +1661,11 @@ async function getMarket() {
   const requestedSymbols = watchlist.map(item => item.symbol);
   const changingChart = latestMarketSymbol !== requestedSymbol || latestMarketRange !== requestedRange;
   if (changingChart) {
+    if (latestMarketSymbol !== requestedSymbol) {
+      setText('#chart-price', '—');
+      setText('#chart-change', 'รอราคา');
+      $('#chart-change').className = '';
+    }
     setChartLoadState('loading', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
     setTechnicalPanelState('loading');
     setText('#analysis-note', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
