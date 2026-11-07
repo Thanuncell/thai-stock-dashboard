@@ -9,7 +9,7 @@ const valid = value => typeof value === 'number' && Number.isFinite(value);
 const SYMBOL = /^[A-Z0-9&.-]{1,20}$/;
 const ELIGIBLE_GUARDS = new Set(['accepted', 'delayed']);
 const ELIGIBLE_HISTORY = new Set(['usable', 'usable_with_warnings']);
-const UNSAFE_STATES = new Set(['stale', 'suspect', 'quarantined', 'unavailable']);
+const USABLE_STATES = new Set(['delayed', 'fresh', 'partial']);
 const DEFAULT_PAGE_SIZE = 20;
 const BANGKOK_DATE_FORMAT = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -83,7 +83,8 @@ export function buildDailyScreenerRow(coverage, evidence, { sessionDate, observe
   if (evidence.provider !== coverage.provider || evidence.providerSymbol !== coverage.provider_symbol
     || evidence.identityStatus !== 'accepted' || !ELIGIBLE_GUARDS.has(evidence.guardStatus)
     || !ELIGIBLE_HISTORY.has(evidence.historyStatus) || evidence.interval !== '1d'
-    || UNSAFE_STATES.has(evidence.dataState) || (Array.isArray(evidence.guardReasons) && evidence.guardReasons.length)) {
+    || !USABLE_STATES.has(evidence.dataState) || !Array.isArray(evidence.guardReasons)
+    || evidence.guardReasons.length > 0) {
     return frozen(blocked(symbol, 'GUARD_BLOCKED', true));
   }
   const fetchedAt = asMillis(evidence.sourceFetchedAt);
@@ -92,6 +93,25 @@ export function buildDailyScreenerRow(coverage, evidence, { sessionDate, observe
   if (!Array.isArray(evidence.bars) || evidence.bars.length === 0)
     return frozen(blocked(symbol, 'UNAVAILABLE', true));
   if (evidence.bars.length > 1000) fail('unbounded bar history');
+
+  // trustedMarketBars accepts price-only inputs for other Chart use cases.
+  // Screener requires explicit daily OHLC and an honest candle availability
+  // contract. It must not upgrade a forged complete flag or malformed record.
+  const validBar = bar => {
+    if (!bar || typeof bar !== 'object' || !valid(bar.time) || bar.time <= 0
+      || bar.time > fetchedAt || typeof bar.complete !== 'boolean') return false;
+    const { open, high, low, close, volume } = bar;
+    if (![open, high, low, close].every(v => valid(v) && v > 0)
+      || high < low || open < low || open > high || close < low || close > high
+      || (volume != null && (!valid(volume) || volume < 0))
+      || (bar.guardStatus && bar.guardStatus !== 'accepted')) return false;
+    const available = bar.availableAt == null ? null : asMillis(bar.availableAt);
+    if (bar.availableAt != null && available === null) return false;
+    if (available !== null && available <= bar.time) return false;
+    if (bar.complete && (available === null || available > cutoff || available > fetchedAt)) return false;
+    return true;
+  };
+  if (!evidence.bars.every(validBar)) return frozen(blocked(symbol, 'GUARD_BLOCKED', true));
 
   // Invalid or duplicate candles are not silently counted toward a warm-up.
   const history = trustedMarketBars(evidence.bars);
@@ -130,7 +150,12 @@ export function buildDailyScreenerRow(coverage, evidence, { sessionDate, observe
 
 /** Publish a *complete immutable result* in memory; callers handle durable
  * staging, atomic pointer updates and retention separately (not implemented). */
-export function buildScreenerSnapshot({ registry, evidenceBySymbol = {}, sessionDate, observedAt } = {}) {
+export function buildScreenerSnapshot({ registry, evidenceBySymbol = {}, sessionDate,
+  latestCompletedSessionDate, observedAt } = {}) {
+  if (!validSession(latestCompletedSessionDate)) fail('missing latest completed trading session');
+  if (sessionDate !== latestCompletedSessionDate) fail('snapshot session differs from latest completed trading session');
+  const dayOfWeek = new Date(`${latestCompletedSessionDate}T00:00:00Z`).getUTCDay();
+  if (dayOfWeek === 0 || dayOfWeek === 6) fail('non-trading weekend session');
   if (!Array.isArray(registry) || registry.length > 1000) fail('invalid registry size');
   if (!evidenceBySymbol || typeof evidenceBySymbol !== 'object') fail('invalid evidence index');
   if (!validSession(sessionDate)) fail('invalid trading session');
@@ -158,7 +183,8 @@ export function buildScreenerSnapshot({ registry, evidenceBySymbol = {}, session
     coverageIneligible: rows.filter(row => row.state === 'COVERAGE_INELIGIBLE').length
   };
   const id = `${SCREENER_SCHEMA_VERSION}:${sessionDate}:${stableFingerprint(rows)}`;
-  return frozen({ schemaVersion: SCREENER_SCHEMA_VERSION, id, sessionDate, generatedAt,
+  return frozen({ schemaVersion: SCREENER_SCHEMA_VERSION, id, sessionDate,
+    latestCompletedSessionDate, generatedAt,
     state: rows.length && counts.ready === rows.length ? 'COMPLETE' : counts.ready ? 'PARTIAL' : 'UNAVAILABLE',
     counts, rows });
 }
