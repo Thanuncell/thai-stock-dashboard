@@ -241,7 +241,7 @@ test('invalid snapshot versions, values, sessions and dates cannot become curren
   assert.equal((await service.readSnapshot()).marketFreshness, 'UNAVAILABLE');
 });
 
-test('strict complete policy stays in force while a safe-partial proposal is evaluated offline', async t => {
+test('approved safe partial read never weakens strict complete durable publication', async t => {
   const { store } = await fixture(t);
   const { buildScreenerSnapshot, queryScreenerSnapshot } = await import('../client/screener-core.mjs');
   const registry = Array.from({ length: 500 }, (_, i) => coverage('S' + String(i).padStart(3, '0')));
@@ -255,14 +255,17 @@ test('strict complete policy stays in force while a safe-partial proposal is eva
   assert.equal(partial.counts.eligible, 500);
   assert.equal(partial.counts.ready, 499);
   assert.equal(partial.counts.unavailable, 1);
-  assert.equal(queryScreenerSnapshot(partial).counts.matched, 499, 'offline engine evidence for the unapproved safe-partial proposal');
+  assert.equal(queryScreenerSnapshot(partial).counts.matched, 499, 'only guarded READY rows are screened');
   await assert.rejects(store.withLease(() => store.publish(partial)), /INVALID_SCREENER/);
   const service = createScreenerService({ listCoverage: async () => registry, now: () => observedAt });
   for (const row of registry.slice(0, 499)) {
     const item = guardedDaily(row.symbol, bars);
     service.rememberDailyHistory(row.symbol, item.meta, item.result);
   }
-  assert.equal((await service.readSnapshot()).marketFreshness, 'UNAVAILABLE');
+  const envelope = await service.readSnapshot();
+  assert.equal(envelope.marketFreshness, 'CURRENT_SESSION');
+  assert.equal(envelope.snapshot.state, 'PARTIAL');
+  assert.equal(queryScreenerSnapshot(envelope.snapshot).counts.matched, 499);
 });
 
 test('500-stock cold reader, warm cache, filter and memory measurements stay provider-free', async t => {
