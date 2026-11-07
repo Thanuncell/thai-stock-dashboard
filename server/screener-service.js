@@ -21,6 +21,7 @@ function nextSessionBoundary(session, now) {
 
 function guardedDailyEvidence(meta, result) {
   if (meta?.dataGranularity !== '1d' || meta.exchangeTimezoneName !== 'Asia/Bangkok'
+    || !result || !Array.isArray(result.history) || !result.provenance
     || result.fallbackFromLastKnown || result.identityStatus !== 'accepted'
     || result.history.length > 300 || !Number.isFinite(Date.parse(result.provenance.receivedAt))) return null;
   return {
@@ -56,7 +57,8 @@ function createScreenerService({ listCoverage, snapshotStore, now = Date.now } =
     const session = latestSession(startedAt);
     const validUntil = new Date(nextSessionBoundary(session, startedAt)).toISOString();
     if (!session) return { snapshot: null, latestCompletedSessionDate: null, validUntil, marketFreshness: 'UNAVAILABLE' };
-    const { value } = await cache.get(session, CACHE_POLICY, async () => {
+    const revision = snapshotStore?.revision ? await snapshotStore.revision() : '';
+    const { value } = await cache.get(session + '|' + revision, CACHE_POLICY, async () => {
       if (snapshotStore) return (await snapshotStore.readPublished()).snapshot;
       const registry = await listCoverage();
       if (!registry) return null;
