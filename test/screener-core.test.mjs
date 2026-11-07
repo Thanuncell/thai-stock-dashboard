@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+// Register the WS6-A acceptance cases through the existing Screener test entry point.
+import './screener-preflight.test.cjs';
 import { computeTechnicalSeries, TECHNICAL_DEFAULTS } from '../client/domain.mjs';
 import { SCREENER_SCHEMA_VERSION, buildDailyScreenerRow, buildScreenerSnapshot, queryScreenerSnapshot } from '../client/screener-core.mjs';
 
