@@ -77,6 +77,27 @@
         <section class="panel workspace-section screener workspace-hidden" id="screener-page" aria-labelledby="screener-title">
           <div class="workspace-page-intro">
             <h2 id="screener-title">Stock Screener</h2>
+          </div>
+          <section aria-labelledby="screener-index-title">
+            <h3 id="screener-index-title">รายชื่อหุ้นตามดัชนีและตลาด</h3>
+            <div id="screener-index-groups" class="screener-actions" role="group" aria-label="กลุ่มหุ้น">
+              <button type="button" data-group="all" aria-pressed="true">ทั้งหมด</button>
+              <button type="button" data-group="SET50" aria-pressed="false">SET50</button>
+              <button type="button" data-group="SET100" aria-pressed="false">SET100</button>
+              <button type="button" data-group="SETHD" aria-pressed="false">SETHD</button>
+              <button type="button" data-group="SETESG" aria-pressed="false">SETESG</button>
+              <button type="button" data-group="mai" aria-pressed="false">mai</button>
+            </div>
+            <p id="screener-index-source"></p>
+            <label>ค้นหารายชื่อหุ้น <input id="screener-index-search" type="search" maxlength="80" disabled></label>
+            <p id="screener-index-status" role="status"></p>
+            <ul id="screener-index-list" class="screener-index-list" aria-label="หุ้นในกลุ่มที่เลือก" hidden></ul>
+            <nav class="screener-actions" id="screener-index-pager" aria-label="หน้ารายชื่อหุ้น" hidden>
+              <button type="button" id="screener-index-prev">ก่อนหน้า</button><span id="screener-index-page"></span><button type="button" id="screener-index-next">ถัดไป</button>
+            </nav>
+          </section>
+          <div class="workspace-page-intro">
+            <h3>คัดกรองทางเทคนิค</h3>
             <p>ใช้ราคาปิดและอินดิเคเตอร์จากแท่งรายวันที่ยืนยันแล้ว ข้อมูลจาก Yahoo Finance มีความล่าช้า เปอร์เซ็นต์เปลี่ยนแปลงเทียบกับแท่งรายวันก่อนหน้าที่มีข้อมูล</p>
           </div>
           <p id="screener-status" role="status"></p>

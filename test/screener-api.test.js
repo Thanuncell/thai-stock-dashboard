@@ -4,6 +4,40 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { coverage, dailyBars, guardedDaily, observedAt, providerChart, session } = require('./fixtures/screener.cjs');
 const { createScreenerService } = require('../server/screener-service');
+const { buildIndexCatalog } = require('../server/screener-index');
+
+test('index catalog joins dated membership by symbol without requiring prices or coverage eligibility', () => {
+  const registry = [coverage('PTT'), { ...coverage('CPALL'), active: false }, coverage('MAI1')];
+  const group = (...symbols) => ({ effectiveFrom: '2026-07-01', effectiveThrough: '2026-12-31', symbols });
+  const membership = {
+    SET50: group(' ptt '), SET100: group('PTT', 'CPALL', 'OUTSIDE'),
+    SETHD: group('PTT'), SETESG: group('CPALL'), mai: group('MAI1')
+  };
+  const result = buildIndexCatalog(registry, membership, '2026-12-31');
+  assert.deepEqual(result.stocks.map(row => row.symbol), ['PTT', 'CPALL', 'MAI1']);
+  assert.deepEqual(Object.fromEntries(Object.entries(result.groups).map(([key, entry]) => [key, entry.symbols])),
+    { SET50: ['PTT'], SET100: ['PTT', 'CPALL'], SETHD: ['PTT'], SETESG: ['CPALL'], mai: ['MAI1'] });
+  assert.equal(result.groups.SET100.outsideCoverage, 1);
+  assert.equal(result.groups.SET100.effectiveThrough, '2026-12-31');
+  assert.match(result.groups.mai.source, /^https:\/\/www\.set\.or\.th\//);
+  assert.ok(Object.values(buildIndexCatalog(registry, membership, '2027-01-01').groups).every(group => !group.available));
+  assert.ok(Object.values(buildIndexCatalog(registry, membership, '2026-06-30').groups).every(group => !group.available));
+});
+
+test('index catalog fails closed for conflicting groups, normalized duplicates and invalid dates', () => {
+  const registry = [coverage('PTT'), coverage('CPALL')];
+  const group = (...symbols) => ({ effectiveFrom: '2026-07-01', effectiveThrough: '2026-12-31', symbols });
+  const result = buildIndexCatalog(registry, {
+    SET50: group('PTT'), SET100: group('CPALL'), SETHD: group('PTT', 'ptt'),
+    SETESG: { ...group('CPALL'), effectiveThrough: '2026-11-31' }
+  }, '2026-11-07');
+  assert.ok(Object.values(result.groups).every(group => !group.available && !group.symbols));
+  const marketConflict = buildIndexCatalog(registry, { SETESG: group('PTT'), mai: group('PTT') }, '2026-11-07');
+  assert.equal(marketConflict.groups.SETESG.available, false);
+  assert.equal(marketConflict.groups.mai.available, false);
+  assert.throws(() => buildIndexCatalog([...registry, coverage(' ptt ')]), /Invalid coverage registry/);
+  assert.throws(() => buildIndexCatalog([]), /unavailable/);
+});
 
 test('snapshot coalesces registry reads and separates coverage, freshness and per-filter warm-up', async () => {
   let clock = observedAt;
@@ -104,6 +138,14 @@ test('authenticated Screener API reuses a real guarded Chart response path with 
     const get = (path, method = 'GET') => nativeFetch(base + path, { method, headers: { authorization: 'Bearer test-session' } });
     const quoteReads = () => upstream.filter(url => url.hostname === 'query1.finance.yahoo.com').length;
     assert.equal((await nativeFetch(base + '/api/screener')).status, 401);
+    assert.equal((await nativeFetch(base + '/api/screener/coverage')).status, 401);
+    assert.equal((await get('/api/screener/coverage', 'POST')).status, 405);
+    const registryResponse = await get('/api/screener/coverage');
+    assert.equal(registryResponse.status, 200);
+    assert.equal(registryResponse.headers.get('cache-control'), 'no-store');
+    const registryCatalog = await registryResponse.json();
+    assert.deepEqual(registryCatalog.stocks.map(row => row.symbol), ['PTT', 'CPALL']);
+    assert.equal(Object.keys(registryCatalog.groups).length, 5);
     assert.equal((await get('/api/screener', 'POST')).status, 405);
     assert.equal((await get('/api/screener')).headers.get('cache-control'), 'no-store');
     assert.equal(quoteReads(), 0);
@@ -131,7 +173,8 @@ test('authenticated Screener API reuses a real guarded Chart response path with 
     assert.deepEqual(queryScreenerSnapshot(data.snapshot).rows.map(row => row.symbol), ['PTT']);
     assert.equal((await get('/api/screener?refresh=1')).status, 200);
     assert.equal(quoteReads(), before);
-    assert.equal(upstream.filter(url => url.pathname === '/rest/v1/security_coverage').length, 2);
+    assert.equal((await get('/api/screener/coverage')).status, 200);
+    assert.equal(upstream.filter(url => url.pathname === '/rest/v1/security_coverage').length, 3);
     failRegistry = true;
     clock += 31000;
     const error = await get('/api/screener');

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { chromium } = require(process.env.SETSCOPE_PLAYWRIGHT_MODULE || 'playwright');
 const { mockRequest, seedPage } = require('./account-isolation.browser.cjs');
 const { createScreenerService } = require('../server/screener-service');
+const { buildIndexCatalog } = require('../server/screener-index');
 const { coverage, dailyBars, guardedDaily, observedAt } = require('./fixtures/screener.cjs');
 
 async function fixture() {
@@ -24,6 +25,13 @@ async function fixture() {
   process.env.SUPABASE_URL = 'https://isolation-test.supabase.co';
   const { server } = require('../server');
   const payload = await fixture();
+  const group = (...symbols) => ({ symbols, effectiveFrom: '2026-01-01', effectiveThrough: '2099-12-31' });
+  const indexCatalog = buildIndexCatalog([
+    ...payload.snapshot.rows.map(({ symbol }) => coverage(symbol)),
+    { ...coverage('NOPRICE'), company_name_en: 'No Price Example' }
+  ].filter(row => row.symbol !== 'S497'), {
+    SET50: group('PTT'), SET100: group('PTT', 'CPALL'), SETHD: group('NOPRICE', 'OUTSIDE'), mai: group('S001')
+  });
   let browser;
   try {
     await new Promise((resolve, reject) => {
@@ -71,6 +79,10 @@ async function fixture() {
           if (mode === 'expired') return route.fulfill({ json: { ...payload, validUntil: new Date(Date.now() - 1000).toISOString() } });
           return route.fulfill({ json: payload });
         }
+        if (url.origin === base && url.pathname === '/api/screener/coverage') {
+          assert.match(route.request().headers().authorization, /^Bearer /);
+          return route.fulfill({ json: indexCatalog });
+        }
         if (![base, 'https://isolation-test.supabase.co'].includes(url.origin)) return route.abort();
         return mockRequest(route, base, state);
       });
@@ -83,6 +95,7 @@ async function fixture() {
         const login = page.locator('#login-form');
         await login.waitFor();
         assert.ok(!calls.includes('/api/screener'), 'unauthenticated deep link must not load a snapshot');
+        assert.ok(!calls.includes('/api/screener/coverage'));
         await login.locator('input[name="email"]').fill('a@example.test');
         await login.locator('input[name="password"]').fill('fixture-password');
         await login.locator('button[type="submit"]').click();
@@ -105,6 +118,30 @@ async function fixture() {
         evidence: 'existing Screener result actions; outstanding integration audit'
       }));
       assert.equal(calls.filter(call => call === '/api/screener').length, 1);
+      assert.equal(calls.filter(call => call === '/api/screener/coverage').length, 1);
+      const tabs = page.getByRole('group', { name: 'กลุ่มหุ้น' });
+      assert.deepEqual(await tabs.getByRole('button').allTextContents(), ['ทั้งหมด', 'SET50', 'SET100', 'SETHD', 'SETESG', 'mai']);
+      const indexList = page.locator('#screener-index-list');
+      const indexStatus = page.locator('#screener-index-status');
+      assert.match(await indexStatus.textContent(), /500.*500/);
+      assert.equal(await indexList.locator('li').count(), 20);
+      await page.locator('#screener-index-next').click();
+      assert.match(await page.locator('#screener-index-page').textContent(), /2 \/ 25/);
+      for (const [key, symbols] of [['SET50', ['PTT']], ['SET100', ['CPALL', 'PTT']], ['SETHD', ['NOPRICE']], ['mai', ['S001']]]) {
+        await tabs.getByRole('button', { name: key, exact: true }).click();
+        assert.equal(await tabs.getByRole('button', { name: key, exact: true }).getAttribute('aria-pressed'), 'true');
+        assert.deepEqual(await indexList.getByRole('link').allTextContents(), symbols);
+        assert.match(await page.locator('#screener-index-source').textContent(), /ตลาดหลักทรัพย์แห่งประเทศไทย.*มีผล/);
+        if (key === 'SETHD') assert.match(await page.locator('#screener-index-source').textContent(), /นอกทะเบียน 1/);
+      }
+      await tabs.getByRole('button', { name: 'SETESG', exact: true }).click();
+      assert.match(await indexStatus.textContent(), /SETESG ยังไม่พร้อม/);
+      assert.equal(await indexList.isVisible(), false);
+      await tabs.getByRole('button', { name: 'ทั้งหมด', exact: true }).click();
+      const indexSearch = page.getByRole('searchbox', { name: 'ค้นหารายชื่อหุ้น' });
+      await indexSearch.fill('No Price Example');
+      assert.deepEqual(await indexList.getByRole('link').allTextContents(), ['NOPRICE']);
+      await indexSearch.fill('CPALL');
       const nav = page.getByRole('link', { name: 'คัดกรองหุ้น', exact: true });
       assert.equal(await nav.getAttribute('aria-current'), 'page');
       assert.match(await page.locator('#screener-coverage').textContent(), /500.*500.*500/);
@@ -170,7 +207,7 @@ async function fixture() {
       }
       // Existing Chart handoff is a user action, never a new Screener acquisition path.
       await reset.click();
-      const chartLink = page.getByRole('link', { name: 'เปิดกราฟ CPALL' });
+      const chartLink = indexList.getByRole('link', { name: 'เปิดกราฟ CPALL' });
       assert.match(await chartLink.getAttribute('href'), /symbol=CPALL.*range=1D#chart$/);
       const screenerReadsBeforeChart = calls.filter(call => call === '/api/screener').length;
       const watchlistWrites = state.putOwners.length;
@@ -225,6 +262,7 @@ async function fixture() {
         await page.getByRole('button', { name: 'โหลดข้อมูลคัดกรองใหม่' }).click();
         await page.locator('#screener-status').filter({ hasText: message }).waitFor();
         assert.equal(await page.locator('#screener-results').isVisible(), false);
+        assert.equal(await indexList.getByRole('link', { name: 'เปิดกราฟ CPALL' }).isVisible(), true);
         assert.equal(await search.isVisible(), false);
         if (['mixed', 'partial'].includes(nextMode)) {
           assert.match(await page.locator('#screener-coverage').textContent(), /500.*500.*499/);

@@ -14,6 +14,7 @@ const { createMarketOverviewService } = require('./server/market-overview-servic
 const { createSettradeProvider } = require('./server/market-overview-providers/settrade');
 const { createMarketService } = require('./server/market-service');
 const { createScreenerService } = require('./server/screener-service');
+const { buildIndexCatalog } = require('./server/screener-index');
 const { createScreenerSnapshotStore } = require('./server/screener-snapshot-store');
 const { createNewsArchiveService } = require('./server/news-archive-service');
 const { getAssessments } = require('./lib/news-evidence');
@@ -334,6 +335,10 @@ async function handle(req, res) {
   if (url.pathname === '/api/screener') {
     try { return send(res, 200, await screenerService.readSnapshot()); }
     catch (_) { return send(res, 503, { error: 'โหลดข้อมูลคัดกรองหุ้นไม่สำเร็จ' }); }
+  }
+  if (url.pathname === '/api/screener/coverage') {
+    try { return send(res, 200, buildIndexCatalog(await searchRegistry())); }
+    catch (_) { return send(res, 503, { error: 'โหลดรายชื่อหุ้นในทะเบียนไม่สำเร็จ' }); }
   }
   if (url.pathname === '/api/coverage') {
     try {
