@@ -43,7 +43,8 @@ test('snapshot coalesces registry reads and separates coverage, freshness and pe
   const afterClose = await service.readSnapshot();
   assert.equal(afterClose.latestCompletedSessionDate, '2026-11-09');
   assert.equal(afterClose.marketFreshness, 'STALE');
-  assert.equal(afterClose.snapshot.counts.ready, 0);
+  assert.equal(afterClose.snapshot, null, 'no READY rows from the latest session means no Safe Partial result');
+  assert.equal(afterClose.availability.ready, 0);
   assert.equal(registryReads, 2);
 });
 
