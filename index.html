@@ -88,7 +88,6 @@
               <button type="button" data-group="SETESG" aria-pressed="false">SETESG</button>
               <button type="button" data-group="mai" aria-pressed="false">mai</button>
             </div>
-            <p id="screener-index-source"></p>
             <label>ค้นหารายชื่อหุ้น <input id="screener-index-search" type="search" maxlength="80" disabled></label>
             <p id="screener-index-status" role="status"></p>
             <ul id="screener-index-list" class="screener-index-list" aria-label="หุ้นในกลุ่มที่เลือก" hidden></ul>
@@ -96,6 +95,7 @@
               <button type="button" id="screener-index-prev">ก่อนหน้า</button><span id="screener-index-page"></span><button type="button" id="screener-index-next">ถัดไป</button>
             </nav>
           </section>
+          <div id="screener-technical" hidden>
           <div class="workspace-page-intro">
             <h3>คัดกรองทางเทคนิค</h3>
             <p>ใช้ราคาปิดและอินดิเคเตอร์จากแท่งรายวันที่ยืนยันแล้ว ข้อมูลจาก Yahoo Finance มีความล่าช้า เปอร์เซ็นต์เปลี่ยนแปลงเทียบกับแท่งรายวันก่อนหน้าที่มีข้อมูล</p>
@@ -141,6 +141,7 @@
           <nav class="screener-actions" id="screener-pager" aria-label="หน้าผลคัดกรอง" hidden>
             <button type="button" id="screener-prev">ก่อนหน้า</button><span id="screener-page-number"></span><button type="button" id="screener-next">ถัดไป</button>
           </nav>
+          </div>
         </section>
         <section class="workspace-section watchlist-workspace workspace-hidden" id="watchlist-page"><div class="workspace-page-intro"><h2>รายการติดตามหุ้น</h2><p>จัดการ Watchlist ของคุณ และรายการหุ้นที่เลือกจะแสดงในหน้านี้</p></div><div class="mobile-watchlist-picker"><label for="watchlist-select-mobile">รายการติดตาม</label><select id="watchlist-select-mobile" aria-label="เลือก Watchlist"></select><button id="watchlist-rename-mobile" class="watchlist-rename" type="button" aria-label="เปลี่ยนชื่อ Watchlist" title="เปลี่ยนชื่อ">✎</button><button id="watchlist-create-mobile" type="button">+ ใหม่</button><small class="watchlist-sync-status" id="watchlist-sync-status-mobile" role="status">ยังไม่ซิงก์</small></div><div class="watchlist-tools">
               <label>ค้นหาใน Watchlist<input id="watchlist-search" type="search" placeholder="ชื่อหรือชื่อย่อหุ้น" autocomplete="off"></label>
