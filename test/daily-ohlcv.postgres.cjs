@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 const { dailySource: fixtureDailySource, coverage } = require('./fixtures/daily-ohlcv.cjs');
 const { latestSession } = require('../server/automation-policy');
 const { retentionFloor } = require('../server/daily-ohlcv');
@@ -67,6 +68,25 @@ test('OHLCV and snapshots migrate, persist, isolate roles and rollback on isolat
     await snapshots.publish(first.snapshot);
     const restarted = createPostgresScreenerSnapshotStore({ db: backend });
     assert.equal((await restarted.readPublished()).snapshot.id, first.snapshot.id);
+    const independentProcess = spawnSync(process.execPath, ['-e', `
+      const { Pool } = require('pg');
+      const { createPostgresDailyHistoryStore } = require('./server/daily-ohlcv-store');
+      const { createPostgresScreenerSnapshotStore } = require('./server/screener-postgres-store');
+      let input = '';
+      process.stdin.on('data', part => { input += part; });
+      process.stdin.on('end', async () => {
+        const db = new Pool({ ...JSON.parse(input), max: 1 });
+        try {
+          const history = await createPostgresDailyHistoryStore({ db }).readMany(['PTT']);
+          const published = await createPostgresScreenerSnapshotStore({ db }).readPublished();
+          console.log(JSON.stringify({ bars: history.histories.get('PTT').length, id: published.snapshot.id }));
+        } catch (error) { console.error(error.message); process.exitCode = 1; }
+        finally { await db.end(); }
+      });
+    `], { cwd: root, input: JSON.stringify({ ...config, database: name, options: '-c role=service_role' }),
+      encoding: 'utf8', timeout: 10000 });
+    assert.equal(independentProcess.status, 0, independentProcess.stderr);
+    assert.deepEqual(JSON.parse(independentProcess.stdout), { bars: 65, id: first.snapshot.id });
     await snapshots.withLease(async () => {
       await assert.rejects(restarted.withLease(() => { throw Error('A second writer must not run'); }), { code: 'EEXIST' });
       assert.equal((await restarted.readPublished()).snapshot.id, first.snapshot.id);
