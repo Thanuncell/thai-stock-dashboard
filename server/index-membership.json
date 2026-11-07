@@ -1,1 +1,9 @@
-{}
+{
+  "listingTransfers": {
+    "DITTO": {
+      "market": "SET",
+      "effectiveFrom": "2024-01-17",
+      "source": "https://www.set.or.th/th/market/news-and-alert/newsdetails?id=85575501&symbol=DITTO"
+    }
+  }
+}

@@ -29,7 +29,8 @@ function readGroup(entry, today) {
   return { effectiveFrom: entry.effectiveFrom, effectiveThrough: entry.effectiveThrough, symbols };
 }
 
-// The bundled file contains only verified, redistributable SET lists, keyed by group.
+// Group entries contain only verified, redistributable lists. Listing transfers
+// use separate dated notices and never establish index membership.
 // An absent, expired or conflicting list stays unavailable. No upstream fetch is performed.
 function buildIndexCatalog(registry, membership = publishedMembership, today = todayInThailand.format(new Date())) {
   if (!Array.isArray(registry) || !registry.length) throw Error('Coverage registry unavailable');
@@ -40,19 +41,31 @@ function buildIndexCatalog(registry, membership = publishedMembership, today = t
     stocks.set(symbol, { symbol, name: registryCompanyName(row) || '' });
   }
   const groups = Object.fromEntries(Object.keys(sources).map(key => [key, readGroup(membership[key], today)]));
+  if (groups.mai) {
+    for (const [symbol, transfer] of Object.entries(membership.listingTransfers || {})) {
+      if (transfer?.market === 'SET' && validDate(transfer.effectiveFrom) && transfer.effectiveFrom <= today)
+        groups.mai.symbols.delete(symbol);
+    }
+    if (!groups.mai.symbols.size) groups.mai = null;
+  }
   if (groups.SET50 && groups.SET100 && [...groups.SET50.symbols].some(symbol => !groups.SET100.symbols.has(symbol))) {
     groups.SET50 = groups.SET100 = null;
   }
-  for (const key of ['SET50', 'SET100', 'SETHD', 'SETESG']) {
+  // SETESG membership and a mai listing are independent classifications.
+  for (const key of ['SET50', 'SET100', 'SETHD']) {
     if (groups.mai && groups[key] && [...groups.mai.symbols].some(symbol => groups[key].symbols.has(symbol))) {
       groups[key] = null;
       groups.mai.conflict = true;
     }
   }
   if (groups.mai?.conflict) groups.mai = null;
+  const verified = new Set(Object.values(groups).flatMap(group => group ? [...group.symbols] : []));
 
   return {
-    stocks: [...stocks.values()],
+    stocks: [...stocks.values()].map(stock => ({
+      ...stock,
+      membershipStatus: verified.has(stock.symbol) ? 'VERIFIED' : 'UNKNOWN'
+    })),
     groups: Object.fromEntries(Object.entries(groups).map(([key, group]) => {
       const source = sources[key];
       if (!group) return [key, { source, available: false }];

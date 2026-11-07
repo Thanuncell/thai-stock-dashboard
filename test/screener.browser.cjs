@@ -31,7 +31,7 @@ async function fixture() {
     { ...coverage('NOPRICE'), company_name_en: 'No Price Example',
       name_source: 'https://example.test/noprice', name_checked_at: '2026-01-01' }
   ].filter(row => row.symbol !== 'S497'), {
-    SET50: group('PTT'), SET100: group('PTT', 'CPALL'), SETHD: group('NOPRICE', 'OUTSIDE'), mai: group('S001')
+    SET50: group('PTT'), SET100: group('PTT', 'S002'), SETHD: group('S003', 'OUTSIDE'), mai: group('S001')
   });
   let browser;
   try {
@@ -128,7 +128,7 @@ async function fixture() {
       assert.equal(await indexList.locator('li').count(), 20);
       await page.locator('#screener-index-next').click();
       assert.match(await page.locator('#screener-index-page').textContent(), /2 \/ 25/);
-      for (const [key, symbols] of [['SET50', ['PTT']], ['SET100', ['CPALL', 'PTT']], ['SETHD', ['NOPRICE']], ['mai', ['S001']]]) {
+      for (const [key, symbols] of [['SET50', ['PTT']], ['SET100', ['PTT', 'S002']], ['SETHD', ['S003']], ['mai', ['S001']]]) {
         await tabs.getByRole('button', { name: key, exact: true }).click();
         assert.equal(await tabs.getByRole('button', { name: key, exact: true }).getAttribute('aria-pressed'), 'true');
         assert.deepEqual(await indexList.getByRole('link').allTextContents(), symbols);
@@ -142,7 +142,9 @@ async function fixture() {
       const indexSearch = page.getByRole('searchbox', { name: 'ค้นหารายชื่อหุ้น' });
       await indexSearch.fill('No Price Example');
       assert.deepEqual(await indexList.getByRole('link').allTextContents(), ['NOPRICE']);
+      assert.equal(indexCatalog.stocks.find(row => row.symbol === 'NOPRICE').membershipStatus, 'UNKNOWN');
       await indexSearch.fill('CPALL');
+      assert.equal(indexCatalog.stocks.find(row => row.symbol === 'CPALL').membershipStatus, 'UNKNOWN');
       const nav = page.getByRole('link', { name: 'คัดกรองหุ้น', exact: true });
       assert.equal(await nav.getAttribute('aria-current'), 'page');
       assert.match(await page.locator('#screener-coverage').textContent(), /500.*500.*500/);

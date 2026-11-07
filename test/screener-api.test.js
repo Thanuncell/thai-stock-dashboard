@@ -10,19 +10,22 @@ test('index catalog joins dated membership by symbol without requiring prices or
   const registry = [
     { ...coverage('PTT'), company_name_en: 'Verified Company', name_source: 'https://example.test/ptt', name_checked_at: '2026-01-01' },
     { ...coverage('CPALL'), active: false, company_name_en: 'Unverified Company' },
-    coverage('MAI1')
+    coverage('MAI1'), coverage('UNKNOWN1')
   ];
   const group = (...symbols) => ({ effectiveFrom: '2026-07-01', effectiveThrough: '2026-12-31', symbols });
   const membership = {
     SET50: group(' ptt '), SET100: group('PTT', 'CPALL', 'OUTSIDE'),
-    SETHD: group('PTT'), SETESG: group('CPALL'), mai: group('MAI1')
+    SETHD: group('PTT'), SETESG: group('CPALL', 'MAI1'), mai: group('MAI1')
   };
   const result = buildIndexCatalog(registry, membership, '2026-12-31');
   assert.deepEqual(result.stocks, [
-    { symbol: 'PTT', name: 'Verified Company' }, { symbol: 'CPALL', name: '' }, { symbol: 'MAI1', name: '' }
+    { symbol: 'PTT', name: 'Verified Company', membershipStatus: 'VERIFIED' },
+    { symbol: 'CPALL', name: '', membershipStatus: 'VERIFIED' },
+    { symbol: 'MAI1', name: '', membershipStatus: 'VERIFIED' },
+    { symbol: 'UNKNOWN1', name: '', membershipStatus: 'UNKNOWN' }
   ]);
   assert.deepEqual(Object.fromEntries(Object.entries(result.groups).map(([key, entry]) => [key, entry.symbols])),
-    { SET50: ['PTT'], SET100: ['PTT', 'CPALL'], SETHD: ['PTT'], SETESG: ['CPALL'], mai: ['MAI1'] });
+    { SET50: ['PTT'], SET100: ['PTT', 'CPALL'], SETHD: ['PTT'], SETESG: ['CPALL', 'MAI1'], mai: ['MAI1'] });
   assert.equal(result.groups.SET100.outsideCoverage, 1);
   assert.equal(result.groups.SET100.effectiveThrough, '2026-12-31');
   assert.match(result.groups.mai.source, /^https:\/\/www\.set\.or\.th\//);
@@ -38,11 +41,29 @@ test('index catalog fails closed for conflicting groups, normalized duplicates a
     SETESG: { ...group('CPALL'), effectiveThrough: '2026-11-31' }
   }, '2026-11-07');
   assert.ok(Object.values(result.groups).every(group => !group.available && !group.symbols));
-  const marketConflict = buildIndexCatalog(registry, { SETESG: group('PTT'), mai: group('PTT') }, '2026-11-07');
-  assert.equal(marketConflict.groups.SETESG.available, false);
+  const marketConflict = buildIndexCatalog(registry, {
+    SET100: group('PTT'), SETESG: group('CPALL'), mai: group('PTT')
+  }, '2026-11-07');
+  assert.equal(marketConflict.groups.SET100.available, false);
   assert.equal(marketConflict.groups.mai.available, false);
+  assert.deepEqual(marketConflict.groups.SETESG.symbols, ['CPALL']);
+  assert.equal(marketConflict.stocks.find(row => row.symbol === 'PTT').membershipStatus, 'UNKNOWN');
   assert.throws(() => buildIndexCatalog([...registry, coverage(' ptt ')]), /Invalid coverage registry/);
   assert.throws(() => buildIndexCatalog([]), /unavailable/);
+});
+
+test('a confirmed listing transfer overrides a stale mai flag without affecting coverage or SETESG', () => {
+  const { listingTransfers } = require('../server/index-membership.json');
+  const group = (...symbols) => ({ effectiveFrom: '2024-01-01', effectiveThrough: '2026-12-31', symbols });
+  const registry = [coverage('DITTO'), coverage('MAI1')];
+  const membership = { listingTransfers, mai: group('DITTO', 'MAI1'), SETESG: group('DITTO', 'TTW') };
+  assert.deepEqual(buildIndexCatalog(registry, membership, '2024-01-16').groups.mai.symbols, ['DITTO', 'MAI1']);
+  const current = buildIndexCatalog(registry, membership, '2026-11-07');
+  assert.deepEqual(current.stocks.map(row => row.symbol), ['DITTO', 'MAI1']);
+  assert.deepEqual(current.groups.mai.symbols, ['MAI1']);
+  assert.deepEqual(current.groups.SETESG.symbols, ['DITTO']);
+  assert.equal(current.groups.SETESG.outsideCoverage, 1);
+  assert.equal(buildIndexCatalog(registry, { listingTransfers, mai: group('DITTO') }, '2026-11-07').groups.mai.available, false);
 });
 
 test('snapshot coalesces registry reads and separates coverage, freshness and per-filter warm-up', async () => {
