@@ -14,6 +14,7 @@ const { createMarketOverviewService } = require('./server/market-overview-servic
 const { createSettradeProvider } = require('./server/market-overview-providers/settrade');
 const { createMarketService } = require('./server/market-service');
 const { createScreenerService } = require('./server/screener-service');
+const { createScreenerSnapshotStore } = require('./server/screener-snapshot-store');
 const { createNewsArchiveService } = require('./server/news-archive-service');
 const { getAssessments } = require('./lib/news-evidence');
 const { createNewsService } = require('./server/news-service');
@@ -131,7 +132,11 @@ const newsReliability = require('./server/news-source-reliability').createNewsSo
 const articleFetch = newsReliability.wrap(observability.observedFetch(require('./lib/news-fetch').createNewsTransport()),'extraction');
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
+const screenerSnapshotDirectory = process.env.SETSCOPE_SCREENER_SNAPSHOT_DIR;
 const screenerService = createScreenerService({
+  snapshotStore: screenerSnapshotDirectory ? {
+    readPublished: () => createScreenerSnapshotStore(screenerSnapshotDirectory).readPublished()
+  } : null,
   listCoverage: () => coverageRepository.configured ? coverageRepository.listCandidates() : null
 });
 const marketService = createMarketService({ fetchImpl: providerFetch, onDailyHistory: screenerService.rememberDailyHistory });

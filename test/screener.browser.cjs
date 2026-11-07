@@ -9,13 +9,12 @@ const { coverage, dailyBars, guardedDaily, observedAt } = require('./fixtures/sc
 async function fixture() {
   const registry = Array.from({ length: 498 }, (_, i) => coverage('S' + String(i).padStart(3, '0')));
   registry.push(coverage('PTT'), coverage('CPALL'));
-  registry[497].active = false;
+  for (const row of registry.filter(row => ['S496', 'S497', 'CPALL'].includes(row.symbol))) row.active = false;
   const service = createScreenerService({ now: () => observedAt, listCoverage: () => registry });
   const bars = dailyBars();
   for (const row of registry) {
-    if (['S497', 'CPALL'].includes(row.symbol)) continue;
-    const source = row.symbol === 'S496' ? dailyBars('2026-11-05')
-      : row.symbol === 'S495' ? dailyBars(undefined, 2) : bars;
+    if (!row.active) continue;
+    const source = row.symbol === 'S495' ? dailyBars(undefined, 2) : bars;
     const { meta, result } = guardedDaily(row.symbol, source);
     service.rememberDailyHistory(row.symbol, meta, result);
   }
@@ -49,6 +48,9 @@ async function fixture() {
           if (mode === 'error') return route.fulfill({ status: 503, json: { error: 'fixture' } });
           if (mode === 'stale') return route.fulfill({ json: { ...payload, marketFreshness: 'STALE', snapshot: {
             ...payload.snapshot, state: 'UNAVAILABLE', counts: { ...payload.snapshot.counts, ready: 0, staleSession: 498 }, rows: []
+          } } });
+          if (mode === 'partial') return route.fulfill({ json: { ...payload, marketFreshness: 'CURRENT_SESSION', snapshot: {
+            ...payload.snapshot, state: 'PARTIAL', counts: { ...payload.snapshot.counts, ready: 496, unavailable: 1 }
           } } });
           if (mode === 'expired') return route.fulfill({ json: { ...payload, validUntil: new Date(Date.now() - 1000).toISOString() } });
           return route.fulfill({ json: payload });
@@ -84,7 +86,7 @@ async function fixture() {
       assert.equal(calls.filter(call => call === '/api/screener').length, 1);
       const nav = page.getByRole('link', { name: 'คัดกรองหุ้น', exact: true });
       assert.equal(await nav.getAttribute('aria-current'), 'page');
-      assert.match(await page.locator('#screener-coverage').textContent(), /500.*499.*497/);
+      assert.match(await page.locator('#screener-coverage').textContent(), /500.*497.*497/);
       assert.equal(await page.locator('#screener-results tbody tr').count(), 20);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       assert.equal(await page.locator('.side-nav .nav-item').count(), 6);
@@ -145,7 +147,7 @@ async function fixture() {
         await page.locator('#screener-results').waitFor();
         assert.equal(calls.filter(call => call === '/api/screener').length, 1);
       }
-      for (const [nextMode, message] of [['stale', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['error', 'โหลดข้อมูลคัดกรองไม่สำเร็จ'],
+      for (const [nextMode, message] of [['stale', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['partial', 'ข้อมูลคัดกรองยังไม่พร้อม'], ['error', 'โหลดข้อมูลคัดกรองไม่สำเร็จ'],
         ['expired', 'ข้อมูลคัดกรองหมดอายุ']]) {
         mode = nextMode;
         await page.getByRole('button', { name: 'โหลดข้อมูลคัดกรองใหม่' }).click();

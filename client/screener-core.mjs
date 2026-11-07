@@ -61,7 +61,7 @@ function blocked(symbol, reason, eligibility = false) {
     confirmedBars: 0, sourceAsOf: null, candleTime: null };
 }
 
-function eligibility(row) {
+export function screenerEligible(row) {
   return Boolean(row.active === true && row.symbol_verified === true && row.chart_ready === true
     && row.status === 'verified' && ELIGIBLE_GUARDS.has(row.guard_status)
     && row.provider === 'Yahoo Finance' && row.provider_symbol === `${row.symbol}.BK`);
@@ -78,7 +78,7 @@ export function buildDailyScreenerRow(coverage, evidence, { sessionDate, observe
   if (!validSession(sessionDate)) fail('invalid trading session');
   const cutoff = asMillis(observedAt);
   if (cutoff === null) fail('invalid observation time');
-  if (!eligibility(coverage)) return frozen(blocked(symbol, 'COVERAGE_INELIGIBLE'));
+  if (!screenerEligible(coverage)) return frozen(blocked(symbol, 'COVERAGE_INELIGIBLE'));
   if (!evidence) return frozen(blocked(symbol, 'UNAVAILABLE', true));
   if (evidence.provider !== coverage.provider || evidence.providerSymbol !== coverage.provider_symbol
     || evidence.identityStatus !== 'accepted' || !ELIGIBLE_GUARDS.has(evidence.guardStatus)
@@ -148,8 +148,7 @@ export function buildDailyScreenerRow(coverage, evidence, { sessionDate, observe
     sourceAsOf: new Date(fetchedAt).toISOString(), candleTime: new Date(latest.time).toISOString() });
 }
 
-/** Publish a *complete immutable result* in memory; callers handle durable
- * staging, atomic pointer updates and retention separately (not implemented). */
+/** Build an immutable result. The caller owns staging and durable publication. */
 export function buildScreenerSnapshot({ registry, evidenceBySymbol = {}, sessionDate,
   latestCompletedSessionDate, observedAt } = {}) {
   if (!validSession(latestCompletedSessionDate)) fail('missing latest completed trading session');
