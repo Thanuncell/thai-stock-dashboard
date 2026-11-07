@@ -27,7 +27,7 @@ test('snapshot coalesces registry reads and separates coverage, freshness and pe
   const { snapshot, latestCompletedSessionDate, marketFreshness, validUntil } = results[0];
   assert.ok(results.every(result => result.snapshot === snapshot));
   assert.equal(latestCompletedSessionDate, session);
-  assert.equal(marketFreshness, 'STALE', 'an incomplete universe with stale rows is not current');
+  assert.equal(marketFreshness, 'CURRENT_SESSION', 'only current READY rows qualify for safe partial screening');
   assert.equal(validUntil, '2026-11-09T10:15:00.000Z');
   assert.deepEqual(snapshot.counts, { registered: 500, eligible: 499, ready: 496, unavailable: 1,
     staleSession: 1, guardBlocked: 1, coverageIneligible: 1 });
@@ -113,7 +113,7 @@ test('authenticated Screener API reuses a real guarded Chart response path with 
     const response = await get('/api/screener');
     assert.equal(response.status, 200);
     const data = await response.json();
-    assert.equal(data.marketFreshness, 'UNAVAILABLE', 'one eligible symbol has no evidence');
+    assert.equal(data.marketFreshness, 'CURRENT_SESSION', 'one valid symbol can be screened while another has no evidence');
     assert.equal(data.snapshot.state, 'PARTIAL');
     const ptt = data.snapshot.rows.find(row => row.symbol === 'PTT');
     assert.equal(ptt.state, 'READY');
@@ -126,6 +126,8 @@ test('authenticated Screener API reuses a real guarded Chart response path with 
       macd: technical.macd.at(-1), macdSignal: technical.signal.at(-1)
     });
     assert.equal(data.snapshot.rows.find(row => row.symbol === 'CPALL').state, 'UNAVAILABLE');
+    const { queryScreenerSnapshot } = await import('../client/screener-core.mjs');
+    assert.deepEqual(queryScreenerSnapshot(data.snapshot).rows.map(row => row.symbol), ['PTT']);
     assert.equal((await get('/api/screener?refresh=1')).status, 200);
     assert.equal(quoteReads(), before);
     assert.equal(upstream.filter(url => url.pathname === '/rest/v1/security_coverage').length, 2);
