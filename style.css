@@ -528,6 +528,10 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 .screener button:disabled { opacity: .55; }
 .screener :focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .screener-actions { display: flex; gap: .55rem; flex-wrap: wrap; align-items: center; }
+.screener [data-group][aria-pressed="true"] { border-color: var(--green); font-weight: 700; }
+.screener-index-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: .35rem .75rem; padding-inline: 0; list-style: none; }
+.screener-index-list li { padding: .3rem; overflow-wrap: anywhere; }
+.screener-index-list a { display: inline-block; min-height: 28px; }
 .screener [hidden] { display: none; }
 .screener .sr-only { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; }
 .screener table { width: 100%; table-layout: fixed; border-collapse: collapse; }

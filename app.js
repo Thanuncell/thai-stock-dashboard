@@ -174,6 +174,7 @@ async function openScreener() {
       const { createScreenerView } = await import('./client/screener-view.mjs');
       screenerView ||= createScreenerView($('#screener-page'), {
         fetchSnapshot: signal => apiFetch('/api/screener', { signal }),
+        fetchCoverage: signal => apiFetch('/api/screener/coverage', { signal }),
         currentIdentity: () => isCurrentPrivateIdentity() ? privateSessionIdentity : null,
         openChart: symbol => {
           if (!isCurrentPrivateIdentity()) return;
