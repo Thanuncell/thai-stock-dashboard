@@ -202,13 +202,16 @@ async function fixture() {
         const tabOpened = context.waitForEvent('page');
         await chartLink.click({ button: 'middle' });
         const tab = await tabOpened;
+        await tab.bringToFront();
+        await tab.waitForLoadState('networkidle');
         const tabChart = tab.getByRole('img', { name: 'กราฟแท่งเทียน CPALL ช่วง 1D' });
         const login = tab.locator('#login-form');
-        await tabChart.or(login).first().waitFor();
-        if (await login.isVisible()) {
+        const signIn = login.locator('button[type="submit"]:enabled');
+        await tabChart.or(signIn).first().waitFor();
+        if (await signIn.isVisible()) {
           await login.locator('input[name="email"]').fill('a@example.test');
           await login.locator('input[name="password"]').fill('fixture-password');
-          await login.locator('button[type="submit"]').click();
+          await signIn.click();
         }
         await tabChart.waitFor();
         assert.match(tab.url(), /symbol=CPALL.*range=1D#chart$/);
