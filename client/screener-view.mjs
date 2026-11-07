@@ -9,7 +9,7 @@ const indicators = [['ema20', 'EMA20'], ['ema50', 'EMA50'], ['rsi14', 'RSI14'], 
 
 function createIndexView(get, { fetchCoverage, currentIdentity, chartLink }) {
   const tabs = [...get('index-groups').querySelectorAll('button')];
-  const search = get('index-search'), status = get('index-status'), source = get('index-source');
+  const search = get('index-search'), status = get('index-status');
   const list = get('index-list'), pager = get('index-pager');
   const prev = get('index-prev'), next = get('index-next');
   const pageSize = 20;
@@ -23,23 +23,6 @@ function createIndexView(get, { fetchCoverage, currentIdentity, chartLink }) {
       ? Date.parse(membership.effectiveThrough + 'T23:59:59.999+07:00') + 1 - Date.now()
       : 0;
     if (validFor > 0) membershipTimer = setTimeout(render, Math.min(validFor, 2147483647));
-    source.replaceChildren();
-    if (membership) {
-      const ownerExcel = membership.sourceType === 'OWNER_EXCEL';
-      if (ownerExcel) source.append('แหล่งข้อมูล: Excel ของ Owner · ');
-      const link = document.createElement('a');
-      link.href = membership.source;
-      link.textContent = ownerExcel ? 'หลักฐานตรวจเทียบจาก SET' : 'แหล่งข้อมูล: ตลาดหลักทรัพย์แห่งประเทศไทย';
-      source.append(link);
-      if (membership.available) {
-        const thaiDate = value => date.format(new Date(value + 'T00:00:00+07:00'));
-        if (ownerExcel) source.append(' · แสดงเฉพาะรายการที่ตรวจตรงกัน ณ ' + thaiDate(membership.effectiveFrom)
-          + ' · ใช้ชุดนี้ถึง ' + thaiDate(membership.effectiveThrough));
-        else source.append(' · มีผล ' + thaiDate(membership.effectiveFrom) + ' ถึง ' + thaiDate(membership.effectiveThrough));
-        if (membership.outsideCoverage) source.append(' · นอกทะเบียน ' + amount(membership.outsideCoverage) + ' หุ้น');
-      }
-    } else if (catalog) source.textContent = 'แหล่งข้อมูล: ทะเบียนหลักทรัพย์ SETscope';
-
     const available = !!catalog && (group === 'all' || validFor > 0);
     search.disabled = !available;
     const members = new Set(membership?.symbols);
@@ -338,5 +321,6 @@ export function createScreenerView(root, { fetchSnapshot, fetchCoverage, current
   next.addEventListener('click', () => { render(filters, sort, page + 1); if (next.disabled && !prev.disabled) prev.focus(); });
   reload.addEventListener('click', () => load({ force: true }));
 
-  return { load: () => Promise.all([load(), indexView.load()]), reset };
+  // Technical Screener remains in code for rollback, but is hidden and never fetched.
+  return { load: () => indexView.load(), reset };
 }
