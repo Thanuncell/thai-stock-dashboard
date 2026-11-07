@@ -37,11 +37,25 @@ async function fixture() {
       const state = { getOwners: [], putOwners: [] };
       const calls = [];
       const modules = [];
+      let holdChart;
       let mode = 'ready';
-      await context.route('**/*', route => {
+      await context.route('**/*', async route => {
         const url = new URL(route.request().url());
         if (url.origin === base && url.pathname.startsWith('/api/')) calls.push(url.pathname);
         if (url.origin === base && url.pathname.includes('/screener-')) modules.push(url.pathname);
+        if (url.origin === base && url.pathname === '/api/market') {
+          const symbol = url.searchParams.get('symbol');
+          if (holdChart && symbol === 'CPALL') await holdChart;
+          const price = symbol === 'CPALL' ? 70 : 35;
+          const history = Array.from({ length: 45 }, (_, i) => ({
+            time: Date.UTC(2026, 10, 6, 3, i * 5), open: price, high: price + 1,
+            low: price - 1, close: price, volume: 1000
+          }));
+          return route.fulfill({ json: { stocks: [{ symbol, last: price, prior: price - 1,
+            history, guardStatus: 'accepted', dataState: 'delayed' }], indices: [],
+            history, levelsHistory: history, indicatorHistory: history,
+            fetchedAt: '2026-11-06T11:30:00.000Z', dataState: 'delayed' } });
+        }
         if (url.origin === base && url.pathname === '/api/screener') {
           assert.match(route.request().headers().authorization, /^Bearer /);
           if (mode === 'error') return route.fulfill({ status: 503, json: { error: 'fixture' } });
@@ -156,17 +170,52 @@ async function fixture() {
       }
       // Existing Chart handoff is a user action, never a new Screener acquisition path.
       await reset.click();
-      const chartLink = page.getByRole('link', { name: 'เปิดกราฟ PTT' });
-      assert.match(await chartLink.getAttribute('href'), /symbol=PTT.*range=1D#chart$/);
+      const chartLink = page.getByRole('link', { name: 'เปิดกราฟ CPALL' });
+      assert.match(await chartLink.getAttribute('href'), /symbol=CPALL.*range=1D#chart$/);
       const screenerReadsBeforeChart = calls.filter(call => call === '/api/screener').length;
-      await chartLink.click();
-      await page.waitForURL(/symbol=PTT.*range=1D#chart$/);
-      assert.equal(await page.locator('#chart-section').isVisible(), true);
-      assert.equal(await page.locator('#screener-page').isVisible(), false);
+      const watchlistWrites = state.putOwners.length;
+      let releaseChart;
+      holdChart = new Promise(resolve => { releaseChart = resolve; });
+      try {
+        await chartLink.click();
+        await page.waitForURL(/symbol=CPALL.*range=1D#chart$/);
+        assert.equal(await page.locator('#stock-search').inputValue(), 'CPALL');
+        assert.equal(await page.locator('#chart-section').isVisible(), true);
+        assert.equal(await page.locator('#screener-page').isVisible(), false);
+        assert.equal(await page.locator('#chart-price').textContent(), '—', 'the previous symbol quote must not appear while CPALL is loading');
+      } finally {
+        holdChart = null;
+        releaseChart();
+      }
+      await page.getByRole('img', { name: 'กราฟแท่งเทียน CPALL ช่วง 1D' }).waitFor();
+      assert.equal(await page.locator('#chart-price').textContent(), '70.00');
+      await page.goBack();
+      await page.locator('#screener-results').waitFor();
+      await page.goForward();
+      await page.getByRole('img', { name: 'กราฟแท่งเทียน CPALL ช่วง 1D' }).waitFor();
+      assert.equal(state.putOwners.length, watchlistWrites);
       assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
       await nav.click();
       await page.locator('#screener-results').waitFor();
       assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
+      if (width === 1366) {
+        const tabOpened = context.waitForEvent('page');
+        await chartLink.click({ button: 'middle' });
+        const tab = await tabOpened;
+        const tabChart = tab.getByRole('img', { name: 'กราฟแท่งเทียน CPALL ช่วง 1D' });
+        const login = tab.locator('#login-form');
+        await tabChart.or(login).first().waitFor();
+        if (await login.isVisible()) {
+          await login.locator('input[name="email"]').fill('a@example.test');
+          await login.locator('input[name="password"]').fill('fixture-password');
+          await login.locator('button[type="submit"]').click();
+        }
+        await tabChart.waitFor();
+        assert.match(tab.url(), /symbol=CPALL.*range=1D#chart$/);
+        assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
+        assert.equal(state.putOwners.length, watchlistWrites);
+        await tab.close();
+      }
       for (const [nextMode, message] of [['stale', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['mixed', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['partial', 'ข้อมูลคัดกรองยังไม่พร้อม'], ['error', 'โหลดข้อมูลคัดกรองไม่สำเร็จ'],
         ['expired', 'ข้อมูลคัดกรองหมดอายุ']]) {
         mode = nextMode;

@@ -1661,6 +1661,11 @@ async function getMarket() {
   const requestedSymbols = watchlist.map(item => item.symbol);
   const changingChart = latestMarketSymbol !== requestedSymbol || latestMarketRange !== requestedRange;
   if (changingChart) {
+    if (latestMarketSymbol !== requestedSymbol) {
+      setText('#chart-price', '—');
+      setText('#chart-change', 'รอราคา');
+      $('#chart-change').className = '';
+    }
     setChartLoadState('loading', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
     setTechnicalPanelState('loading');
     setText('#analysis-note', 'กำลังโหลดข้อมูลจาก Yahoo Finance…');
