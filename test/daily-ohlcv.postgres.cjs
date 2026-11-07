@@ -87,7 +87,7 @@ test('OHLCV and snapshots migrate, persist, isolate roles and rollback on isolat
     const cutoff = retentionFloor(Date.now());
     const ingested = await history.upsert(oldRecords);
     assert.equal(ingested.expired, oldRecords.filter(row => row.tradingDate < cutoff).length);
-    assert.equal((await backend.query('select min(trading_date) day from screener_private.stock_ohlcv_daily')).rows[0].day >= cutoff, true);
+    assert.equal((await backend.query('select min(trading_date) as oldest_trading_date from screener_private.stock_ohlcv_daily')).rows[0].oldest_trading_date >= cutoff, true);
     await history.cleanup();
     assert.equal((await snapshots.readPublished()).snapshot.id, beforeHistoryCleanup);
 
