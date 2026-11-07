@@ -112,32 +112,31 @@ async function fixture() {
         await page.getByRole('link', { name: 'คัดกรองหุ้น', exact: true }).click();
       }
       await page.getByRole('heading', { name: 'Stock Screener' }).waitFor();
-      await page.locator('#screener-results').waitFor();
+      const indexList = page.locator('#screener-index-list');
+      await indexList.locator('li').first().waitFor();
       await page.waitForLoadState('networkidle');
-      const readCount = calls.length;
-      if (width === 1366) console.log(JSON.stringify({
-        screenerChartHandoffLinks: await page.locator('#screener-results tbody a').count(),
-        screenerWatchlistActionButtons: await page.locator('#screener-results tbody button').count(),
-        evidence: 'existing Screener result actions; outstanding integration audit'
-      }));
-      assert.equal(calls.filter(call => call === '/api/screener').length, 1);
+      assert.equal(calls.filter(call => call === '/api/screener').length, 0, 'hidden technical screener must not fetch its snapshot');
       assert.equal(calls.filter(call => call === '/api/screener/coverage').length, 1);
+      assert.equal(await page.locator('#screener-technical').isVisible(), false);
+      assert.equal(await page.locator('#screener-index-source').count(), 0, 'source prose must be absent');
+      assert.equal(await page.getByRole('heading', { name: 'คัดกรองทางเทคนิค' }).count(), 0);
       const tabs = page.getByRole('group', { name: 'กลุ่มหุ้น' });
       assert.deepEqual(await tabs.getByRole('button').allTextContents(), ['ทั้งหมด', 'SET50', 'SET100', 'SETHD', 'SETESG', 'mai']);
-      const indexList = page.locator('#screener-index-list');
       const indexStatus = page.locator('#screener-index-status');
       assert.match(await indexStatus.textContent(), /500.*500/);
       assert.equal(await indexList.locator('li').count(), 20);
+      const fetchesBeforeInteractions = calls.length;
       await page.locator('#screener-index-next').click();
-      assert.match(await page.locator('#screener-index-page').textContent(), /2 \/ 25/);
+      assert.match(await page.locator('#screener-index-page').textContent(), /2 \\/ 25/);
+      await page.locator('#screener-index-prev').click();
       for (const [key, symbols] of [
-        ['SET50', ['PTT']], ['SET100', ['PTT', 'S002']], ['SETHD', ['S003']], ['SETESG', ['PTT', 'S001']], ['mai', ['S001']]
+        ['SET50', ['PTT']], ['SET100', ['PTT', 'S002']], ['SETHD', ['S003']],
+        ['SETESG', ['PTT', 'S001']], ['mai', ['S001']]
       ]) {
         await tabs.getByRole('button', { name: key, exact: true }).click();
         assert.equal(await tabs.getByRole('button', { name: key, exact: true }).getAttribute('aria-pressed'), 'true');
         assert.deepEqual(await indexList.getByRole('link').allTextContents(), symbols);
-        assert.match(await page.locator('#screener-index-source').textContent(), /Excel ของ Owner.*ตรวจตรงกัน ณ/);
-        if (key === 'SETHD') assert.match(await page.locator('#screener-index-source').textContent(), /นอกทะเบียน 1/);
+        assert.equal(await page.locator('#screener-index-source').count(), 0);
       }
       await tabs.getByRole('button', { name: 'ทั้งหมด', exact: true }).click();
       const indexSearch = page.getByRole('searchbox', { name: 'ค้นหารายชื่อหุ้น' });
@@ -145,139 +144,34 @@ async function fixture() {
       assert.deepEqual(await indexList.getByRole('link').allTextContents(), ['NOPRICE']);
       assert.equal(indexCatalog.stocks.find(row => row.symbol === 'NOPRICE').membershipStatus, 'UNKNOWN');
       await indexSearch.fill('CPALL');
-      assert.equal(indexCatalog.stocks.find(row => row.symbol === 'CPALL').membershipStatus, 'UNKNOWN');
+      assert.deepEqual(await indexList.getByRole('link').allTextContents(), ['CPALL']);
+      assert.equal(calls.length, fetchesBeforeInteractions,
+        'switching groups, filtering and pagination must make no extra request');
       const nav = page.getByRole('link', { name: 'คัดกรองหุ้น', exact: true });
       assert.equal(await nav.getAttribute('aria-current'), 'page');
-      assert.match(await page.locator('#screener-coverage').textContent(), /500.*500.*500/);
-      assert.equal(await page.locator('#screener-results tbody tr').count(), 20);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       assert.equal(await page.locator('.side-nav .nav-item').count(), 6);
       assert.ok(await page.locator('#user-avatar').isVisible());
-      await nav.focus();
-      await page.keyboard.press('Shift+Tab');
-      await page.keyboard.press('Tab');
-      assert.ok(await nav.evaluate(link => link.matches(':focus-visible')));
-      const search = page.getByRole('searchbox', { name: 'ชื่อหรือสัญลักษณ์หุ้น' });
-      const reset = page.getByRole('button', { name: 'ล้างตัวกรอง' });
-      await search.fill('ปตท.');
-      await search.press('Enter');
-      assert.equal(await page.locator('#screener-results tbody tr').count(), 1);
-      assert.match(await page.locator('#screener-results tbody').innerText(), /PTT/);
-      await reset.click();
-      await page.getByRole('button', { name: 'ถัดไป' }).click();
-      assert.match(await page.locator('#screener-page-number').textContent(), /หน้า 2/);
-      await page.getByRole('button', { name: 'ก่อนหน้า' }).click();
-      assert.match(await page.locator('#screener-page-number').textContent(), /หน้า 1/);
-      await search.fill('S495');
-      await search.press('Enter');
-      assert.match(await page.locator('#screener-results tbody').innerText(), /EMA20 ยังไม่พร้อม/);
-      await page.getByLabel('RSI 14 ขั้นต่ำ').fill('10');
-      await search.press('Enter');
-      assert.match(await page.locator('#screener-result-summary').textContent(), /ไม่พบ.*ข้อมูลตัวกรองไม่พอ 1/);
-      await reset.click();
-      await page.getByLabel('ราคาปิดขั้นต่ำ').fill('100');
-      await page.getByLabel('ราคาปิดสูงสุด').fill('1');
-      await search.press('Enter');
-      await page.getByRole('alert').filter({ hasText: 'ตรวจช่วงตัวกรอง' }).waitFor();
-      await reset.click();
-      await page.getByLabel('เรียงผลลัพธ์').selectOption('price:asc');
-      await search.press('Enter');
-      assert.equal(await page.locator('#screener-results tbody tr').first().getByRole('rowheader').textContent(), 'S495');
-      await page.getByLabel('ตัวกรองสำเร็จรูป').selectOption('trend');
-      await search.press('Enter');
-      assert.match(await page.locator('#screener-result-summary').textContent(), /ข้อมูลตัวกรองไม่พอ 1/);
-      const filterP95 = await page.locator('#screener-filters').evaluate(form => {
-        const samples = Array.from({ length: 25 }, () => {
-          const start = performance.now();
-          form.requestSubmit();
-          return performance.now() - start;
-        }).sort((a, b) => a - b);
-        return samples[Math.ceil(samples.length * .95) - 1];
-      });
-      assert.equal(calls.length, readCount, 'filters, sorting and pagination must reuse the snapshot');
-      if (width === 1366) {
-        for (const [name, selector] of [['ภาพรวมตลาด', '#market-overview'], ['กราฟเทคนิค', '#chart-section'],
-          ['ข่าวและบทวิเคราะห์', '#news-section'], ['รายการติดตาม', '#watchlist-page'], ['โปรไฟล์', '#profile-page']]) {
-          await page.locator('.side-nav').getByRole('link', { name }).click();
-          await page.locator(selector).waitFor();
-          assert.equal(await page.locator('#screener-page').isVisible(), false);
-        }
-        await nav.click();
-        await page.goBack();
-        await page.locator('#profile-page').waitFor();
-        await page.goForward();
-        await page.locator('#screener-results').waitFor();
-        assert.equal(calls.filter(call => call === '/api/screener').length, 1);
-      }
-      // Existing Chart handoff is a user action, never a new Screener acquisition path.
-      await reset.click();
+
       const chartLink = indexList.getByRole('link', { name: 'เปิดกราฟ CPALL' });
       assert.match(await chartLink.getAttribute('href'), /symbol=CPALL.*range=1D#chart$/);
-      const screenerReadsBeforeChart = calls.filter(call => call === '/api/screener').length;
       const watchlistWrites = state.putOwners.length;
-      let releaseChart;
-      holdChart = new Promise(resolve => { releaseChart = resolve; });
-      try {
-        await chartLink.click();
-        await page.waitForURL(/symbol=CPALL.*range=1D#chart$/);
-        assert.equal(await page.locator('#stock-search').inputValue(), 'CPALL');
-        assert.equal(await page.locator('#chart-section').isVisible(), true);
-        assert.equal(await page.locator('#screener-page').isVisible(), false);
-        assert.equal(await page.locator('#chart-price').textContent(), '—', 'the previous symbol quote must not appear while CPALL is loading');
-      } finally {
-        holdChart = null;
-        releaseChart();
-      }
+      await chartLink.click();
+      await page.waitForURL(/symbol=CPALL.*range=1D#chart$/);
+      assert.equal(await page.locator('#stock-search').inputValue(), 'CPALL');
+      assert.equal(await page.locator('#chart-section').isVisible(), true);
+      assert.equal(await page.locator('#screener-page').isVisible(), false);
       await page.getByRole('img', { name: 'กราฟแท่งเทียน CPALL ช่วง 1D' }).waitFor();
       assert.equal(await page.locator('#chart-price').textContent(), '70.00');
       await page.goBack();
-      await page.locator('#screener-results').waitFor();
-      await page.goForward();
-      await page.getByRole('img', { name: 'กราฟแท่งเทียน CPALL ช่วง 1D' }).waitFor();
+      await indexList.locator('li').first().waitFor();
+      assert.equal(await page.locator('#screener-technical').isVisible(), false);
+      assert.equal(calls.filter(call => call === '/api/screener').length, 0);
+      assert.equal(calls.filter(call => call === '/api/screener/coverage').length, 1);
       assert.equal(state.putOwners.length, watchlistWrites);
-      assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
-      await nav.click();
-      await page.locator('#screener-results').waitFor();
-      assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
-      if (width === 1366) {
-        const [tab] = await Promise.all([
-          context.waitForEvent('page'),
-          chartLink.click({ modifiers: ['ControlOrMeta'] })
-        ]);
-        await tab.bringToFront();
-        await tab.waitForLoadState('networkidle');
-        const tabChart = tab.getByRole('img', { name: 'กราฟแท่งเทียน CPALL ช่วง 1D' });
-        const login = tab.locator('#login-form');
-        const signIn = login.locator('button[type="submit"]:enabled');
-        await tabChart.or(signIn).first().waitFor();
-        if (await signIn.isVisible()) {
-          await login.locator('input[name="email"]').fill('a@example.test');
-          await login.locator('input[name="password"]').fill('fixture-password');
-          await signIn.click();
-        }
-        await tabChart.waitFor();
-        assert.match(tab.url(), /symbol=CPALL.*range=1D#chart$/);
-        assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
-        assert.equal(state.putOwners.length, watchlistWrites);
-        await tab.close();
-      }
-      for (const [nextMode, message] of [['stale', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['mixed', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['partial', 'ข้อมูลคัดกรองยังไม่พร้อม'], ['error', 'โหลดข้อมูลคัดกรองไม่สำเร็จ'],
-        ['expired', 'ข้อมูลคัดกรองหมดอายุ']]) {
-        mode = nextMode;
-        await page.getByRole('button', { name: 'โหลดข้อมูลคัดกรองใหม่' }).click();
-        await page.locator('#screener-status').filter({ hasText: message }).waitFor();
-        assert.equal(await page.locator('#screener-results').isVisible(), false);
-        assert.equal(await indexList.getByRole('link', { name: 'เปิดกราฟ CPALL' }).isVisible(), true);
-        assert.equal(await search.isVisible(), false);
-        if (['mixed', 'partial'].includes(nextMode)) {
-          assert.match(await page.locator('#screener-coverage').textContent(), /500.*500.*499/);
-          assert.match(await page.locator('#screener-status').textContent(),
-            nextMode === 'mixed' ? /ข้อมูลเก่ากว่ารอบล่าสุด/ : /ข้อมูลคัดกรองยังไม่พร้อม/);
-        }
-      }
       assert.deepEqual(errors, []);
       await context.close();
-      console.log('Screener browser verified at ' + width + 'px, 500-stock filter and render p95 ' + filterP95.toFixed(1) + ' ms');
+      console.log('Screener browse-only UI verified at ' + width + 'px');
     }
   } finally {
     await browser?.close();
