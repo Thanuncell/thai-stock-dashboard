@@ -184,7 +184,7 @@ export function buildScreenerSnapshot({ registry, evidenceBySymbol = {}, session
   const id = `${SCREENER_SCHEMA_VERSION}:${sessionDate}:${stableFingerprint(rows)}`;
   return frozen({ schemaVersion: SCREENER_SCHEMA_VERSION, id, sessionDate,
     latestCompletedSessionDate, generatedAt,
-    state: rows.length && counts.ready === rows.length ? 'COMPLETE' : counts.ready ? 'PARTIAL' : 'UNAVAILABLE',
+    state: counts.eligible > 0 && counts.ready === counts.eligible ? 'COMPLETE' : counts.ready ? 'PARTIAL' : 'UNAVAILABLE',
     counts, rows });
 }
 
