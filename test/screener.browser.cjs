@@ -239,9 +239,10 @@ async function fixture() {
       await page.locator('#screener-results').waitFor();
       assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
       if (width === 1366) {
-        const tabOpened = context.waitForEvent('page');
-        await chartLink.click({ button: 'middle' });
-        const tab = await tabOpened;
+        const [tab] = await Promise.all([
+          context.waitForEvent('page'),
+          chartLink.click({ modifiers: ['ControlOrMeta'] })
+        ]);
         await tab.bringToFront();
         await tab.waitForLoadState('networkidle');
         const tabChart = tab.getByRole('img', { name: 'กราฟแท่งเทียน CPALL ช่วง 1D' });
