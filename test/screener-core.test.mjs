@@ -36,7 +36,7 @@ function build(bars, symbol='AAA', customEvidence={}, coverage=validCoverage(sym
 function snapshot(entries) {
   const registry=[],evidenceBySymbol={};
   for(const [symbol,bars,override] of entries){registry.push(validCoverage(symbol));evidenceBySymbol[symbol]=evidence(bars,symbol,override);}
-  return buildScreenerSnapshot({registry,evidenceBySymbol,...context(entries[0][1])});
+  return buildScreenerSnapshot({registry,evidenceBySymbol,...context(entries[0][1]), latestCompletedSessionDate:context(entries[0][1]).sessionDate});
 }
 
 test('WS2: Daily indicators reuse Chart domain calculations with confirmed candles', () => {
@@ -67,7 +67,7 @@ test('WS2: provisional latest candle never enters a technical signal', () => {
   const newer={...last,time:last.time+86_400_000,close:900,open:900,high:901,low:899,complete:false,availableAt:last.availableAt+86_400_000};
   const plain=build(bars);
   const cutoff=new Date(newer.time+3600000).toISOString();
-  const withProvisional=buildDailyScreenerRow(validCoverage(), evidence([...bars,newer]),
+  const withProvisional=buildDailyScreenerRow(validCoverage(), evidence([...bars,newer],'AAA', {sourceFetchedAt:new Date(newer.time+60_000).toISOString()}),
     {...context(bars),observedAt:cutoff});
   assert.equal(withProvisional.state,'READY');
   assert.equal(withProvisional.price.close,plain.price.close);
@@ -84,7 +84,7 @@ test('WS2: guard, mapping, stale session and coverage eligibility fail closed', 
   assert.equal(buildDailyScreenerRow({...validCoverage(),status:'partial'},evidence(bars),ctx).state,'COVERAGE_INELIGIBLE');
   const wrongSession='2026-01-01';
   assert.equal(buildDailyScreenerRow(validCoverage(),evidence(bars),{...ctx,sessionDate:wrongSession}).state,'STALE_SESSION');
-  assert.equal(buildDailyScreenerRow(validCoverage(),evidence(bars,'AAA',{sourceFetchedAt:'2026-01-01T00:00:00Z'}),ctx).state,'STALE_SESSION');
+  assert.equal(buildDailyScreenerRow(validCoverage(),evidence(bars,'AAA',{sourceFetchedAt:'2026-01-01T00:00:00Z'}),ctx).state,'GUARD_BLOCKED');
 });
 
 test('WS2: missing, duplicate or invalid daily bars never become technical evidence', () => {
@@ -135,8 +135,8 @@ test('WS2: page/sort is stable for equal prices and does not mutate frozen snaps
 
 test('WS2: invalid registry, filter and numeric boundaries reject instead of silently ignoring', () => {
   const bars=tradingBars(55),s=snapshot([['AAA',bars]]),ctx=context(bars);
-  assert.throws(()=>buildScreenerSnapshot({registry:[validCoverage('AAA'),validCoverage('AAA')],evidenceBySymbol:{},...ctx}),/duplicate/);
-  assert.throws(()=>buildScreenerSnapshot({registry:[validCoverage('AAA'),{...validCoverage('BBB'),provider_symbol:'AAA.BK'}],evidenceBySymbol:{},...ctx}),/duplicate provider/);
+  assert.throws(()=>buildScreenerSnapshot({registry:[validCoverage('AAA'),validCoverage('AAA')],evidenceBySymbol:{},...ctx,latestCompletedSessionDate:ctx.sessionDate}),/duplicate/);
+  assert.throws(()=>buildScreenerSnapshot({registry:[validCoverage('AAA'),{...validCoverage('BBB'),provider_symbol:'AAA.BK'}],evidenceBySymbol:{},...ctx,latestCompletedSessionDate:ctx.sessionDate}),/duplicate provider/);
   assert.throws(()=>queryScreenerSnapshot(s,{price:{min:Infinity}}),/minimum/);
   assert.throws(()=>queryScreenerSnapshot(s,{price:{min:100,max:20}}),/inverted/);
   assert.throws(()=>queryScreenerSnapshot(s,{rsi14:{min:-1}}),/minimum/);
@@ -146,7 +146,7 @@ test('WS2: invalid registry, filter and numeric boundaries reject instead of sil
 
 test('WS2: partial snapshots report ready and excluded counts without claiming whole-market coverage', () => {
   const bars=tradingBars(55),ctx=context(bars);
-  const s=buildScreenerSnapshot({registry:[validCoverage('AAA'),validCoverage('BBB')],evidenceBySymbol:{AAA:evidence(bars)},...ctx});
+  const s=buildScreenerSnapshot({registry:[validCoverage('AAA'),validCoverage('BBB')],evidenceBySymbol:{AAA:evidence(bars)},...ctx,latestCompletedSessionDate:ctx.sessionDate});
   assert.equal(s.state,'PARTIAL');
   assert.deepEqual(s.counts,{registered:2,eligible:2,ready:1,unavailable:1,staleSession:0,guardBlocked:0,coverageIneligible:0});
   const q=queryScreenerSnapshot(s);
@@ -158,11 +158,72 @@ test('WS2: partial snapshots report ready and excluded counts without claiming w
 test('WS2: 500-symbol offline fixture filters without fetching or claiming production readiness', () => {
   const bars=tradingBars(60),ctx=context(bars),registry=[],index={};
   for(let i=0;i<500;i++){const symbol=`S${String(i).padStart(3,'0')}`;registry.push(validCoverage(symbol));index[symbol]=evidence(bars,symbol);}
-  const s=buildScreenerSnapshot({registry,evidenceBySymbol:index,...ctx});
+  const s=buildScreenerSnapshot({registry,evidenceBySymbol:index,...ctx,latestCompletedSessionDate:ctx.sessionDate});
   assert.equal(s.counts.registered,500);
   assert.equal(s.counts.ready,500);
   const q=queryScreenerSnapshot(s,{price:{min:1,max:1000}},{pageSize:25,page:2});
   assert.equal(q.counts.matched,500);
   assert.equal(q.rows.length,25);
   assert.equal(q.rows[0].symbol,'S025');
+});
+
+test('WS2 acceptance: invalid guard-reason shape, unknown source state and forged candle availability fail closed', () => {
+  const bars=tradingBars(65),latest=bars.at(-1),ctx=context(bars);
+  for (const extra of [
+    {guardReasons:{HISTORICAL_ANOMALY:true}}, {guardReasons:null},
+    {dataState:'unknown'}, {dataState:'unavailable'}
+  ]) {
+    assert.equal(buildDailyScreenerRow(validCoverage(),evidence(bars,'AAA',extra),ctx).state,'GUARD_BLOCKED');
+  }
+  const forged={...latest,availableAt:latest.time-60000};
+  assert.equal(buildDailyScreenerRow(validCoverage(),evidence([...bars.slice(0,-1),forged]),ctx).state,'GUARD_BLOCKED');
+  const premature={...latest,availableAt:Date.parse(ctx.observedAt)+1000};
+  assert.equal(buildDailyScreenerRow(validCoverage(),evidence([...bars.slice(0,-1),premature],'AAA',{sourceFetchedAt:evidence(bars).sourceFetchedAt}),ctx).state,'GUARD_BLOCKED');
+  const incomplete={...latest,complete:true,availableAt:null};
+  assert.equal(buildDailyScreenerRow(validCoverage(),evidence([...bars.slice(0,-1),incomplete]),ctx).state,'GUARD_BLOCKED');
+  assert.equal(buildDailyScreenerRow(validCoverage(),evidence([...bars.slice(0,-1),{...latest,open:null}]),ctx).state,'GUARD_BLOCKED');
+  assert.equal(buildDailyScreenerRow(validCoverage(),evidence([...bars.slice(0,-1),{...latest,volume:-1}]),ctx).state,'GUARD_BLOCKED');
+});
+
+test('WS2 acceptance: snapshot publication requires latest completed session; never silently publish yesterday', () => {
+  const bars=tradingBars(65),ctx=context(bars),registry=[validCoverage()],evidenceBySymbol={AAA:evidence(bars)};
+  assert.throws(()=>buildScreenerSnapshot({registry,evidenceBySymbol,...ctx}), /latest completed/);
+  assert.throws(()=>buildScreenerSnapshot({registry,evidenceBySymbol,...ctx,latestCompletedSessionDate:'2026-11-06'}), /differs/);
+  const published=buildScreenerSnapshot({registry,evidenceBySymbol,...ctx,latestCompletedSessionDate:ctx.sessionDate});
+  assert.equal(published.latestCompletedSessionDate,ctx.sessionDate);
+});
+
+test('WS2 acceptance: EMA/RSI/MACD warm-up boundary and flat-price oracle', () => {
+  for (const [count,field,expected] of [[19,'ema20',false],[20,'ema20',true],[33,'macd',false],[34,'macd',true],[49,'ema50',false],[50,'ema50',true]]) {
+    assert.equal(build(tradingBars(count)).available[field],expected, `${field} at ${count} bars`);
+  }
+  const flat=build(tradingBars(65,{base:100,step:0}));
+  assert.equal(flat.technical.rsi14,50);
+  assert.equal(flat.technical.ema20,100);
+  assert.equal(flat.technical.ema50,100);
+  assert.equal(flat.technical.macd,0);
+  assert.equal(flat.technical.macdSignal,0);
+});
+
+test('WS2 acceptance: 500 mixed-state universe has deterministic counts and no accidental readiness', () => {
+  const bars=tradingBars(60),ctx=context(bars),registry=[],evidenceBySymbol={};
+  for(let i=0;i<500;i++) {
+    const symbol=`S${String(i).padStart(3,'0')}`;
+    registry.push(i>=450?{...validCoverage(symbol),status:'partial'}:validCoverage(symbol));
+    if(i<400)evidenceBySymbol[symbol]=evidence(bars,symbol);
+    if(i>=400&&i<450)evidenceBySymbol[symbol]=evidence(bars,symbol,{dataState:'stale'});
+  }
+  const s=buildScreenerSnapshot({registry,evidenceBySymbol,...ctx,latestCompletedSessionDate:ctx.sessionDate});
+  assert.equal(s.state,'PARTIAL');
+  assert.deepEqual(s.counts,{registered:500,eligible:450,ready:400,unavailable:0,staleSession:0,guardBlocked:50,coverageIneligible:50});
+  const filters={ema20:'above',rsi14:{min:0,max:100}};
+  const a=queryScreenerSnapshot(s,filters,{page:4,pageSize:25});
+  const b=queryScreenerSnapshot(s,filters,{page:4,pageSize:25});
+  assert.deepEqual(a,b);
+  assert.equal(a.counts.excluded,100);
+  assert.equal(a.counts.evaluated,400);
+  assert.equal(a.counts.matched,400);
+  assert.equal(a.rows.length,25);
+  assert.equal(a.rows[0].symbol,'S075');
+  assert(Object.isFrozen(s.rows));
 });
