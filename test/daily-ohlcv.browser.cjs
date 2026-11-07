@@ -5,11 +5,12 @@ const { chromium } = require(process.env.SETSCOPE_PLAYWRIGHT_MODULE || 'playwrig
 const { mockRequest, seedPage } = require('./account-isolation.browser.cjs');
 const { dailySource, observedAt, coverage } = require('./fixtures/daily-ohlcv.cjs');
 const { createScreenerService } = require('../server/screener-service');
+const { buildIndexCatalog } = require('../server/screener-index');
 
-async function envelopes() {
+async function envelopes(registry) {
+  const { queryScreenerSnapshot } = await import('../client/screener-core.mjs');
   const source = dailySource('S000');
   const stale = dailySource('S000', { last: '2026-11-05' });
-  const registry = Array.from({ length: 500 }, (_, i) => coverage('S' + String(i).padStart(3, '0')));
   const payloads = {};
   for (const mode of ['ready', 'missing', 'stale', 'blocked', 'unavailable']) {
     const service = createScreenerService({ now: () => observedAt, listCoverage: () => registry,
@@ -24,7 +25,20 @@ async function envelopes() {
     }
     payloads[mode] = { ...await service.readSnapshot(), validUntil: new Date(Date.now() + 3600000).toISOString() };
     if (mode === 'unavailable') assert.equal(payloads[mode].snapshot, null);
-    else assert.equal(payloads[mode].snapshot.state, mode === 'ready' ? 'COMPLETE' : 'PARTIAL');
+    else {
+      const { snapshot, availability } = payloads[mode];
+      const ready = mode === 'ready' ? 500 : 499;
+      assert.equal(snapshot.state, mode === 'ready' ? 'COMPLETE' : 'PARTIAL');
+      assert.equal(availability.ready, ready);
+      for (const [key, absentMode] of [['unavailable', 'missing'], ['staleSession', 'stale'], ['guardBlocked', 'blocked']])
+        assert.equal(availability[key], Number(mode === absentMode));
+      const page = queryScreenerSnapshot(snapshot, {}, { page: 2 });
+      assert.equal(page.counts.matched, ready);
+      assert.equal(page.rows.length, 20);
+      assert.equal(queryScreenerSnapshot(snapshot, { search: 'S499' }).rows.length, mode === 'ready' ? 1 : 0);
+      assert.deepEqual(queryScreenerSnapshot(snapshot, { search: 'S010' }, { sortBy: 'price', sortDirection: 'asc' })
+        .rows.map(row => row.symbol), ['S010']);
+    }
   }
   payloads.unknown = { ...payloads.unavailable, availability: null };
   return payloads;
@@ -33,7 +47,9 @@ async function envelopes() {
 (async () => {
   process.env.SUPABASE_URL = 'https://isolation-test.supabase.co';
   const { server } = require('../server');
-  const payloads = await envelopes();
+  const registry = Array.from({ length: 500 }, (_, i) => coverage('S' + String(i).padStart(3, '0')));
+  const catalog = buildIndexCatalog(registry, {});
+  const payloads = await envelopes(registry);
   let browser;
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -41,7 +57,7 @@ async function envelopes() {
     browser = await chromium.launch({ headless: true, executablePath: process.env.SETSCOPE_BROWSER_EXECUTABLE || undefined });
     for (const width of [320, 390, 1366]) {
       const context = await browser.newContext({ viewport: { width, height: 850 }, hasTouch: width < 520 });
-      let mode = 'ready', reads = 0, providers = 0;
+      let mode = 'ready', reads = 0, coverageReads = 0, providers = 0;
       const state = { getOwners: [], putOwners: [] };
       await context.route('**/*', route => {
         const url = new URL(route.request().url());
@@ -50,6 +66,11 @@ async function envelopes() {
           assert.match(route.request().headers().authorization, /^Bearer /);
           reads++;
           return route.fulfill({ json: payloads[mode] });
+        }
+        if (url.origin === base && url.pathname === '/api/screener/coverage') {
+          assert.match(route.request().headers().authorization, /^Bearer /);
+          coverageReads++;
+          return route.fulfill({ json: catalog });
         }
         if (![base, 'https://isolation-test.supabase.co'].includes(url.origin)) return route.abort();
         return mockRequest(route, base, state);
@@ -61,41 +82,18 @@ async function envelopes() {
       for (const nextMode of ['ready', 'missing', 'stale', 'blocked', 'unavailable', 'unknown']) {
         mode = nextMode;
         await page.goto(base + '/?fixture=' + mode + '#screener');
-        await page.locator('#screener-status').filter({ hasText: mode === 'ready' ? 'มีข้อมูลรอบล่าสุด'
-          : ['missing', 'stale', 'blocked'].includes(mode) ? 'คัดกรองเฉพาะหุ้นที่ข้อมูลพร้อม 499/500'
-            : 'ข้อมูลคัดกรองยังไม่พร้อม' }).waitFor();
+        await page.locator('#screener-index-status').filter({ hasText: 'พบ 500 จาก 500 หุ้นในกลุ่ม' }).waitFor();
         await page.waitForLoadState('networkidle');
-        const cards = page.locator('#screener-availability');
-        if (mode === 'unknown') assert.equal(await cards.isVisible(), false);
-        else {
-          await cards.waitFor();
-          for (const [name, key] of [['ready', 'ready'], ['unavailable', 'unavailable'], ['stale', 'staleSession'], ['blocked', 'guardBlocked']])
-            assert.equal(await page.locator('#screener-' + name + '-count').textContent(), String(payloads[mode].availability[key]));
-          assert.equal(await cards.locator('dt').count(), 4);
-        }
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
-        if (mode === 'unavailable' || mode === 'unknown') {
-          assert.equal(await page.locator('#screener-results').isVisible(), false);
-          assert.equal(await page.locator('#screener-filters').isVisible(), false);
-        } else {
-          await page.locator('#screener-results').waitFor();
-          if (mode !== 'ready') {
-            assert.equal(await page.locator('#screener-filters').isVisible(), true);
-            assert.equal(await page.locator('#screener-results tbody tr').count(), 20);
-            assert.equal(await page.locator('#screener-result-summary').textContent().then(t => /ประเมินได้ 499/.test(t)), true);
-            assert.equal((await page.locator('#screener-results tbody').innerText()).includes('S499'), false);
-          }
-          const initialReads = reads;
-          await page.getByRole('button', { name: 'ถัดไป', exact: true }).click();
-          const search = page.getByRole('searchbox', { name: 'ชื่อหรือสัญลักษณ์หุ้น' });
-          await search.fill('S010');
-          await search.press('Enter');
-          assert.equal(await page.locator('#screener-results tbody tr').count(), 1);
-          await page.getByLabel('เรียงผลลัพธ์').selectOption('price:asc');
-          await search.press('Enter');
-          assert.equal(reads, initialReads);
-        }
+        const initialReads = coverageReads;
+        await page.locator('#screener-index-next').click();
+        assert.equal(await page.locator('#screener-index-page').textContent(), 'หน้า 2 / 25');
+        await page.locator('#screener-index-search').fill('S499');
+        assert.equal(await page.locator('#screener-index-list strong').textContent(), 'S499');
+        assert.equal(coverageReads, initialReads);
+        assert.equal(reads, 0, 'the catalog does not load technical snapshots in any state');
       }
+      assert.equal(coverageReads, 6);
       assert.equal(providers, 0);
       assert.deepEqual(errors, []);
       console.log(JSON.stringify({ width, states: 6, fixtureSymbols: 500, providerRequests: providers, result: 'PASS' }));
