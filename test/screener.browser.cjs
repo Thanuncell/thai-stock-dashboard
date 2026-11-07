@@ -154,6 +154,19 @@ async function fixture() {
         await page.locator('#screener-results').waitFor();
         assert.equal(calls.filter(call => call === '/api/screener').length, 1);
       }
+      // Existing Chart handoff is a user action, never a new Screener acquisition path.
+      await reset.click();
+      const chartLink = page.getByRole('link', { name: 'เปิดกราฟ PTT' });
+      assert.match(await chartLink.getAttribute('href'), /symbol=PTT.*range=1D#chart$/);
+      const screenerReadsBeforeChart = calls.filter(call => call === '/api/screener').length;
+      await chartLink.click();
+      await page.waitForURL(/symbol=PTT.*range=1D#chart$/);
+      assert.equal(await page.locator('#chart-section').isVisible(), true);
+      assert.equal(await page.locator('#screener-page').isVisible(), false);
+      assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
+      await nav.click();
+      await page.locator('#screener-results').waitFor();
+      assert.equal(calls.filter(call => call === '/api/screener').length, screenerReadsBeforeChart);
       for (const [nextMode, message] of [['stale', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['mixed', 'ข้อมูลเก่ากว่ารอบล่าสุด'], ['partial', 'ข้อมูลคัดกรองยังไม่พร้อม'], ['error', 'โหลดข้อมูลคัดกรองไม่สำเร็จ'],
         ['expired', 'ข้อมูลคัดกรองหมดอายุ']]) {
         mode = nextMode;
