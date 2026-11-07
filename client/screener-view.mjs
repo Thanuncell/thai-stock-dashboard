@@ -146,10 +146,20 @@ export function createScreenerView(root, { fetchSnapshot, currentIdentity }) {
       const session = latest ? date.format(new Date(latest + 'T00:00:00+07:00')) : 'ไม่ทราบ';
       const counts = value?.counts || data.availability;
       renderAvailability(counts || null);
-      const ready = data.marketFreshness === 'CURRENT_SESSION' && value?.state === 'COMPLETE'
-        && counts?.ready > 0 && counts.ready === counts.eligible
-        && counts.staleSession === 0 && counts.unavailable === 0 && counts.guardBlocked === 0;
-      const message = ready ? 'มีข้อมูลรอบล่าสุด'
+      const validCounts = value && counts && value.rows.length === counts.registered
+        && ['registered', 'eligible', 'ready', 'coverageIneligible', 'unavailable', 'staleSession', 'guardBlocked']
+          .every(key => Number.isSafeInteger(counts[key]) && counts[key] >= 0)
+        && counts.eligible + counts.coverageIneligible === counts.registered
+        && counts.ready + counts.unavailable + counts.staleSession + counts.guardBlocked === counts.eligible
+        && counts.ready === value.rows.filter(row => row.state === 'READY' && row.eligible === true).length;
+      const complete = validCounts && value.state === 'COMPLETE' && counts.ready === counts.eligible;
+      const partial = validCounts && value.state === 'PARTIAL' && counts.ready > 0
+        && counts.ready < counts.eligible;
+      const ready = data.marketFreshness === 'CURRENT_SESSION' && (complete || partial);
+      const message = partial && ready
+        ? 'คัดกรองเฉพาะหุ้นที่ข้อมูลพร้อม ' + amount(counts.ready) + '/' + amount(counts.eligible)
+          + ' หุ้น · หุ้นที่ข้อมูลไม่พร้อมไม่รวมในผลคัดกรอง'
+        : ready ? 'มีข้อมูลรอบล่าสุด'
         : data.marketFreshness === 'STALE' ? 'ข้อมูลเก่ากว่ารอบล่าสุด' : 'ข้อมูลคัดกรองยังไม่พร้อม';
       status.textContent = message + ' · รอบซื้อขายล่าสุดที่ปิดแล้ว ' + session
         + (value ? ' · คำนวณเมื่อ ' + dateTime.format(new Date(value.generatedAt)) + ' (เวลาไทย)' : '');
