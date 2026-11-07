@@ -59,8 +59,17 @@ async function fixture() {
       const page = await context.newPage();
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
-      await seedPage(page, 'token-a');
+      if (width !== 390) await seedPage(page, 'token-a');
       await page.goto(base + (width === 1366 ? '/#overview' : '/#screener'));
+      if (width === 390) {
+        const login = page.locator('#login-form');
+        await login.waitFor();
+        assert.ok(!calls.includes('/api/screener'), 'unauthenticated deep link must not load a snapshot');
+        await login.locator('input[name="email"]').fill('a@example.test');
+        await login.locator('input[name="password"]').fill('fixture-password');
+        await login.locator('button[type="submit"]').click();
+        await page.waitForURL(base + '/#screener');
+      }
       if (width === 1366) {
         await page.locator('#market-overview').waitFor();
         await page.waitForLoadState('networkidle');
