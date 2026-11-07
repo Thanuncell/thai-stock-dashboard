@@ -82,6 +82,9 @@ jobs:
       - name: Run simulated-device security acceptance
         timeout-minutes: 3
         run: npm run test:security:browser
+      - name: Run Screener workspace regression
+        timeout-minutes: 3
+        run: npm run test:screener:browser
       - name: Run News navigation and loading regression
         timeout-minutes: 3
         run: npm run test:news-loading:browser

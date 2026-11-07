@@ -147,7 +147,7 @@ const LEVEL_FALLBACK_PERIODS = Object.freeze({
   '1Y': ['2y', '1d']
 });
 
-function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now } = {}) {
+function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now, onDailyHistory } = {}) {
   const dataGuard = createMarketDataGuard({
     now,
     futureToleranceMs: Number(env.DATA_GUARD_FUTURE_TOLERANCE_MS) || undefined,
@@ -265,9 +265,11 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       if (densityEvidence.cadence?.status === 'INTERVAL_CADENCE_SUSPECT') historyReasons.push('INTERVAL_MISMATCH');
       else if (densityEvidence.cadence?.status === 'INTERVAL_CADENCE_UNVERIFIED') historyReasons.push('INTERVAL_CADENCE_UNVERIFIED');
       const history=temporalBars(rows,{interval,observedAt:value.receivedAt,regularStart:start,regularEnd:end,timeZone});
-      return {...value,history,validatedHistory:history,historyReasons,provenance:{provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',adjustment:'provider-defined; no local adjustment',
+      const shaped = {...value,history,validatedHistory:history,historyReasons,provenance:{provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',adjustment:'provider-defined; no local adjustment',
         interval,receivedAt:value.receivedAt,timestampKind:'bar-open',regularStart:start,regularEnd:end,timeZone,corporateActionCount:Object.keys(result?.events?.splits||{}).length,
         dividendCount:Object.keys(result?.events?.dividends||{}).length,adjustedClosePresent:Array.isArray(result?.indicators?.adjclose?.[0]?.adjclose),historyReasons,...densityEvidence}};
+      if (interval === '1d') onDailyHistory?.(symbol, meta, shaped);
+      return shaped;
     }
     const error = Error(`Data Guard ${symbol}: ${assessed.guardReasons.join(',') || 'UNAVAILABLE'}`);
     error.code = assessed.guardReasons[0] || 'DATA_GUARD_REJECTED';

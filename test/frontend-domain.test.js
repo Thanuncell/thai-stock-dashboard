@@ -296,9 +296,11 @@ test('featured news is source-aware and excluded from the latest list', () => {
   assert.deepEqual(selected.latest.map(item => item.title), ['IQ older']);
 });
 
-test('canonical URL state restores all five workspaces and rejects stale input', () => {
+test('canonical URL state restores all six workspaces and rejects stale input', () => {
   assert.equal(domain.pageFromHash('#profile'), 'profile');
   assert.deepEqual(domain.parseNavigationState('https://setscope.test/?watchlist=private&token=discard#profile'), { route: 'profile' });
+  assert.deepEqual(domain.parseNavigationState('/?watchlist=private#screener'), { route: 'screener' });
+  assert.equal(domain.navigationUrl({ route: 'screener', watchlistId: 'private' }), '/#screener');
   assert.equal(domain.navigationUrl({ route: 'profile', watchlistId: 'private', query: 'discard' }), '/#profile');
   assert.deepEqual(domain.parseNavigationState('https://setscope.test/#overview'), { route: 'overview' });
   assert.deepEqual(domain.parseNavigationState('https://setscope.test/?symbol=ptt&range=1M#chart'), {
