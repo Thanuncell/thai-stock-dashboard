@@ -1429,7 +1429,7 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
       ${evidence ? `<ul class="evidence-grid" role="list">${evidence}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
   };
   if (status === 'ready' && userStorageScope)
-    renderedEvidenceContext = JSON.stringify([userStorageScope, snapshot.symbol, snapshot.timeframe]);
+    renderedEvidenceContext = JSON.stringify([userStorageScope, snapshot.symbol]);
   const openAttribute = openEvidenceContexts.has(renderedEvidenceContext) ? ' open' : '';
   reasonsRoot.innerHTML = status !== 'ready' ? evidenceUnavailable : `${renderReasonCards(snapshot.summary.reasons)}
     <details class="technical-evidence"${openAttribute}><summary>ดูหลักฐานประกอบสัญญาณ</summary>

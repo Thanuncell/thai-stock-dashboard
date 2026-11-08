@@ -41,7 +41,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     return mockRequest(route,base,state);
    });
    const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await seedPage(page,'token-a');
-   const verifyEvidenceRefresh=[390,1366].includes(width)&&theme==='light';
+   const verifyEvidenceRefresh=[390,1366].includes(width);
    if(verifyEvidenceRefresh) await page.clock.install();
    await page.addInitScript(theme=>localStorage.setItem('setscope-theme',theme),theme);
    const nav = route => page.locator(`.side-nav [data-workspace-route=${route}]`);
@@ -162,7 +162,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    check(await evidence.evaluate(el=>el.open),false,'indicator details collapse');
    check(await page.locator('.analysis-panel').getAttribute('data-snapshot-id'),evidenceSnapshot,'expansion cannot change the calculation snapshot');
    if(verifyEvidenceRefresh){
-    phase=`${width}-evidence-refresh`;
+    phase=`${width}-${theme}-evidence-refresh`;
     const apiCalls=[];
     const recordApi=request=>{
      const url=new URL(request.url());
@@ -182,8 +182,9 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     };
     const shoot=async label=>{
      const directory=process.env.SETSCOPE_EVIDENCE_REFRESH_DIR;
-     if(directory) await evidence.screenshot({path:path.join(directory,`evidence-${width}-${label}.png`),animations:'disabled'});
+     if(directory&&theme==='light') await evidence.screenshot({path:path.join(directory,`evidence-${width}-${label}.png`),animations:'disabled'});
     };
+    const switchRange=range=>renderAfter(()=>page.locator(`[data-range="${range}"]`).click());
     const noToggleCalls=apiCalls.length;
     if(width<790) await summary.tap(); else await summary.click();
     check(await open(),true,'native pointer opens evidence');
@@ -201,41 +202,56 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await renderAfter(()=>page.clock.fastForward(60000));
     check(await open(),true,'expanded evidence stays open across automatic refreshes');
 
+    for(const range of ['1W','1M','3M','1Y','1D','1M','1D']){
+     await switchRange(range);
+     check(await open(),true,`expanded evidence persists on ${range}`);
+     await parity();
+    }
+
     short=true;
-    await renderAfter(refresh);
-    check(await evidence.count(),0,'insufficient data clears previous evidence');
+    await switchRange('1W');
+    check(await evidence.count(),0,'insufficient data on another timeframe clears previous evidence');
     check(await page.locator('#overall-signal').textContent(),'ข้อมูลไม่เพียงพอ');
     short=false;
     await renderAfter(refresh);
     check(await open(),true,'returning data restores the same disclosure');
     qualityWarning=true;
-    await renderAfter(refresh);
+    await switchRange('1M');
     check(await evidence.count(),0,'guarded stale data clears previous evidence');
     check(await page.locator('#overall-signal').textContent(),'ข้อมูลต้องตรวจสอบ');
     qualityWarning=false;
     await renderAfter(refresh);
     check(await open(),true,'guard recovery restores the same disclosure');
 
-    await renderAfter(()=>page.locator('[data-range="1W"]').click());
-    check(await open(),false,'a new timeframe starts collapsed');
-    await renderAfter(()=>page.locator('[data-range="1D"]').click());
-    check(await open(),true,'returning to the original timeframe restores its state');
-    for(const symbol of ['CPALL','PTT']){
+    await switchRange('1D');
+    check(await open(),true,'returning to the original timeframe keeps the last choice');
+    for(const [symbol,expected] of [['CPALL',false],['PTT',true],['CPALL',true],['PTT',true]]){
      await page.locator('#stock-search').fill(symbol);
      const item=page.locator(`.suggestion-item[data-symbol=${symbol}]`);
      await item.waitFor();
      await renderAfter(()=>item.click());
-     check(await open(),symbol==='PTT','symbols have independent disclosure states');
+     check(await open(),expected,'symbols have independent disclosure states');
+     if(symbol==='CPALL'){
+      const calls=apiCalls.length;
+      await summary.click();
+      check(await open(),!expected,'the latest choice applies only to this symbol');
+      check(apiCalls.length,calls,'toggling another symbol also makes zero API requests');
+     }
     }
     const stable=await snapshot(),beforeKeyboard=apiCalls.length;
     await summary.focus();await page.keyboard.press('Space');
     check(await open(),false,'keyboard closes evidence');
     check(await snapshot(),stable,'keyboard disclosure does not change the snapshot');
     check(apiCalls.length,beforeKeyboard,'keyboard disclosure makes zero API requests');
+    for(const range of ['1W','1Y','1D']){
+     await switchRange(range);
+     check(await open(),false,`collapsed evidence persists on ${range}`);
+    }
     priceOffset=0;
     await renderAfter(refresh);
+    check(await open(),false,'collapsed evidence stays closed after manual refresh');
     await renderAfter(()=>page.clock.fastForward(60000));
-    check(await open(),false,'collapsed evidence stays closed after manual and auto refresh');
+    check(await open(),false,'collapsed evidence stays closed after auto refresh');
     page.off('request',recordApi);
    }
    const id=await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),count=marketCalls.length;
@@ -445,10 +461,18 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    for(const rank of [2,3])check(await page.locator(`#support-${rank}`).textContent(),'ไม่มีแนวในช่วงนี้','missing levels are not invented');
    ranking=null;await page.locator('#refresh-chart').click();await page.waitForFunction(()=>!document.querySelector('#support-1').textContent.startsWith('16.67'));await parity();
    phase=`${width}-${theme}-race`;
+   if(!await evidence.evaluate(node=>node.open)) await summary.click();
+   const raceCalls=marketCalls.length;
    let release,started;const began=new Promise(resolve=>{started=resolve;});pending={range:'1W',started,wait:new Promise(resolve=>{release=resolve;})};
    await page.locator('[data-range="1W"]').click();await began;await page.locator('[data-range="1M"]').click();await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith('1M'));
+   await parity();
+   const winningSnapshot=await page.locator('.analysis-panel').getAttribute('data-snapshot-id');
+   check(await evidence.evaluate(node=>node.open),true,'latest timeframe keeps evidence expanded before the late response');
    const completed=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market'&&new URL(r.url()).searchParams.get('range')==='1W');release();await completed;await pause(page);
    check((await page.locator('.price-chart-svg').getAttribute('aria-label')).endsWith('1M'),true,'late timeframe response cannot replace newer data');await parity();
+   check(await page.locator('.analysis-panel').getAttribute('data-snapshot-id'),winningSnapshot,'late timeframe response cannot replace the analysis snapshot');
+   check(await evidence.evaluate(node=>node.open),true,'late timeframe response cannot alter the evidence state');
+   check(marketCalls.slice(raceCalls).map(call=>call.range),['1W','1M'],'rapid switching makes one market request per selection');
    for(const symbol of ['CPALL','PTT']){await page.locator('#stock-search').fill(symbol);await page.locator(`.suggestion-item[data-symbol=${symbol}]`).waitFor();await page.locator(`.suggestion-item[data-symbol=${symbol}]`).click();await page.waitForFunction(symbol=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').includes(symbol),symbol);await parity();}
    await page.locator('[data-range="1D"]').click();await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith('1D'));await parity();
    short=true;await page.locator('#refresh-chart').click();await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลไม่เพียงพอ');
