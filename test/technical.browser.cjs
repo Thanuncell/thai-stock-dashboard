@@ -23,7 +23,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await context.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url());
     if(url.origin!==base&&url.origin!=='https://isolation-test.supabase.co')return route.abort();
-    if(url.origin===base&&url.pathname==='/api/search'){const q=url.searchParams.get('q');return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:['PTT','CPALL'].includes(q)?[{symbol:q,name:'Fixture '+q,type:'EQUITY',exchange:'SET'}]:[]})});}
+    if(url.origin===base&&url.pathname==='/api/search'){const q=url.searchParams.get('q');return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:['PTT','CPALL','ADVANC'].includes(q)?[{symbol:q,name:'Fixture '+q,type:'EQUITY',exchange:'SET'}]:[]})});}
     if(url.origin===base&&url.pathname==='/api/market'){
      const range=url.searchParams.get('range')||'1D',symbol=url.searchParams.get('symbol')||'PTT';marketCalls.push({range,symbol});
      if(pending&&pending.range===range){const held=pending;pending=null;held.started();await held.wait;}
@@ -31,7 +31,8 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      const start=Date.UTC(2025,0,1,3,0,17,123),rows=ranking==='nearest'?rankingRows(range):ranking==='role'?roleRankingRows():ranking==='reverse-role'?roleRankingRows().map(row=>({
       ...row,open:200-row.open,close:200-row.close,high:200-row.low,low:200-row.high
      })):ranking==='scarce'?scarceRows():Array.from({length:short?12:260},(_,i)=>({time:start+i*step,open:100+Math.sin(i*.31)*4+i*.03,close:100.4+Math.sin(i*.31)*4+i*.03,high:103+Math.sin(i*.31)*4+i*.03,low:98+Math.sin(i*.31)*4+i*.03,volume:i===40?0:1000+i%11*100}));
-     if(priceOffset) for(const row of rows) for(const key of ['open','high','low','close']) row[key]+=priceOffset;
+     const offset=priceOffset+(symbol==='ADVANC'?40:0);
+     if(offset) for(const row of rows) for(const key of ['open','high','low','close']) row[key]+=offset;
      const end=rows.at(-1).time+(interval==='1d'?24000000:step),observed=interval==='1d'&&['during','draft-spike'].includes(dailyState)?rows.at(-1).time+3600000:end;
      if(interval==='1d'&&dailyState==='draft-spike')Object.assign(rows.at(-1),{open:999,high:1001,low:998,close:1000,volume:999999});
      const meta={interval,receivedAt:dailyState==='unknown-receipt'?null:new Date(observed).toISOString(),regularStart:interval==='1d'?rows.at(-1).time:null,regularEnd:interval==='1d'?(dailyState==='missing'?null:dailyState==='mismatch'?end+86400000:end):null,timeZone:'Asia/Bangkok',priceBasis:'provider-quote-ohlc',adjustment:'fixture-unadjusted'};
@@ -46,6 +47,12 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await page.addInitScript(theme=>localStorage.setItem('setscope-theme',theme),theme);
    const nav = route => page.locator(`.side-nav [data-workspace-route=${route}]`);
    const svg = page.locator('.price-chart-svg');
+   const stockSuggestion=async symbol=>{
+    await page.locator('#stock-search').fill(symbol);
+    const item=page.locator(`.suggestion-item[data-symbol=${symbol}]`);
+    await item.waitFor();
+    return item;
+   };
    const assertFit = async label => {
     await pause(page);
     check(await svg.evaluate(node => {
@@ -185,6 +192,10 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      if(directory&&theme==='light') await evidence.screenshot({path:path.join(directory,`evidence-${width}-${label}.png`),animations:'disabled'});
     };
     const switchRange=range=>renderAfter(()=>page.locator(`[data-range="${range}"]`).click());
+    const switchSymbol=async symbol=>{
+     const item=await stockSuggestion(symbol);
+     await renderAfter(()=>item.click());
+    };
     const noToggleCalls=apiCalls.length;
     if(width<790) await summary.tap(); else await summary.click();
     check(await open(),true,'native pointer opens evidence');
@@ -208,13 +219,24 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      await parity();
     }
 
+    const pttEvidence=await evidence.locator('.reason-group').allTextContents();
+    for(const symbol of ['CPALL','ADVANC','PTT']){
+     await switchSymbol(symbol);
+     check(await open(),true,`expanded evidence persists on ${symbol}`);
+     check((await svg.getAttribute('aria-label')).includes(symbol),true,'chart renders the selected symbol');
+     await parity();
+     if(symbol==='ADVANC') assert.notDeepEqual(await evidence.locator('.reason-group').allTextContents(),pttEvidence,'ADVANC renders its own evidence');
+    }
+
     short=true;
-    await switchRange('1W');
-    check(await evidence.count(),0,'insufficient data on another timeframe clears previous evidence');
+    await switchSymbol('CPALL');
+    check(await evidence.count(),0,'insufficient data on another symbol clears previous evidence');
     check(await page.locator('#overall-signal').textContent(),'ข้อมูลไม่เพียงพอ');
     short=false;
     await renderAfter(refresh);
     check(await open(),true,'returning data restores the same disclosure');
+    check((await svg.getAttribute('aria-label')).includes('CPALL'),true,'recovered evidence belongs to the current symbol');
+    await parity();
     qualityWarning=true;
     await switchRange('1M');
     check(await evidence.count(),0,'guarded stale data clears previous evidence');
@@ -222,31 +244,27 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     qualityWarning=false;
     await renderAfter(refresh);
     check(await open(),true,'guard recovery restores the same disclosure');
+    check((await svg.getAttribute('aria-label')).endsWith('1M'),true,'recovered evidence belongs to the current timeframe');
+    await parity();
 
+    await switchSymbol('ADVANC');
+    await switchRange('1Y');
+    await switchSymbol('PTT');
     await switchRange('1D');
-    check(await open(),true,'returning to the original timeframe keeps the last choice');
-    for(const [symbol,expected] of [['CPALL',false],['PTT',true],['CPALL',true],['PTT',true]]){
-     await page.locator('#stock-search').fill(symbol);
-     const item=page.locator(`.suggestion-item[data-symbol=${symbol}]`);
-     await item.waitFor();
-     await renderAfter(()=>item.click());
-     check(await open(),expected,'symbols have independent disclosure states');
-     if(symbol==='CPALL'){
-      const calls=apiCalls.length;
-      await summary.click();
-      check(await open(),!expected,'the latest choice applies only to this symbol');
-      check(apiCalls.length,calls,'toggling another symbol also makes zero API requests');
-     }
-    }
+    check(await open(),true,'the latest choice persists through mixed symbol and timeframe changes');
     const stable=await snapshot(),beforeKeyboard=apiCalls.length;
     await summary.focus();await page.keyboard.press('Space');
     check(await open(),false,'keyboard closes evidence');
     check(await snapshot(),stable,'keyboard disclosure does not change the snapshot');
     check(apiCalls.length,beforeKeyboard,'keyboard disclosure makes zero API requests');
+    await switchSymbol('ADVANC');
+    check(await open(),false,'collapsed evidence persists on ADVANC');
     for(const range of ['1W','1Y','1D']){
      await switchRange(range);
      check(await open(),false,`collapsed evidence persists on ${range}`);
     }
+    await switchSymbol('PTT');
+    check(await open(),false,'collapsed evidence persists when returning to PTT');
     priceOffset=0;
     await renderAfter(refresh);
     check(await open(),false,'collapsed evidence stays closed after manual refresh');
@@ -464,16 +482,31 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    if(!await evidence.evaluate(node=>node.open)) await summary.click();
    const raceCalls=marketCalls.length;
    let release,started;const began=new Promise(resolve=>{started=resolve;});pending={range:'1W',started,wait:new Promise(resolve=>{release=resolve;})};
-   await page.locator('[data-range="1W"]').click();await began;await page.locator('[data-range="1M"]').click();await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith('1M'));
+   await page.locator('[data-range="1W"]').click();await began;
+   const evidenceVisibleDuringLoad=await evidence.isVisible();
+   await (await stockSuggestion('CPALL')).click();
+   await page.locator('[data-range="1M"]').click();
+   await page.waitForFunction(()=>{
+    const label=document.querySelector('.price-chart-svg')?.getAttribute('aria-label');
+    return label?.includes('CPALL')&&label.endsWith('1M');
+   });
    await parity();
    const winningSnapshot=await page.locator('.analysis-panel').getAttribute('data-snapshot-id');
    check(await evidence.evaluate(node=>node.open),true,'latest timeframe keeps evidence expanded before the late response');
-   const completed=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market'&&new URL(r.url()).searchParams.get('range')==='1W');release();await completed;await pause(page);
-   check((await page.locator('.price-chart-svg').getAttribute('aria-label')).endsWith('1M'),true,'late timeframe response cannot replace newer data');await parity();
+   const completed=page.waitForResponse(r=>{
+    const url=new URL(r.url());
+    return url.pathname==='/api/market'&&url.searchParams.get('symbol')==='PTT'&&url.searchParams.get('range')==='1W';
+   });
+   release();await completed;await pause(page);
+   check(evidenceVisibleDuringLoad,false,'loading hides evidence from the previous selection');
+   const winningLabel=await svg.getAttribute('aria-label');
+   check(winningLabel.includes('CPALL')&&winningLabel.endsWith('1M'),true,'late response cannot replace the selected symbol or timeframe');await parity();
    check(await page.locator('.analysis-panel').getAttribute('data-snapshot-id'),winningSnapshot,'late timeframe response cannot replace the analysis snapshot');
    check(await evidence.evaluate(node=>node.open),true,'late timeframe response cannot alter the evidence state');
-   check(marketCalls.slice(raceCalls).map(call=>call.range),['1W','1M'],'rapid switching makes one market request per selection');
-   for(const symbol of ['CPALL','PTT']){await page.locator('#stock-search').fill(symbol);await page.locator(`.suggestion-item[data-symbol=${symbol}]`).waitFor();await page.locator(`.suggestion-item[data-symbol=${symbol}]`).click();await page.waitForFunction(symbol=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').includes(symbol),symbol);await parity();}
+   check(marketCalls.slice(raceCalls),[{range:'1W',symbol:'PTT'},{range:'1W',symbol:'CPALL'},{range:'1M',symbol:'CPALL'}],'rapid switching makes one market request per selection');
+   await (await stockSuggestion('PTT')).click();
+   await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').includes('PTT'));
+   await parity();
    await page.locator('[data-range="1D"]').click();await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith('1D'));await parity();
    short=true;await page.locator('#refresh-chart').click();await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลไม่เพียงพอ');
    check(await page.locator('.price-candle').count(),12,'insufficient history keeps real candles visible');check(await page.locator('#rsi-value').textContent(),'—');
