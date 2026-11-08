@@ -250,13 +250,18 @@ test('unavailable history storage falls back only to independently guarded Chart
   assert.equal(recovered.reuseSources.historyUnavailable, true);
 });
 
-test('reuse API keeps market snapshots account-neutral and makes zero provider calls', async () => {
+test('retired API stays account-neutral and does not initialize the offline history reuse service', async () => {
   const store = createMemoryDailyHistoryStore({ now: () => observedAt });
   await store.upsert(dailySource().records);
   const factory = require('../server/screener-service');
   const original = factory.createScreenerService;
-  factory.createScreenerService = options => original({ ...options, dailyHistoryStore: store,
-    listCoverage: async () => [coverage('PTT')], now: () => observedAt });
+  const offline = original({ dailyHistoryStore: store, listCoverage: async () => [coverage('PTT')], now: () => observedAt });
+  assert.equal((await offline.readSnapshot()).availability.ready, 1);
+  let runtimeInitializations = 0;
+  factory.createScreenerService = options => {
+    runtimeInitializations++;
+    return original(options);
+  };
   process.env.SUPABASE_URL = 'https://reuse-fixture.invalid';
   process.env.SUPABASE_ANON_KEY = 'fixture-public';
   const nativeFetch = globalThis.fetch;
@@ -275,14 +280,15 @@ test('reuse API keeps market snapshots account-neutral and makes zero provider c
     const payloads = [];
     for (const id of ['user-a', 'user-b']) {
       const response = await nativeFetch(base + '?owner=' + id, { headers: { authorization: 'Bearer fixture-' + id } });
-      assert.equal(response.status, 200);
+      assert.equal(response.status, 410);
       assert.equal(response.headers.get('cache-control'), 'no-store');
       payloads.push(await response.text());
     }
     assert.equal(payloads[0], payloads[1]);
-    assert.equal(JSON.parse(payloads[0]).availability.ready, 1);
+    assert.equal(JSON.parse(payloads[0]).code, 'SCREENER_DISABLED');
     assert.doesNotMatch(payloads[0], /user-a|user-b|watchlist|fixture-private/);
     assert.equal(upstream, 2);
+    assert.equal(runtimeInitializations, 0);
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

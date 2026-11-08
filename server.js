@@ -13,9 +13,6 @@ const { invalidateVerifiedMarket } = require('./server/market-refresh');
 const { createMarketOverviewService } = require('./server/market-overview-service');
 const { createSettradeProvider } = require('./server/market-overview-providers/settrade');
 const { createMarketService } = require('./server/market-service');
-const { createScreenerService } = require('./server/screener-service');
-const { buildIndexCatalog } = require('./server/screener-index');
-const { createScreenerSnapshotStore } = require('./server/screener-snapshot-store');
 const { createNewsArchiveService } = require('./server/news-archive-service');
 const { getAssessments } = require('./lib/news-evidence');
 const { createNewsService } = require('./server/news-service');
@@ -133,15 +130,7 @@ const newsReliability = require('./server/news-source-reliability').createNewsSo
 const articleFetch = newsReliability.wrap(observability.observedFetch(require('./lib/news-fetch').createNewsTransport()),'extraction');
 const authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
-const screenerSnapshotDirectory = process.env.SETSCOPE_SCREENER_SNAPSHOT_DIR;
-const screenerService = createScreenerService({
-  snapshotStore: screenerSnapshotDirectory ? {
-    readPublished: () => createScreenerSnapshotStore(screenerSnapshotDirectory).readPublished(),
-    revision: () => createScreenerSnapshotStore(screenerSnapshotDirectory).revision()
-  } : null,
-  listCoverage: () => coverageRepository.configured ? coverageRepository.listCandidates() : null
-});
-const marketService = createMarketService({ fetchImpl: providerFetch, onDailyHistory: screenerService.rememberDailyHistory });
+const marketService = createMarketService({ fetchImpl: providerFetch });
 const searchRegistry = async () => {
     if (!coverageRepository.configured) return [];
     const result = await responseCache.get('search-registry', {ttlMs:300000,staleIfErrorMs:0,errorBackoffMs:5000}, () => coverageRepository.listSearchCandidates());
@@ -332,13 +321,8 @@ async function handle(req, res) {
     res.writeHead(405);
     return res.end('Method Not Allowed');
   }
-  if (url.pathname === '/api/screener') {
-    try { return send(res, 200, await screenerService.readSnapshot()); }
-    catch (_) { return send(res, 503, { error: 'โหลดข้อมูลคัดกรองหุ้นไม่สำเร็จ' }); }
-  }
-  if (url.pathname === '/api/screener/coverage') {
-    try { return send(res, 200, buildIndexCatalog(await searchRegistry())); }
-    catch (_) { return send(res, 503, { error: 'โหลดรายชื่อหุ้นในทะเบียนไม่สำเร็จ' }); }
+  if (url.pathname === '/api/screener' || url.pathname === '/api/screener/coverage') {
+    return send(res, 410, { code: 'SCREENER_DISABLED', error: 'ปิดใช้งาน Stock Screener แล้ว' });
   }
   if (url.pathname === '/api/coverage') {
     try {

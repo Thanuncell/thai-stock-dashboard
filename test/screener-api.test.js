@@ -153,13 +153,11 @@ test('unreviewed calendars and missing coverage never publish READY', async () =
   assert.equal(reads, 1);
 });
 
-test('authenticated Screener API reuses a real guarded Chart response path with zero additional Yahoo GETs (fixtures)', async () => {
+test('retired Screener endpoints authenticate and skip data work while Chart, Search and Coverage still work', async () => {
   const nativeFetch = globalThis.fetch;
   const originalNow = Date.now;
   const upstream = [];
-  let failRegistry = false;
-  let clock = observedAt;
-  Date.now = () => clock;
+  Date.now = () => observedAt;
   process.env.SUPABASE_URL = 'https://fixture.invalid';
   process.env.SUPABASE_ANON_KEY = 'fixture-public';
   process.env.SUPABASE_SECRET_KEY = 'fixture-private';
@@ -169,13 +167,15 @@ test('authenticated Screener API reuses a real guarded Chart response path with 
     const url = new URL(input);
     upstream.push(url);
     if (url.hostname === 'fixture.invalid' && url.pathname === '/auth/v1/user')
-      return Response.json({ id: 'fixture-user' });
+      return init.headers.authorization === 'Bearer bad-session' || init.headers.Authorization === 'Bearer bad-session'
+        ? Response.json({}, { status: 401 }) : Response.json({ id: 'fixture-user' });
     if (url.hostname === 'fixture.invalid' && url.pathname === '/rest/v1/security_coverage') {
       assert.equal(init.headers.Prefer, 'count=exact');
-      if (failRegistry) return Response.json({ detail: 'fixture-private-diagnostic' }, { status: 503 });
       return Response.json([coverage('PTT'), coverage('CPALL')], { headers: { 'content-range': '0-1/2' } });
     }
     if (url.hostname === 'query1.finance.yahoo.com') {
+      if (url.pathname === '/v1/finance/search')
+        return Response.json({ quotes: [{ symbol: 'OUTSIDE.BK', quoteType: 'EQUITY', longname: 'Outside Coverage Fixture' }] });
       const symbol = decodeURIComponent(url.pathname.split('/').at(-1));
       const interval = url.searchParams.get('interval');
       return Response.json(providerChart(symbol, interval, interval === '1d' ? bars : bars.slice(-1)));
@@ -189,52 +189,44 @@ test('authenticated Screener API reuses a real guarded Chart response path with 
       server.listen(0, '127.0.0.1', resolve);
     });
     const base = 'http://127.0.0.1:' + server.address().port;
-    const get = (path, method = 'GET') => nativeFetch(base + path, { method, headers: { authorization: 'Bearer test-session' } });
-    const quoteReads = () => upstream.filter(url => url.hostname === 'query1.finance.yahoo.com').length;
-    assert.equal((await nativeFetch(base + '/api/screener')).status, 401);
-    assert.equal((await nativeFetch(base + '/api/screener/coverage')).status, 401);
-    assert.equal((await get('/api/screener/coverage', 'POST')).status, 405);
-    const registryResponse = await get('/api/screener/coverage');
-    assert.equal(registryResponse.status, 200);
-    assert.equal(registryResponse.headers.get('cache-control'), 'no-store');
-    const registryCatalog = await registryResponse.json();
-    assert.deepEqual(registryCatalog.stocks.map(row => row.symbol), ['PTT', 'CPALL']);
-    assert.equal(Object.keys(registryCatalog.groups).length, 5);
-    assert.equal((await get('/api/screener', 'POST')).status, 405);
-    assert.equal((await get('/api/screener')).headers.get('cache-control'), 'no-store');
-    assert.equal(quoteReads(), 0);
-    assert.equal((await get('/api/market?symbols=PTT&symbol=PTT&range=1Y')).status, 200);
-    const before = quoteReads();
-    assert.ok(before > 0);
-    clock += 31000;
-    const response = await get('/api/screener');
-    assert.equal(response.status, 200);
-    const data = await response.json();
-    assert.equal(data.marketFreshness, 'CURRENT_SESSION', 'one valid symbol can be screened while another has no evidence');
-    assert.equal(data.snapshot.state, 'PARTIAL');
-    const ptt = data.snapshot.rows.find(row => row.symbol === 'PTT');
-    assert.equal(ptt.state, 'READY');
-    assert.equal(ptt.confirmedBars, 65);
-    assert.equal(ptt.price.close, bars.at(-1).close);
-    const { computeTechnicalSeries, TECHNICAL_DEFAULTS } = await import('../client/domain.mjs');
-    const technical = computeTechnicalSeries(bars, TECHNICAL_DEFAULTS);
-    assert.deepEqual(ptt.technical, {
-      ema20: technical.ema20.at(-1), ema50: technical.ema50.at(-1), rsi14: technical.rsi.at(-1),
-      macd: technical.macd.at(-1), macdSignal: technical.signal.at(-1)
-    });
-    assert.equal(data.snapshot.rows.find(row => row.symbol === 'CPALL').state, 'UNAVAILABLE');
-    const { queryScreenerSnapshot } = await import('../client/screener-core.mjs');
-    assert.deepEqual(queryScreenerSnapshot(data.snapshot).rows.map(row => row.symbol), ['PTT']);
-    assert.equal((await get('/api/screener?refresh=1')).status, 200);
-    assert.equal(quoteReads(), before);
-    assert.equal((await get('/api/screener/coverage')).status, 200);
-    assert.equal(upstream.filter(url => url.pathname === '/rest/v1/security_coverage').length, 3);
-    failRegistry = true;
-    clock += 31000;
-    const error = await get('/api/screener');
-    assert.equal(error.status, 503);
-    assert.doesNotMatch(await error.text(), /fixture-private-diagnostic/);
-    assert.equal(quoteReads(), before);
+    const get = (path, method = 'GET', token = 'test-session') =>
+      nativeFetch(base + path, { method, headers: { authorization: 'Bearer ' + token } });
+    const dataReads = () => upstream.filter(url => url.pathname !== '/auth/v1/user').length;
+    const endpoints = ['/api/screener', '/api/screener/coverage'];
+    async function assertDisabled() {
+      const before = dataReads();
+      for (const path of endpoints) {
+        const response = await get(path + '?refresh=1');
+        assert.equal(response.status, 410);
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+        assert.equal((await response.json()).code, 'SCREENER_DISABLED');
+      }
+      assert.equal(dataReads(), before, 'disabled endpoints must not query registry, snapshots or a provider');
+    }
+    for (const path of endpoints) {
+      assert.equal((await nativeFetch(base + path)).status, 401);
+      assert.equal((await get(path, 'GET', 'bad-session')).status, 401);
+      assert.equal((await get(path, 'POST')).status, 405);
+    }
+    await assertDisabled();
+    assert.equal(dataReads(), 0);
+    const marketResponse = await get('/api/market?symbols=PTT&symbol=PTT&range=1Y');
+    assert.equal(marketResponse.status, 200);
+    const market = await marketResponse.json();
+    assert.equal(market.stocks.find(row => row.symbol === 'PTT').guardStatus, 'accepted');
+    assert.equal(market.history.length, 65);
+    assert.equal(market.history.at(-1).close, bars.at(-1).close);
+    await assertDisabled();
+    assert.equal(upstream.filter(url => url.pathname === '/rest/v1/security_coverage').length, 0);
+    const searchResponse = await get('/api/search?q=OUTSIDE');
+    assert.equal(searchResponse.status, 200);
+    assert.deepEqual((await searchResponse.json()).items.map(row => row.symbol), ['OUTSIDE']);
+    assert.equal(upstream.filter(url => url.pathname === '/v1/finance/search').length, 1);
+    const coverageResponse = await get('/api/coverage');
+    assert.equal(coverageResponse.status, 200);
+    assert.equal((await coverageResponse.json()).configured, true);
+    assert.equal(upstream.filter(url => url.pathname === '/rest/v1/security_coverage').length, 2);
+    await assertDisabled();
     assert.equal((await get('/healthz')).status, 200);
   } finally {
     await new Promise(resolve => server.close(resolve));

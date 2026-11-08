@@ -240,7 +240,7 @@ test('calendar treats holiday and weekend as closures and suppresses old or mixe
   assert.equal(reads, 1);
 });
 
-test('durable read API is authenticated, account-neutral, and starts no registry or provider calls', async t => {
+test('retired API never reads a configured durable snapshot or starts registry or provider calls', async t => {
   const { directory, store } = await fixture(t);
   const main = require('../scripts/run-screener-snapshot').main;
   await assert.rejects(main(['--acquire', '--max-requests=1'], {}), /authorization/);
@@ -248,8 +248,7 @@ test('durable read API is authenticated, account-neutral, and starts no registry
   const originalNow = Date.now;
   const nativeFetch = globalThis.fetch;
   const apiCalls = [];
-  let clock = observedAt;
-  Date.now = () => clock;
+  Date.now = () => observedAt;
   Object.assign(process.env, {
     SETSCOPE_SCREENER_SNAPSHOT_DIR: directory,
     SUPABASE_URL: 'https://fixture.invalid',
@@ -271,26 +270,33 @@ test('durable read API is authenticated, account-neutral, and starts no registry
     assert.equal((await nativeFetch(base)).status, 401);
     const responses = await Promise.all(['user-a', 'user-b'].map(id =>
       nativeFetch(base + '?owner=' + id + '&refresh=1', { headers: { authorization: 'Bearer fixture-' + id } })));
-    assert.deepEqual(responses.map(res => res.status), [200, 200]);
+    assert.deepEqual(responses.map(res => res.status), [410, 410]);
     assert.deepEqual(responses.map(res => res.headers.get('cache-control')), ['no-store', 'no-store']);
     const payloads = await Promise.all(responses.map(res => res.text()));
     assert.equal(payloads[0], payloads[1]);
-    assert.equal(JSON.parse(payloads[0]).marketFreshness, 'CURRENT_SESSION');
+    assert.equal(JSON.parse(payloads[0]).code, 'SCREENER_DISABLED');
     assert.doesNotMatch(payloads[0], /user-[ab]|fixture-private|watchlist/);
     assert.equal(apiCalls.length, 2);
     const originalOpen = fs.open;
+    const originalStat = fs.stat;
+    let snapshotReads = 0;
     fs.open = async (filename, ...args) => {
-      if (filename === path.join(directory, 'published.json'))
-        throw Object.assign(Error('fixture-private-storage-diagnostic'), { code: 'EACCES' });
+      if (filename === path.join(directory, 'published.json')) snapshotReads++;
       return originalOpen(filename, ...args);
     };
-    clock = observedAt + 31000;
+    fs.stat = async (filename, ...args) => {
+      if (filename === path.join(directory, 'published.json')) snapshotReads++;
+      return originalStat(filename, ...args);
+    };
     try {
-      const unavailable = await nativeFetch(base, { headers: { authorization: 'Bearer fixture-user-a' } });
-      assert.equal(unavailable.status, 503);
-      assert.doesNotMatch(await unavailable.text(), /fixture-private-storage-diagnostic|fixture-private/);
+      const disabled = await nativeFetch(base, { headers: { authorization: 'Bearer fixture-user-a' } });
+      assert.equal(disabled.status, 410);
+      assert.equal(snapshotReads, 0);
       assert.equal((await nativeFetch(base.replace('/api/screener', '/healthz'))).status, 200);
-    } finally { fs.open = originalOpen; }
+    } finally {
+      fs.open = originalOpen;
+      fs.stat = originalStat;
+    }
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
