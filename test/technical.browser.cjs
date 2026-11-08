@@ -19,7 +19,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
   for(const width of (process.env.SETSCOPE_TECHNICAL_WIDTHS||'320,360,390,430,1366').split(',').map(Number))for(const theme of ['light','dark']){
    phase=`${width}-${theme}-setup`;
    const context=await browser.newContext({viewport:{width,height:900},isMobile:width<790,hasTouch:width<790});
-   const state={getOwners:[],putOwners:[]},errors=[],marketCalls=[];let short=false,pending=null,dailyState='closed',qualityWarning=false,ranking=null;
+   const state={getOwners:[],putOwners:[]},errors=[],marketCalls=[];let short=false,pending=null,dailyState='closed',qualityWarning=false,ranking=null,priceOffset=0;
    await context.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url());
     if(url.origin!==base&&url.origin!=='https://isolation-test.supabase.co')return route.abort();
@@ -31,6 +31,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      const start=Date.UTC(2025,0,1,3,0,17,123),rows=ranking==='nearest'?rankingRows(range):ranking==='role'?roleRankingRows():ranking==='reverse-role'?roleRankingRows().map(row=>({
       ...row,open:200-row.open,close:200-row.close,high:200-row.low,low:200-row.high
      })):ranking==='scarce'?scarceRows():Array.from({length:short?12:260},(_,i)=>({time:start+i*step,open:100+Math.sin(i*.31)*4+i*.03,close:100.4+Math.sin(i*.31)*4+i*.03,high:103+Math.sin(i*.31)*4+i*.03,low:98+Math.sin(i*.31)*4+i*.03,volume:i===40?0:1000+i%11*100}));
+     if(priceOffset) for(const row of rows) for(const key of ['open','high','low','close']) row[key]+=priceOffset;
      const end=rows.at(-1).time+(interval==='1d'?24000000:step),observed=interval==='1d'&&['during','draft-spike'].includes(dailyState)?rows.at(-1).time+3600000:end;
      if(interval==='1d'&&dailyState==='draft-spike')Object.assign(rows.at(-1),{open:999,high:1001,low:998,close:1000,volume:999999});
      const meta={interval,receivedAt:dailyState==='unknown-receipt'?null:new Date(observed).toISOString(),regularStart:interval==='1d'?rows.at(-1).time:null,regularEnd:interval==='1d'?(dailyState==='missing'?null:dailyState==='mismatch'?end+86400000:end):null,timeZone:'Asia/Bangkok',priceBasis:'provider-quote-ohlc',adjustment:'fixture-unadjusted'};
@@ -40,6 +41,8 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     return mockRequest(route,base,state);
    });
    const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await seedPage(page,'token-a');
+   const verifyEvidenceRefresh=[390,1366].includes(width)&&theme==='light';
+   if(verifyEvidenceRefresh) await page.clock.install();
    await page.addInitScript(theme=>localStorage.setItem('setscope-theme',theme),theme);
    const nav = route => page.locator(`.side-nav [data-workspace-route=${route}]`);
    const svg = page.locator('.price-chart-svg');
@@ -112,7 +115,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await assertFit('Reset restores the default viewport at the fitted size');
    }
    phase=`${width}-${theme}-setup`;
-   const parity=async()=>{await page.waitForFunction(()=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b&&document.querySelectorAll('.technical-reason-card').length===3;});check(await page.locator('.technical-reason-card').count(),3);};
+   const parity=async(expectedReasons=3)=>{await page.waitForFunction(count=>{const a=document.querySelector('#stock-price-chart').dataset.snapshotId,b=document.querySelector('.analysis-panel').dataset.snapshotId;return a&&a===b&&document.querySelectorAll('.technical-reason-card').length===count;},expectedReasons);check(await page.locator('.technical-reason-card').count(),expectedReasons);};
    await parity();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal page overflow');
    check(await page.locator('.indicator-workspace small').textContent(),'ซ่อน/แสดงไม่เปลี่ยนผลวิเคราะห์ · การเปลี่ยน Period จะคำนวณจากข้อมูลเดิม · บันทึกแยกตามบัญชีบนอุปกรณ์นี้');
    check(await page.locator('[data-draw-status]').textContent(),'เลื่อน/ซูมกราฟตามปกติ · ภาพวาดบันทึกแยกตามบัญชีบนอุปกรณ์นี้');
@@ -158,6 +161,83 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await page.keyboard.press('Space');
    check(await evidence.evaluate(el=>el.open),false,'indicator details collapse');
    check(await page.locator('.analysis-panel').getAttribute('data-snapshot-id'),evidenceSnapshot,'expansion cannot change the calculation snapshot');
+   if(verifyEvidenceRefresh){
+    phase=`${width}-evidence-refresh`;
+    const apiCalls=[];
+    const recordApi=request=>{
+     const url=new URL(request.url());
+     if(url.origin===base&&url.pathname.startsWith('/api/')) apiCalls.push(url.pathname);
+    };
+    page.on('request',recordApi);
+    const open=()=>evidence.evaluate(node=>node.open);
+    const snapshot=()=>page.locator('.analysis-panel').getAttribute('data-snapshot-id');
+    const refresh=()=>page.locator('#refresh-chart').click();
+    const renderAfter=async action=>{
+     const previous=await page.$('#technical-reasons > .technical-evidence');
+     const calls=apiCalls.length;
+     await action();
+     if(previous) await page.waitForFunction(node=>!node.isConnected,previous);
+     else await evidence.waitFor({state:'attached'});
+     check(apiCalls.slice(calls),['/api/market'],'each refresh or context change makes only its existing market request');
+    };
+    const shoot=async label=>{
+     const directory=process.env.SETSCOPE_EVIDENCE_REFRESH_DIR;
+     if(directory) await evidence.screenshot({path:path.join(directory,`evidence-${width}-${label}.png`),animations:'disabled'});
+    };
+    const noToggleCalls=apiCalls.length;
+    if(width<790) await summary.tap(); else await summary.click();
+    check(await open(),true,'native pointer opens evidence');
+    check(await snapshot(),evidenceSnapshot,'native disclosure does not recalculate signals');
+    check(apiCalls.length,noToggleCalls,'native disclosure makes zero API requests');
+    await shoot('expanded');
+    const oldValues=await evidence.locator('.reason-group').allTextContents();
+    priceOffset=20;
+    await renderAfter(refresh);
+    await shoot('after-manual-refresh');
+    check(await open(),true,'expanded evidence stays open after manual refresh');
+    check((await snapshot())!==evidenceSnapshot,true,'refresh consumes new market data');
+    check(JSON.stringify(await evidence.locator('.reason-group').allTextContents())!==JSON.stringify(oldValues),true,'open evidence shows new values');
+    await renderAfter(()=>page.clock.fastForward(60000));
+    await renderAfter(()=>page.clock.fastForward(60000));
+    check(await open(),true,'expanded evidence stays open across automatic refreshes');
+
+    short=true;
+    await renderAfter(refresh);
+    check(await evidence.count(),0,'insufficient data clears previous evidence');
+    check(await page.locator('#overall-signal').textContent(),'ข้อมูลไม่เพียงพอ');
+    short=false;
+    await renderAfter(refresh);
+    check(await open(),true,'returning data restores the same disclosure');
+    qualityWarning=true;
+    await renderAfter(refresh);
+    check(await evidence.count(),0,'guarded stale data clears previous evidence');
+    check(await page.locator('#overall-signal').textContent(),'ข้อมูลต้องตรวจสอบ');
+    qualityWarning=false;
+    await renderAfter(refresh);
+    check(await open(),true,'guard recovery restores the same disclosure');
+
+    await renderAfter(()=>page.locator('[data-range="1W"]').click());
+    check(await open(),false,'a new timeframe starts collapsed');
+    await renderAfter(()=>page.locator('[data-range="1D"]').click());
+    check(await open(),true,'returning to the original timeframe restores its state');
+    for(const symbol of ['CPALL','PTT']){
+     await page.locator('#stock-search').fill(symbol);
+     const item=page.locator(`.suggestion-item[data-symbol=${symbol}]`);
+     await item.waitFor();
+     await renderAfter(()=>item.click());
+     check(await open(),symbol==='PTT','symbols have independent disclosure states');
+    }
+    const stable=await snapshot(),beforeKeyboard=apiCalls.length;
+    await summary.focus();await page.keyboard.press('Space');
+    check(await open(),false,'keyboard closes evidence');
+    check(await snapshot(),stable,'keyboard disclosure does not change the snapshot');
+    check(apiCalls.length,beforeKeyboard,'keyboard disclosure makes zero API requests');
+    priceOffset=0;
+    await renderAfter(refresh);
+    await renderAfter(()=>page.clock.fastForward(60000));
+    check(await open(),false,'collapsed evidence stays closed after manual and auto refresh');
+    page.off('request',recordApi);
+   }
    const id=await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),count=marketCalls.length;
    phase=`${width}-${theme}-indicators`;await page.locator('.indicator-workspace summary').click();
    for(const key of ['rsi','atr','bb'])await page.locator(`[data-indicator="${key}"]`).click();
@@ -324,7 +404,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      const reasons=await page.locator('.technical-reason-text').allTextContents();if(mode==='during')priorReasons=reasons;if(mode==='draft-spike')check(reasons,priorReasons,'draft spike cannot change confirmed explanations');
      check(await page.locator('#technical-reasons pre').count(),0,'daily evidence never renders JSON');
     }
-    qualityWarning=true;const warningDone=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await warningDone;await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลต้องตรวจสอบ');await parity();check(await page.locator('#buy-count').textContent(),'—','critical quality cannot show actionable votes');check(await page.locator('#analysis-note').isVisible(),true);check((await page.locator('#analysis-note').textContent()).startsWith('ข้อมูลต้องตรวจสอบ'),true);qualityWarning=false;dailyState='closed';
+     qualityWarning=true;const warningDone=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await warningDone;await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลต้องตรวจสอบ');await parity(0);check(await page.locator('#buy-count').textContent(),'—','critical quality cannot show actionable votes');check(await page.locator('#analysis-note').isVisible(),true);check((await page.locator('#analysis-note').textContent()).startsWith('ข้อมูลต้องตรวจสอบ'),true);qualityWarning=false;dailyState='closed';
    }
    short=true;dailyState='missing';const shortDone=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await shortDone;await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='ข้อมูลไม่เพียงพอ');check(await page.locator('#rsi-value').textContent(),'—');check(await page.locator('#analysis-note').isVisible(),true);check((await page.locator('#analysis-note').textContent()).startsWith('ข้อมูลไม่เพียงพอ'),true);
    short=false;dailyState='unknown-receipt';const unconfirmedDone=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/market');await page.locator('#refresh-chart').click();await unconfirmedDone;await page.waitForFunction(()=>document.querySelector('#overall-signal').textContent==='รอแท่งปิด');check(await page.locator('#analysis-note').isVisible(),true);check((await page.locator('#analysis-note').textContent()).startsWith('รอแท่งปิด'),true);check((await page.locator('#chart-updated').textContent()), 'อัปเดตเมื่อ —');check(await page.locator('#stock-price-chart').getAttribute('data-signal-candle-time'),'');
@@ -380,10 +460,17 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await draw('trend',width<790);check(await page.locator('[data-draw-list] button').count(),1);
    if(!await page.locator('#indicator-settings').isVisible())await page.locator('.indicator-workspace summary').click();
    await page.locator('#indicator-settings input[name=rsi]').fill('7');await page.locator('#indicator-settings button[type=submit]').click();
+   if(verifyEvidenceRefresh && !await evidence.evaluate(node=>node.open)) await summary.click();
    // Logout shows the form before its asynchronous reload; wait for the new document.
    await page.locator('#user-avatar').click();await Promise.all([page.waitForEvent('load'),page.locator('#profile-logout-button').click()]);await page.waitForSelector('#login-form');
    await page.locator('#login-form input[name=email]').fill('b@example.test');await page.locator('#login-form input[name=password]').fill('synthetic-chart-fixture');await page.locator('#login-form button[type=submit]').click();await page.waitForSelector('body.authenticated');
    await page.locator('[data-workspace-route=chart]:visible').first().click();await page.waitForSelector('.price-candle');await parity();
+   if(verifyEvidenceRefresh){
+    await page.locator('#stock-search').fill('PTT');
+    await page.locator('.suggestion-item[data-symbol=PTT]').click();
+    await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').includes('PTT'));
+    check(await evidence.evaluate(node=>node.open),false,'account B starts collapsed for the same symbol and timeframe');
+   }
    check(await page.locator('[data-draw-list] button').count(),0,'account B never sees account A drawings');check(await page.locator('#indicator-settings input[name=rsi]').inputValue(),'14','account B never inherits account A parameters');
    check(await page.evaluate(()=>Object.keys(localStorage).some(key=>key.startsWith('setscope-drawings:')&&!/user-[ab]$/.test(key))),false,'no unscoped drawing storage');check(errors,[]);
    console.log(JSON.stringify({width,theme,result:'PASS',checks}));await context.close();

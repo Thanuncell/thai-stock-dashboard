@@ -71,6 +71,7 @@ function renderSignalEvidence({warnings=[],rows=260,unconfirmed=false,reasonCoun
  const escapeHtml=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const view=reasonCount===undefined?snapshot:{...snapshot,summary:{...snapshot.summary,reasons:snapshot.summary.reasons.slice(0,reasonCount)}};
  const context=vm.createContext({technicalSnapshot:()=>view,createTechnicalSnapshot:technical.createTechnicalSnapshot,
+  openEvidenceContexts:new Set(),renderedEvidenceContext:null,userStorageScope:'fixture-user',
   document:{getElementById:node},$:node,setText:(key,value)=>{node(key).textContent=value;},setTechnicalPanelState:()=>{},
   renderPriceLevels:()=>{},updateSignalDonut:()=>{},indicatorLabel:key=>key,escapeHtml,number:String,currentRange:'1D',latestMarket:{history},history});
  vm.runInContext(renderer+'\ndrawSignals(history);',context);
@@ -137,6 +138,14 @@ test('unconfirmed history shows waiting for close rather than a misleading short
 });
 test('critical quality with insufficient history remains data review in the visible renderer',()=>{
  const {nodes,html}=renderSignalEvidence({rows:12,warnings:['HISTORICAL_ANOMALY']});assert.equal(nodes.get('#overall-signal').textContent,'ข้อมูลต้องตรวจสอบ');assert.match(html,/ข้อมูลต้องตรวจสอบ/);assert.equal(nodes.get('rsi-signal').textContent,'ข้อมูลต้องตรวจสอบ');
+});
+test('critical quality with enough history displays the warning without evidence values',()=>{
+ const {snapshot,before,html,nodes}=renderSignalEvidence({warnings:['HISTORICAL_ANOMALY']});
+ assert.ok(snapshot.analysis);
+ assert.equal(JSON.stringify(snapshot),before);
+ assert.equal(nodes.get('#overall-signal').textContent,'ข้อมูลต้องตรวจสอบ');
+ assert.match(html,/ข้อมูลต้องตรวจสอบก่อนคำนวณสัญญาณ/);
+ assert.doesNotMatch(html,/technical-evidence|compact-reasons/);
 });
 for(const [direction,source,type,value]of [[1,'Swing high','support',110],[-1,'Swing low','resistance',90]]){
  test(`${source} cannot change into ${type} on an unconfirmed/zero-volume breakout`,()=>{

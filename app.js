@@ -128,6 +128,8 @@ let currentRange = initialNavigation.route === 'chart' ? initialNavigation.range
 const chartIndicators = new Set(['sma20', 'ema20', 'ema50', 'macd']);
 let technicalParameters = normalizeTechnicalParameters();
 let technicalCache = null;
+const openEvidenceContexts = new Set();
+let renderedEvidenceContext = null;
 let drawings = null;
 function technicalSnapshot() {
   const owner=userStorageScope,market=latestMarket,parameterKey=JSON.stringify(technicalParameters);
@@ -208,6 +210,8 @@ function clearPrivateDom() {
   setWatchlistSyncStatus('', '');
 }
 function clearPrivateState() {
+  openEvidenceContexts.clear();
+  renderedEvidenceContext = null;
   technicalCache=null;technicalParameters=normalizeTechnicalParameters();drawings?.reset();
   chartIndicators.clear();INDICATOR_PRESETS.basic.forEach(key=>chartIndicators.add(key));
   mostActiveExpanded = false;
@@ -1363,8 +1367,20 @@ function renderReasonCards(reasons) {
 }
 
 function drawSignals(bars, levelBars = bars, displayBars = bars) {
+  const reasonsRoot = $('#technical-reasons');
+  // Read the native state before replacing its node, even if a toggle event is still pending.
+  if (renderedEvidenceContext) {
+    if (reasonsRoot.querySelector(':scope > .technical-evidence')?.open) openEvidenceContexts.add(renderedEvidenceContext);
+    else openEvidenceContexts.delete(renderedEvidenceContext);
+    renderedEvidenceContext = null;
+  }
   const snapshot=bars.length?technicalSnapshot():createTechnicalSnapshot();
   const analysis = snapshot.analysis;
+  const { status } = snapshot.summary;
+  const evidenceMessage = status === 'waiting-close' ? 'ยังไม่มีแท่งที่ยืนยันแล้วให้คำนวณสัญญาณ'
+    : status === 'data-review' ? 'ข้อมูลต้องตรวจสอบก่อนคำนวณสัญญาณ'
+    : 'ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยจากแท่งยืนยันให้ครบ';
+  const evidenceUnavailable = `<p class="reason-empty">${evidenceMessage}</p>`;
   const blockedPlan=snapshot.summary.status==='data-review'?'ตรวจสอบคุณภาพข้อมูลก่อนใช้สัญญาณ':snapshot.summary.status==='insufficient'?'รอ History ที่ยืนยันแล้วให้ครบ Warm-up ก่อนสรุปสัญญาณ':'รอหลักฐานว่าแท่งปิดแล้วก่อนสรุปสัญญาณ';
   $('.analysis-panel').dataset.snapshotId=snapshot.id;
   $('.analysis-panel').dataset.signalCandleTime=String(snapshot.candleTime??'');
@@ -1374,7 +1390,7 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     renderPriceLevels([], snapshot.rows.at(-1)?.close, snapshot.levels);
     setTechnicalPanelState(priceBars.length ? 'insufficient' : chartLoadState);
     setText('#analysis-note', technicalReferenceNote(snapshot));
-    $('#technical-reasons').innerHTML = `<p class="reason-empty">${snapshot.summary.status==='waiting-close'?'ยังไม่มีแท่งที่ยืนยันแล้วให้คำนวณสัญญาณ':snapshot.summary.status==='data-review'?'ข้อมูลต้องตรวจสอบก่อนคำนวณสัญญาณ':'ข้อมูลยังไม่พอคำนวณ RSI, MACD และค่าเฉลี่ยจากแท่งยืนยันให้ครบ'}</p>`;
+    reasonsRoot.innerHTML = evidenceUnavailable;
     setText('#technical-plan', blockedPlan);
     ['rsi-signal', 'macd-signal', 'sma-signal', 'ema20-signal', 'ema50-signal', 'ema100-signal', 'ema200-signal'].forEach(id => {
       const el = document.getElementById(id);
@@ -1412,8 +1428,11 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     return `<div class="reason-group ${className}"><b>${title} (${items.length})</b>
       ${evidence ? `<ul class="evidence-grid" role="list">${evidence}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
   };
-  $('#technical-reasons').innerHTML = `${renderReasonCards(snapshot.summary.reasons)}
-    <details class="technical-evidence"><summary>ดูหลักฐานประกอบสัญญาณ</summary>
+  if (status === 'ready' && userStorageScope)
+    renderedEvidenceContext = JSON.stringify([userStorageScope, snapshot.symbol, snapshot.timeframe]);
+  const openAttribute = openEvidenceContexts.has(renderedEvidenceContext) ? ' open' : '';
+  reasonsRoot.innerHTML = status !== 'ready' ? evidenceUnavailable : `${renderReasonCards(snapshot.summary.reasons)}
+    <details class="technical-evidence"${openAttribute}><summary>ดูหลักฐานประกอบสัญญาณ</summary>
       ${group('แรงหนุนฝั่งบวก', 'positive', supportive)}
       ${group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing)}
       ${neutral.length ? group('ยังไม่ชี้ทิศทาง', 'neutral', neutral) : ''}
