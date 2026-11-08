@@ -173,6 +173,13 @@ async function makeContext(width) {
           check(await link.getAttribute('aria-current'), 'page');
           check(await inheritsColor(), true, 'active SVG color follows the link');
         }
+        check(await page.locator('#profile-page').evaluate(profile => {
+          const css = selector => getComputedStyle(profile.querySelector(selector));
+          const controls = [...profile.querySelectorAll('button:not([hidden]), .profile-legal a')];
+          return [getComputedStyle(profile).gap, css('h2').fontSize, css('dt').fontSize, css('dd').fontSize,
+            css('.profile-setting p').fontSize, controls.every(control => control.offsetHeight >= 44),
+            profile.scrollWidth <= profile.clientWidth + 1];
+        }), ['13px', '14px', '11px', '14px', '11px', true, true], 'Profile density preserves readable sizing and touch targets');
         if (process.env.SETSCOPE_NAV_SCREENSHOT_DIR && [390, 1440].includes(width)) {
           await nav.screenshot({ path: path.join(process.env.SETSCOPE_NAV_SCREENSHOT_DIR, `nav-${width}-${theme}.png`) });
         }

@@ -462,17 +462,18 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 @media(prefers-reduced-motion:reduce){.news-skeleton-bar{animation:none}}
 
 /* Profile shares the existing workspace and device settings. */
-.profile-page{display:grid;gap:16px;max-width:800px}
+.profile-page{display:grid;gap:13px;max-width:800px}
 .profile-card{min-width:0}
-.profile-card h2{margin:0 0 16px}
-.profile-account{margin:0;display:grid;gap:16px}
-.profile-account dt{color:var(--muted);font-size:12px}
-.profile-account dd{margin:4px 0 0;font-size:15px;overflow-wrap:anywhere}
-.profile-actions,.profile-legal{display:flex;flex-wrap:wrap;gap:12px;margin-top:20px}
+.profile-page .profile-card h2{font-size:14px;margin:0 0 10px}
+.profile-account{margin:0;display:grid;gap:10px}
+.profile-account dt{color:var(--muted);font-size:11px}
+.profile-account dd{margin:4px 0 0;font-size:14px;overflow-wrap:anywhere}
+.profile-actions,.profile-legal{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .profile-card button,.profile-legal a,.auth-text-button{min-height:44px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:500 12px var(--font);cursor:pointer;text-decoration:none}
 .profile-card button:disabled{opacity:.6;cursor:wait}
-.profile-card p{color:var(--muted);line-height:1.7}
-.profile-setting{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:12px 0}
+.profile-card p{margin:8px 0;color:var(--muted);font-size:11px;line-height:1.6}
+.profile-card #profile-message:empty{margin:0}
+.profile-setting{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:8px 0}
 .profile-setting+ .profile-setting{border-top:1px solid var(--line)}
 .profile-setting p{margin:4px 0 0}
 .profile-page :focus-visible,.avatar:focus-visible,.nav-item:focus-visible,.auth-text-button:focus-visible{outline:3px solid var(--green);outline-offset:3px}
@@ -493,7 +494,6 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
   max-width: 100%; min-height: 40px; padding: 7px; border: 1px solid var(--line);
   border-radius: 7px; background: var(--paper); color: var(--ink); font: inherit;
 }
-.watchlist-source { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
 .alerts-panel .watchlist-check { margin: 4px 0 8px; }
 .alerts-panel .watchlist-check-result { margin: 0 0 8px; font-size: 12px; overflow-wrap: anywhere; }
 .watch-select { display: block; min-width: 0; max-width: 100%; text-align: start; border: 0; background: none; color: inherit; padding: 0; cursor: pointer; }

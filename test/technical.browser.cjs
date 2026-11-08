@@ -123,30 +123,37 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    check(/"(?:ruleId|candleTime|priceBasis)"\s*:/.test(await page.locator('#technical-reasons').textContent()),false,'no serialized snapshot fields');
    check(await evidence.evaluate(el=>el.open),false,'indicator details start collapsed');
    const summary=evidence.locator('summary');
+   check(await summary.textContent(),'ดูหลักฐานประกอบสัญญาณ');
+   check(await page.locator('.analysis-panel .disclaimer').textContent(),
+    'สัญญาณเป็นเพียงหลักฐานทางเทคนิคย้อนหลัง ไม่รับประกันผล และไม่รวมปัจจัยพื้นฐาน ข่าว ค่าธรรมเนียม หรือความเสี่ยงของแต่ละคน ใช้ประกอบการศึกษา ไม่ใช่คำแนะนำซื้อขาย',
+    'analysis risk and educational wording stay visible without the repeated delay sentence');
    await summary.focus();
    await page.keyboard.press('Enter');
    check(await evidence.evaluate(el=>el.open),true,'indicator details expand');
-   check(await evidence.locator(':scope > .evidence-grid > li').count(),9,'all indicator availability details remain');
+   check(await evidence.locator(':scope > .evidence-grid, .evidence-status').count(),0,'indicator status cards are omitted');
    check(await evidence.locator('.reason-group li strong').count()>0,true,'readable individual indicator values remain');
    check(await page.locator('.technical-reason-number').allTextContents(),['01','02','03']);
    const typography=await page.locator('.analysis-panel').evaluate(panel=>{
     const style=selector=>getComputedStyle(panel.querySelector(selector));
+    const grid=panel.querySelector('.reason-group .evidence-grid');
+    const columns=getComputedStyle(grid).gridTemplateColumns.split(' ').filter(size=>parseFloat(size)>0).length;
+    const expectedColumns=matchMedia('(max-width: 790px)').matches || grid.clientWidth<304 || grid.children.length<2 ? 1 : 2;
     return {
      heading:[style('h3').fontSize,style('h3').fontWeight],
      reason:[style('.technical-reason-text').fontSize,style('.technical-reason-text').fontWeight],
-     indicator:style('.evidence-label').fontSize,status:[style('.evidence-status').fontSize,style('.evidence-status').fontWeight],
+     individualValue:style('.reason-group li strong').fontSize,
      compactText:['#technical-plan','#levels-basis','.disclaimer','#analysis-note'].map(selector=>{
       const text=style(selector);
       return [text.fontSize,text.lineHeight];
      }),
      family:style('.technical-reason-text').fontFamily.includes('IBM Plex Sans Thai'),
-     columns:style('.evidence-grid').gridTemplateColumns.split(' ').length,
+     evidenceColumnsFit:columns===expectedColumns,
      hierarchy:parseFloat(style('#overall-signal').fontSize)>parseFloat(style('.technical-reason-text').fontSize)
     };
    });
-   check(typography,{heading:['14px','600'],reason:['13px','400'],indicator:'13px',status:['11px','500'],
+   check(typography,{heading:['14px','600'],reason:['13px','400'],individualValue:'13px',
     compactText:[['10px','17px'],['9px','14.85px'],['9px','14.85px'],['11px','18.7px']],
-    family:true,columns:width===1366?2:1,hierarchy:true},'technical type and evidence grid at this width');
+    family:true,evidenceColumnsFit:true,hierarchy:true},'technical type and evidence grid at this width');
    check(await evidence.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true,'expanded evidence has no horizontal overflow');
    await page.keyboard.press('Space');
    check(await evidence.evaluate(el=>el.open),false,'indicator details collapse');
