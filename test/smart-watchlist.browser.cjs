@@ -31,7 +31,7 @@ async function run() {
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const base = 'http://127.0.0.1:' + server.address().port;
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true, executablePath: process.env.SETSCOPE_BROWSER_EXECUTABLE || undefined });
     const context = await browser.newContext({ viewport: { width: 1366, height: 900 } });
     const page = await context.newPage();
     const state = { getOwners: [], putOwners: [] }, requests = [], news = [], errors = [];
@@ -114,7 +114,9 @@ async function run() {
     await page.waitForFunction(() => document.querySelector('#watchlist-news-list').textContent.includes('ROJNA รายงาน'));
     assert.equal(await signal.textContent(), 'สัญญาณ WHA · ' + overall + ' · 1D');
     assert.equal(await list.locator('[data-sym=ROJNA] .watch-price').textContent(), '—');
-    assert.equal(await page.locator('.watchlist-source').textContent(), 'แหล่งข้อมูล: Yahoo Finance · ล่าช้าประมาณ 15 นาที');
+    assert.equal(await page.locator('#watchlist-page .watchlist-source').count(), 0);
+    assert.equal(await page.locator('.chart-source-note').textContent(), 'แหล่งข้อมูล: Yahoo Finance · ล่าช้าประมาณ 15 นาที');
+    assert.equal(await list.evaluate(node => node.previousElementSibling.matches('.watchlist-tools')), true);
     await signal.focus();
     await page.keyboard.press('Enter');
     assert.deepEqual(await cards.locator('.technical-reason-text').allTextContents(), reasons);

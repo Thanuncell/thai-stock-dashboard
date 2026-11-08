@@ -1412,13 +1412,8 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     return `<div class="reason-group ${className}"><b>${title} (${items.length})</b>
       ${evidence ? `<ul class="evidence-grid" role="list">${evidence}</ul>` : '<p>ยังไม่มีหลักฐานจากชุด indicator นี้</p>'}</div>`;
   };
-  const availability = Object.entries(snapshot.availability).map(([key, value]) => {
-    const status = value.state === 'available' ? 'พร้อม' : `ข้อมูลไม่ครบ ${value.bars}/${value.required} แท่ง`;
-    return `<li><span class="evidence-label">${escapeHtml(indicatorLabel(key))}:</span> <span class="evidence-status">${status}</span></li>`;
-  }).join('');
   $('#technical-reasons').innerHTML = `${renderReasonCards(snapshot.summary.reasons)}
-    <details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว</summary>
-      <ul class="evidence-grid" role="list">${availability}</ul>
+    <details class="technical-evidence"><summary>ดูหลักฐานประกอบสัญญาณ</summary>
       ${group('แรงหนุนฝั่งบวก', 'positive', supportive)}
       ${group('แรงกดดัน/เหตุผลฝั่งลบ', 'negative', opposing)}
       ${neutral.length ? group('ยังไม่ชี้ทิศทาง', 'neutral', neutral) : ''}

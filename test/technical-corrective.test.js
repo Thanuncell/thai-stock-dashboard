@@ -84,9 +84,19 @@ test('signal evidence renders three readable reason groups and indicator details
  assert.deepEqual([...html.matchAll(/class="technical-reason-number" aria-hidden="true">(\d+)</g)].map(match=>match[1]),['01','02','03']);
  for(const reason of snapshot.summary.reasons)assert.ok(html.includes(reason.text),'all three computed reasons remain readable');
  assert.equal(snapshot.summary.reasons.length,3);
- assert.match(html,/<details class="technical-evidence"><summary>ดูหลักฐานและค่ารายตัว<\/summary>/);
- for(const key of Object.keys(snapshot.availability))assert.ok(html.includes(key+':</span> <span class="evidence-status">พร้อม</span>'),'indicator availability remains');
+ assert.match(html,/<details class="technical-evidence"><summary>ดูหลักฐานประกอบสัญญาณ<\/summary>/);
+ assert.equal(Object.keys(snapshot.availability).length,9,'all availability data remain in the snapshot');
+ assert.doesNotMatch(html,/evidence-status|evidence-label/);
  for(const reason of snapshot.analysis.reasons)assert.ok(html.includes(reason.key+' · '+reason.value),'individual indicator values remain');
+});
+
+test('incomplete indicator status stays in the snapshot while evidence remains available',()=>{
+ const {html,snapshot}=renderSignalEvidence({rows:60});
+ assert.ok(snapshot.analysis);
+ assert.ok(Object.values(snapshot.availability).some(value=>value.state==='insufficient'));
+ assert.match(html,/ดูหลักฐานประกอบสัญญาณ/);
+ assert.doesNotMatch(html,/evidence-status|evidence-label/);
+ for(const reason of snapshot.analysis.reasons)assert.ok(html.includes(reason.key+' · '+reason.value));
 });
 
 test('reason cards follow the actual number of reasons',()=>{
