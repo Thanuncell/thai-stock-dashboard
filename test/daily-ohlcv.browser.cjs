@@ -5,7 +5,6 @@ const { chromium } = require(process.env.SETSCOPE_PLAYWRIGHT_MODULE || 'playwrig
 const { mockRequest, seedPage } = require('./account-isolation.browser.cjs');
 const { dailySource, observedAt, coverage } = require('./fixtures/daily-ohlcv.cjs');
 const { createScreenerService } = require('../server/screener-service');
-const { buildIndexCatalog } = require('../server/screener-index');
 
 async function envelopes(registry) {
   const { queryScreenerSnapshot } = await import('../client/screener-core.mjs');
@@ -48,7 +47,6 @@ async function envelopes(registry) {
   process.env.SUPABASE_URL = 'https://isolation-test.supabase.co';
   const { server } = require('../server');
   const registry = Array.from({ length: 500 }, (_, i) => coverage('S' + String(i).padStart(3, '0')));
-  const catalog = buildIndexCatalog(registry, {});
   const payloads = await envelopes(registry);
   let browser;
   try {
@@ -68,9 +66,8 @@ async function envelopes(registry) {
           return route.fulfill({ json: payloads[mode] });
         }
         if (url.origin === base && url.pathname === '/api/screener/coverage') {
-          assert.match(route.request().headers().authorization, /^Bearer /);
           coverageReads++;
-          return route.fulfill({ json: catalog });
+          return route.abort();
         }
         if (![base, 'https://isolation-test.supabase.co'].includes(url.origin)) return route.abort();
         return mockRequest(route, base, state);
@@ -82,18 +79,13 @@ async function envelopes(registry) {
       for (const nextMode of ['ready', 'missing', 'stale', 'blocked', 'unavailable', 'unknown']) {
         mode = nextMode;
         await page.goto(base + '/?fixture=' + mode + '#screener');
-        await page.locator('#screener-index-status').filter({ hasText: 'พบ 500 จาก 500 หุ้นในกลุ่ม' }).waitFor();
+        await page.waitForURL(base + '/#overview');
+        await page.locator('#market-overview').waitFor();
         await page.waitForLoadState('networkidle');
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
-        const initialReads = coverageReads;
-        await page.locator('#screener-index-next').click();
-        assert.equal(await page.locator('#screener-index-page').textContent(), 'หน้า 2 / 25');
-        await page.locator('#screener-index-search').fill('S499');
-        assert.equal(await page.locator('#screener-index-list strong').textContent(), 'S499');
-        assert.equal(coverageReads, initialReads);
-        assert.equal(reads, 0, 'the catalog does not load technical snapshots in any state');
+        assert.equal(reads, 0, 'the retired route does not load technical snapshots in any state');
+        assert.equal(coverageReads, 0, 'the retired route does not load its registry catalog');
       }
-      assert.equal(coverageReads, 6);
       assert.equal(providers, 0);
       assert.deepEqual(errors, []);
       console.log(JSON.stringify({ width, states: 6, fixtureSymbols: 500, providerRequests: providers, result: 'PASS' }));

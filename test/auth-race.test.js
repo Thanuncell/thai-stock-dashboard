@@ -496,13 +496,13 @@ test('Profile verification comes from email_confirmed_at, never user metadata', 
   }
 });
 
-test('Profile and Screener deep links survive mandatory login through the existing safe return route', async () => {
-  for (const hash of ['#profile', '#screener']) {
+test('mandatory login restores Profile and redirects retired Screener links to Overview', async () => {
+  for (const [hash, expected] of [['#profile', '#profile'], ['#screener', '#overview']]) {
     const h = await createHarness({ initialSession: null, initialLocation: { pathname: '/', search: '', hash } });
     assert.equal(h.document.body.classList.contains('authenticated'), false);
     assert.equal(h.location.pathname, '/login');
     await h.submit('#login-form', { email: 'a@example.test', password: 'fixture' });
-    assert.equal(h.location.hash, hash);
+    assert.equal(h.location.hash, expected);
   }
 });
 

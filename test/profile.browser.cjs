@@ -114,7 +114,7 @@ async function makeContext(width) {
       check(new URL(page.url()).hash, '#profile');
       check(await page.locator('#profile-email').textContent(), 'a@example.test');
       check(await page.locator('#profile-verification').textContent(), 'ยืนยันอีเมลแล้ว');
-      check(await page.locator('.side-nav .nav-item').count(), 6);
+      check(await page.locator('.side-nav .nav-item').count(), 5);
       check(await page.locator('.side-nav [aria-current="page"]').getAttribute('data-workspace-route'), 'profile');
       check(await page.locator('#market-overview').isVisible(), false);
       check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'no horizontal overflow');
