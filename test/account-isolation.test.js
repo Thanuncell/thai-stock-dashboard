@@ -174,8 +174,9 @@ test('T07 same-user refresh preserves owner generation while logout and expiry c
 test('T09/T17 private Watchlist API is no-store and trusts validated auth identity, not payload user_id', () => {
   const handler = serverSource.match(/async function handleWatchlists[\s\S]*?\n}\r?\n\r?\nasync function handleNewsAnalysis/)?.[0] || '';
   assert.match(handler, /res\.setHeader\('cache-control', 'no-store'\)/);
-  assert.match(handler, /watchlistService\.load\(user\.id, req\.headers\.authorization\)/);
-  assert.match(handler, /watchlistService\.save\(user\.id, req\.headers\.authorization, normalized\)/);
+  assert.match(handler, /watchlistService\.load\(user\.id, authorization\)/);
+  assert.match(handler, /watchlistService\.save\(user\.id, authorization, normalized\)/);
+  assert.match(serverSource, /handleWatchlists\(req, res, user, identity\.authorization\)/);
   assert.match(serviceSource, /url\.searchParams\.set\('user_id', `eq\.\$\{userId\}`\)/);
   assert.match(serviceSource, /user_id: userId/);
   assert.doesNotMatch(serviceSource, /normalized\.user_id/);

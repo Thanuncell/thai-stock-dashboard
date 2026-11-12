@@ -207,11 +207,11 @@ async function handleWatchlistNews(req, res, user, url) {
   }
 }
 
-async function handleWatchlists(req, res, user) {
+async function handleWatchlists(req, res, user, authorization) {
   if (req.method === 'GET') {
     res.setHeader('cache-control', 'no-store');
     try {
-      const record = await watchlistService.load(user.id, req.headers.authorization);
+      const record = await watchlistService.load(user.id, authorization);
       return send(res, 200, { record }, { 'cache-control': 'no-store' });
     } catch (error) {
       return send(res, 502, { error: 'โหลด Watchlist จาก Supabase ไม่สำเร็จ' });
@@ -222,7 +222,7 @@ async function handleWatchlists(req, res, user) {
       const body = await readJson(req);
       const normalized = normalizeWatchlistsPayload(body);
       if (!normalized.ok) return send(res, 400, { error: normalized.error });
-      await watchlistService.save(user.id, req.headers.authorization, normalized);
+      await watchlistService.save(user.id, authorization, normalized);
       return send(res, 200, { ok: true, syncedAt: new Date().toISOString() });
     } catch (error) {
       return send(res, 502, { error: 'บันทึก Watchlist ไป Supabase ไม่สำเร็จ' });
@@ -280,7 +280,7 @@ function serveStatic(url, res) {
   });
 }
 
-async function handle(req, res) {
+async function handle(req, res, auth = authService) {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/healthz' || url.pathname.startsWith('/api/')) {
@@ -308,12 +308,16 @@ async function handle(req, res) {
   if (url.pathname.startsWith('/api/') && limited(`ip:${ip}`, 300)) {
     return send(res, 429, { error: 'คำขอถี่เกินไป กรุณารอสักครู่' });
   }
-  if (url.pathname === '/api/auth-config') return send(res, 200, authService.configPayload());
+  if (url.pathname === '/api/auth-config') return send(res, 200, auth.configPayload());
+  if (url.pathname.startsWith('/api/auth/session/')) {
+    return auth.handleSession(req, res, url.pathname.slice('/api/auth/session/'.length), () => readJson(req));
+  }
   if (url.pathname === '/api/automation/manual') return manualCoverageHandler(req, res);
 
-  const user = url.pathname.startsWith('/api/') ? await authService.requireUser(req, res) : null;
-  if (url.pathname.startsWith('/api/') && !user) return;
-  if (url.pathname === '/api/watchlists') return handleWatchlists(req, res, user);
+  const identity = url.pathname.startsWith('/api/') ? await auth.authorize(req, res) : null;
+  if (url.pathname.startsWith('/api/') && !identity) return;
+  const user = identity?.user;
+  if (url.pathname === '/api/watchlists') return handleWatchlists(req, res, user, identity.authorization);
   if (url.pathname === '/api/news-analysis') return handleNewsAnalysis(req, res, user);
   if (url.pathname === '/api/watchlist-news') return handleWatchlistNews(req, res, user, url);
 
