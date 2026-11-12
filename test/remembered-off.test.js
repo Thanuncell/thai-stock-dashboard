@@ -11,6 +11,8 @@ for (const name of Object.keys(process.env)) {
 }
 process.env.SUPABASE_URL = 'https://fixture.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'fixture-public-key';
+process.env.HOST = '127.0.0.1';
+process.env.PORT = '0';
 const originalLoad = Module._load;
 Module._load = function (name, ...args) {
   if (/remembered-session-postgres|dev-remembered-runtime|^pg$/.test(name)) {
@@ -24,7 +26,7 @@ globalThis.fetch = async (input) => {
   if (url.includes('/rest/v1/user_watchlists')) return Response.json([{ watchlists: [], active_watchlist_id: null }]);
   throw new Error('Unexpected upstream request in offline bootstrap test');
 };
-const { server } = require('../server');
+const { server, start } = require('../server');
 function request(route, method = 'GET', authorized = false) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port: server.address().port, path: route, method,
@@ -39,7 +41,7 @@ function request(route, method = 'GET', authorized = false) {
 }
 test('ordinary bootstrap keeps Remember OFF without a session store or migration', async () => {
   try {
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    await start();
     assert.equal((await request('/healthz')).status, 200);
     const config = await request('/api/auth-config');
     assert.equal(config.status, 200);

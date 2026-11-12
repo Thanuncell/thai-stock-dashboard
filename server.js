@@ -128,7 +128,7 @@ const responseCache = createMemoryCache({ maxEntries: 200 });
 const providerFetch = observability.observedFetch(globalThis.fetch);
 const newsReliability = require('./server/news-source-reliability').createNewsSourceReliability({pausedSources:String(process.env.SETSCOPE_NEWS_PAUSED_SOURCES||'').split(',').map(x=>x.trim()).filter(Boolean),onEvent:fields=>observability.emit('news_source',fields)});
 const articleFetch = newsReliability.wrap(observability.observedFetch(require('./lib/news-fetch').createNewsTransport()),'extraction');
-const authService = createAuthService({ send, fetchImpl: providerFetch });
+let authService = createAuthService({ send, fetchImpl: providerFetch });
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
 const searchRegistry = async () => {
@@ -308,7 +308,7 @@ async function handle(req, res, auth = authService) {
   if (url.pathname.startsWith('/api/') && limited(`ip:${ip}`, 300)) {
     return send(res, 429, { error: 'คำขอถี่เกินไป กรุณารอสักครู่' });
   }
-  if (url.pathname === '/api/auth-config') return send(res, 200, auth.configPayload());
+  if (url.pathname === '/api/auth-config') return send(res, 200, auth.configPayload(req));
   if (url.pathname.startsWith('/api/auth/session/')) {
     return auth.handleSession(req, res, url.pathname.slice('/api/auth/session/'.length), () => readJson(req));
   }
@@ -429,8 +429,40 @@ const server = http.createServer((req, res) => {
   });
 });
 
-if (require.main === module) {
-  server.listen(PORT, HOST, () => console.log(`SETscope running at http://${HOST}:${PORT}`));
+async function start() {
+  let runtime;
+  // Legacy OFF keeps its existing zero-store bootstrap. Once guards have been
+  // provisioned, REQUIRED prevents accidentally selecting that bootstrap again.
+  if ((process.env.SETSCOPE_REMEMBER_MODE || 'legacy') !== 'legacy'
+    || process.env.SETSCOPE_REMEMBER_REQUIRED) {
+    runtime = await require('./server/production-remembered-runtime').createProductionRememberedRuntime({
+      env: process.env, send, fetchImpl: providerFetch
+    });
+    authService = runtime.auth;
+  }
+  server.once('close', () => { void runtime?.close(); });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(PORT, HOST, resolve);
+    });
+  } catch (error) {
+    await runtime?.close();
+    throw error;
+  }
+  console.log(`SETscope running at http://${HOST}:${PORT}`);
+  const shutdown = () => {
+    const deadline = setTimeout(() => { server.closeAllConnections(); }, 10000);
+    deadline.unref();
+    server.close(() => { clearTimeout(deadline); });
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
-module.exports = { handle, server, SECURITY_HEADERS };
+if (require.main === module) start().catch(() => {
+  console.error('SETscope startup rejected: runtime prerequisites unavailable; details withheld');
+  process.exitCode = 1;
+});
+
+module.exports = { handle, server, start, SECURITY_HEADERS };

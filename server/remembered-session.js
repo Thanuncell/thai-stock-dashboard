@@ -56,7 +56,8 @@ function cookieDigest(req) {
 // An unavailable lookup must throw, never report a missing provider session.
 // acquireRefresh/finishRefresh compare version and lease, reject expired or
 // revoked records, and never extend expiresAt. revoke wins over a pending lease.
-function createRememberedSessions({ store, key, origin, allowIssue = false, dataApiGuardVerified = false, now = Date.now }, provider) {
+function createRememberedSessions({ store, key, origin, allowIssue = false, dataApiGuardVerified = false,
+  allowRestoreWhenOff = false, mayIssue = () => true, now = Date.now }, provider) {
   if (!store || !Buffer.isBuffer(key) || key.length !== 32 || !/^https:\/\/[^/]+$/.test(origin)
     || new URL(origin).origin !== origin) throw new Error('Invalid remembered session dependencies');
   const canIssue = allowIssue === true && dataApiGuardVerified === true;
@@ -112,6 +113,12 @@ function createRememberedSessions({ store, key, origin, allowIssue = false, data
     const previous = previousDigest ? await store.find(previousDigest) : null;
     if (active(previous)) checkGeneration(req, previous);
     const pair = await verifyPair(await provider.login({ email: body.email, password: body.password }));
+    // Only a provider-verified immutable identity can enter a restricted cohort.
+    // The submitted email and user-editable metadata are not authorization.
+    if (!await mayIssue(pair.user)) {
+      try { await provider.logout(pair.tokens.access); } catch (_) {}
+      throw new AuthFailure(403);
+    }
     const handle = id();
     const digest = createHash('sha256').update(handle).digest('hex');
     const issuedAt = now();
@@ -158,7 +165,7 @@ function createRememberedSessions({ store, key, origin, allowIssue = false, data
   async function authenticate(req, { restore = false } = {}) {
     checkBrowser(req);
     if (req.headers.authorization) throw new AuthFailure(401);
-    if (!canIssue) throw new AuthFailure(401);
+    if (!canIssue && !(allowRestoreWhenOff === true && dataApiGuardVerified === true)) throw new AuthFailure(401);
     let record = await current(cookieDigest(req));
     if (!restore) checkGeneration(req, record);
     if (record.accessExpiresAt <= now() + 10_000) record = await rotate(record);
