@@ -1,4 +1,4 @@
-(() => {
+((loginWithSession) => {
   function readAuthCallback() {
     const params = new URLSearchParams(location.hash.slice(1));
     if (!['access_token', 'refresh_token', 'provider_token', 'provider_refresh_token', 'error'].some(key => params.has(key))) return null;
@@ -8,6 +8,7 @@
   let authCallback = readAuthCallback();
   const STORAGE_KEY = 'setscope-auth-session-v1';
   const AUTH_BOUNDARY_KEY = 'setscope-auth-boundary-v1';
+  const LOGOUT_PENDING_KEY = 'setscope-remembered-logout-pending';
   const THEME_KEY = 'setscope-theme';
   const APP_TITLE = 'SETscope — หุ้นไทยและกราฟเทคนิค';
   const APP_RETURN_KEY = 'setscope-auth-return-v1';
@@ -16,6 +17,7 @@
   let recoveryPending = authCallback?.type === 'recovery' || sessionStorage.getItem(RECOVERY_KEY) === '1';
   let config = null;
   let session = readSession();
+  let remembered = null;
   let user = null;
   let refreshTimer;
   let authGeneration = 0;
@@ -27,6 +29,14 @@
   const pendingRequests = new Set();
   const AUTH_ROUTES = { login: '/login', signup: '/register' };
   const $ = selector => document.querySelector(selector);
+  const rememberDevice = $('#remember-device');
+  const canRemember = () => config?.rememberDevice === true && Boolean(window.navigator?.locks);
+  // The normal bootstrap provides no session adapter. B1 exercises it only in fixtures.
+  if (loginWithSession && rememberDevice) {
+    rememberDevice.disabled = false;
+    rememberDevice.parentElement.hidden = false;
+  }
+  const rememberAvailable = () => Boolean(loginWithSession || canRemember());
   function appRouteFromLocation() {
     if (location.hash.includes('access_token=')) return '';
     const route = location.hash.replace(/^#/, '');
@@ -121,7 +131,7 @@
   function isCurrentAuthOperation(generation) { return generation === authOperationGeneration; }
   function captureIdentity() { return Object.freeze({ ownerId: activeOwnerId, generation: authGeneration }); }
   function isCurrentIdentity(identity) {
-    return Boolean(identity?.ownerId && session?.access_token
+    return Boolean(identity?.ownerId && (session?.access_token || remembered)
       && identity.ownerId === activeOwnerId && identity.generation === authGeneration);
   }
   function staleSessionError() {
@@ -148,6 +158,7 @@
     activeOwnerId = '';
     privateUiReadyGeneration = -1;
     replaceSession(null);
+    remembered = null;
     user = null;
     recoveryPending = false;
     sessionStorage.removeItem(RECOVERY_KEY);
@@ -171,7 +182,70 @@
     if (!response.ok) throw new Error(payload.msg || payload.message || payload.error_description || payload.error || 'ดำเนินการไม่สำเร็จ กรุณาลองอีกครั้ง');
     return payload;
   }
+  async function rememberedRequest(action, generation, body) {
+    const response = await fetch(`/api/auth/session/${action}`, {
+      method: 'POST', credentials: 'same-origin', redirect: 'error', cache: 'no-store',
+      signal: AbortSignal.timeout(25_000),
+      headers: {
+        'x-setscope-request': '1',
+        ...(generation ? { 'x-setscope-session': generation } : {}),
+        ...(body ? { 'Content-Type': 'application/json' } : {})
+      },
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+    if (!response.ok) {
+      const error = new Error('ดำเนินการเกี่ยวกับเซสชันไม่สำเร็จ กรุณาลองอีกครั้ง');
+      error.status = response.status;
+      throw error;
+    }
+    return response.json();
+  }
+
+  function withSessionCookie(action) {
+    return window.navigator.locks.request('setscope-remembered-session', action);
+  }
+
+  function markRememberedLogout(ownerId) {
+    try {
+      if (ownerId) localStorage.setItem(LOGOUT_PENDING_KEY, ownerId);
+      else localStorage.removeItem(LOGOUT_PENDING_KEY);
+    } catch (_) {}
+  }
+
+  async function restoreRemembered() {
+    try { return await rememberedRequest('restore'); }
+    catch (error) { if (error.status === 401) return null; throw error; }
+  }
+
+  function acceptRemembered(result) {
+    if (!result?.user?.id || typeof result.generation !== 'string'
+      || !Number.isFinite(result.remainingMs) || result.remainingMs <= 0) throw new Error('ข้อมูลเซสชันไม่ถูกต้อง');
+    replaceSession(null);
+    remembered = { generation: result.generation, remainingMs: result.remainingMs };
+    user = result.user;
+    scheduleRefresh();
+    showDashboard();
+  }
+
   async function refreshSession() {
+    if (remembered) {
+      const original = remembered;
+      const operation = authOperationGeneration;
+      try {
+        const result = await rememberedRequest('refresh', original.generation);
+        if (original !== remembered || !isCurrentAuthOperation(operation)) return false;
+        if (result.generation !== original.generation || result.user?.id !== user?.id) {
+          endPrivateSession('expiry');
+          return false;
+        }
+        original.remainingMs = result.remainingMs;
+        scheduleRefresh();
+        return true;
+      } catch (error) {
+        if (error.status === 401 && original === remembered && isCurrentAuthOperation(operation)) endPrivateSession('expiry');
+        return false;
+      }
+    }
     if (!config?.configured || !session?.refresh_token) return false;
     const original = captureSession();
     if (refreshInFlight?.generation === original.generation
@@ -280,10 +354,13 @@
     if (recoveryPending && session?.access_token) { showRecoveryForm(); return; }
     const signup = mode === 'signup';
     const forgot = mode === 'forgot';
+    if (rememberDevice) {
+      rememberDevice.checked = false;
+      rememberDevice.disabled = !rememberAvailable();
+    }
     $('#login-form').hidden = signup || forgot; $('#signup-form').hidden = !signup;
     if ($('#forgot-password-form')) $('#forgot-password-form').hidden = !forgot;
     if ($('#recovery-form')) $('#recovery-form').hidden = true;
-    if ($('#forgot-password-button')) $('#forgot-password-button').hidden = signup || forgot;
     $('#auth-login-tab').classList.toggle('selected', !signup); $('#auth-signup-tab').classList.toggle('selected', signup);
     $('#auth-login-tab').setAttribute('aria-selected', String(!signup)); $('#auth-signup-tab').setAttribute('aria-selected', String(signup));
     $('#auth-title').textContent = forgot ? 'ตั้งรหัสผ่านใหม่' : signup ? 'สร้างบัญชี SETscope' : 'เข้าสู่ระบบ SETscope';
@@ -314,7 +391,6 @@
     $('#app-shell').setAttribute('aria-hidden', 'true');
     $('#login-form').hidden = true; $('#signup-form').hidden = true;
     if ($('#forgot-password-form')) $('#forgot-password-form').hidden = true;
-    if ($('#forgot-password-button')) $('#forgot-password-button').hidden = true;
     if ($('#recovery-form')) $('#recovery-form').hidden = false;
     $('#auth-title').textContent = 'ตั้งรหัสผ่านใหม่';
     document.title = 'ตั้งรหัสผ่านใหม่ — SETscope';
@@ -363,6 +439,13 @@
   }
   function scheduleRefresh() {
     clearTimeout(refreshTimer);
+    if (remembered) {
+      const original = remembered;
+      refreshTimer = setTimeout(() => {
+        if (remembered === original) endPrivateSession('expiry');
+      }, Math.max(0, original.remainingMs));
+      return;
+    }
     if (!session?.expires_at) return;
     const scheduled = captureSession();
     refreshTimer = setTimeout(async () => {
@@ -389,10 +472,38 @@
   }
   async function onLogin(event) {
     event.preventDefault(); const form = new FormData(event.currentTarget); const submit = event.currentTarget.querySelector('[type=submit]');
+    const credentials = { email: form.get('email'), password: form.get('password') };
     const operationGeneration = beginAuthOperation();
+    if (rememberDevice) rememberDevice.disabled = true;
     submit.disabled = true; message('กำลังตรวจสอบบัญชี…');
     try {
-      const result = await authRequest('token?grant_type=password', { method: 'POST', body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) });
+      const rememberSelected = form.get('rememberDevice') === 'on';
+      if (!loginWithSession && config?.rememberedSessionRoutes && window.navigator?.locks) {
+        const result = await withSessionCookie(async () => {
+          if (!isCurrentAuthOperation(operationGeneration)) return null;
+          const previous = await restoreRemembered();
+          if (!isCurrentAuthOperation(operationGeneration)) return null;
+          if (canRemember() && rememberSelected) {
+            const next = await rememberedRequest('login', previous?.generation, { ...credentials, rememberDevice: true });
+            if (previous) publishAuthBoundary(previous.user.id, 'remembered-switch');
+            return next;
+          }
+          if (previous) {
+            await rememberedRequest('logout', previous.generation);
+            publishAuthBoundary(previous.user.id, 'remembered-logout');
+          }
+          return null;
+        });
+        if (!isCurrentAuthOperation(operationGeneration)) return;
+        markRememberedLogout(null);
+        if (result) {
+          acceptRemembered(result);
+          return;
+        }
+      }
+      const result = loginWithSession
+        ? await loginWithSession(credentials, { rememberDevice: rememberSelected })
+        : await authRequest('token?grant_type=password', { method: 'POST', body: JSON.stringify(credentials) });
       if (!isCurrentAuthOperation(operationGeneration)) return;
       replaceSession(sessionFrom(result));
       const original = captureSession();
@@ -403,7 +514,10 @@
     } catch (error) {
       if (isCurrentAuthOperation(operationGeneration)) message(error.message, 'error');
     } finally {
-      if (isCurrentAuthOperation(operationGeneration)) submit.disabled = false;
+      if (isCurrentAuthOperation(operationGeneration)) {
+        submit.disabled = false;
+        if (rememberDevice) rememberDevice.disabled = !rememberAvailable();
+      }
     }
   }
   async function onSignup(event) {
@@ -432,6 +546,23 @@
     }
   }
   async function logout() {
+    if (remembered) {
+      const { generation } = remembered;
+      const ownerId = activeOwnerId;
+      endPrivateSession('logout', { text: '' });
+      const operation = authOperationGeneration;
+      try {
+        await withSessionCookie(async () => {
+          markRememberedLogout(ownerId);
+          await rememberedRequest('logout', generation);
+          markRememberedLogout(null);
+          publishAuthBoundary(ownerId, 'remembered-logout');
+        });
+      } catch (_) {
+        if (isCurrentAuthOperation(operation)) message('ยังยืนยันการออกจากระบบไม่ได้ กรุณาลองเข้าสู่ระบบอีกครั้ง', 'error');
+      }
+      return;
+    }
     const accessToken = session?.access_token || '';
     endPrivateSession('logout', { broadcast: true, text: '' });
     const operationGeneration = authOperationGeneration;
@@ -449,7 +580,8 @@
     options = { ...options, redirect: 'error', referrerPolicy: 'no-referrer' };
     const operationGeneration = authOperationGeneration;
     const sessionState = captureSession();
-    if (!await ensureFresh()) {
+    const cookieSession = remembered;
+    if (!cookieSession && !await ensureFresh()) {
       if (!isCurrentAuthOperation(operationGeneration) || sessionState.generation !== sessionGeneration) throw staleSessionError();
       const wasAuthenticated = document.body.classList.contains('authenticated');
       endPrivateSession('expiry', { broadcast: true, reload: wasAuthenticated });
@@ -462,11 +594,24 @@
     if (externalSignal?.aborted) controller.abort();
     else externalSignal?.addEventListener('abort', () => controller.abort(), { once: true });
     pendingRequests.add(controller);
-    const headers = new Headers(options.headers || {}); headers.set('Authorization', `Bearer ${session.access_token}`);
+    const headers = new Headers(options.headers || {});
+    if (cookieSession) {
+      headers.delete('Authorization');
+      headers.set('x-setscope-request', '1');
+      headers.set('x-setscope-session', cookieSession.generation);
+      options.credentials = 'same-origin';
+    } else {
+      headers.set('Authorization', `Bearer ${session.access_token}`);
+      if (config?.rememberedSessionRoutes) options.credentials = 'omit';
+    }
     try {
       let response = await fetch(url, { ...options, headers, signal: controller.signal });
       if (!isCurrentIdentity(identity) || !isCurrentAuthOperation(operationGeneration)) throw staleSessionError();
       if (response.status === 401) {
+        if (cookieSession) {
+          endPrivateSession('expiry');
+          throw staleSessionError();
+        }
         const refreshed = await refreshSession();
         if (!isCurrentIdentity(identity) || !isCurrentAuthOperation(operationGeneration)) throw staleSessionError();
         if (refreshed) {
@@ -529,10 +674,18 @@
   }
   window.addEventListener('hashchange', handleLocationCallback);
   window.addEventListener('storage', event => {
+    if (event.key === LOGOUT_PENDING_KEY && event.newValue === activeOwnerId && remembered) {
+      endPrivateSession('remote-logout', { text: '' });
+      return;
+    }
     if (event.key !== AUTH_BOUNDARY_KEY || !event.newValue || !activeOwnerId) return;
     try {
       const boundary = JSON.parse(event.newValue);
-      if (boundary?.ownerId === activeOwnerId) endPrivateSession('remote-logout', { reload: true, text: '' });
+      if (boundary?.ownerId === activeOwnerId) {
+        if (['remembered-logout', 'remembered-switch'].includes(boundary.reason)) {
+          if (remembered) void refreshSession();
+        } else if (!remembered) endPrivateSession('remote-logout', { reload: true, text: '' });
+      }
     } catch (_) {}
   });
   window.addEventListener('popstate', () => {
@@ -559,11 +712,21 @@
         showLogin('ระบบสมาชิกยังไม่ได้ตั้งค่าใน Render (SUPABASE_URL และ SUPABASE_ANON_KEY)', 'error'); return;
       }
       document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = false; });
+      if (canRemember() && rememberDevice) {
+        rememberDevice.disabled = false;
+        rememberDevice.parentElement.hidden = false;
+      }
       if (authCallback) {
         const callback = authCallback; authCallback = null;
         await consumeAuthCallback(callback); return;
       }
       const operationGeneration = authOperationGeneration;
+      if (!session && config.rememberedSessionRoutes && window.navigator?.locks
+        && !localStorage.getItem(LOGOUT_PENDING_KEY)) {
+        const result = await restoreRemembered();
+        if (!isCurrentAuthOperation(operationGeneration)) return;
+        if (result) { acceptRemembered(result); return; }
+      }
       if (!await openDashboardIfValid(operationGeneration) && isCurrentAuthOperation(operationGeneration)) showLogin();
     } catch (_) { authCallback = null; showLogin('เชื่อมต่อระบบสมาชิกไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ', 'error'); }
   })();

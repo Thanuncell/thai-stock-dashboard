@@ -477,6 +477,12 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 .profile-setting+ .profile-setting{border-top:1px solid var(--line)}
 .profile-setting p{margin:4px 0 0}
 .profile-page :focus-visible,.avatar:focus-visible,.nav-item:focus-visible,.auth-text-button:focus-visible{outline:3px solid var(--green);outline-offset:3px}
+.login-options{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:0 8px}
+.remember-device{display:flex;align-items:center;gap:6px;min-height:44px;font-size:.75rem;cursor:pointer}
+.remember-device[hidden]{display:none}
+.remember-device input{margin:0;accent-color:var(--green);cursor:pointer}
+.login-options button{margin-inline-start:auto;min-height:44px;padding:0;border:0;background:none;color:var(--ink);font:500 .75rem var(--font);text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.login-options :focus-visible{outline:3px solid var(--green);outline-offset:3px}
 .avatar{text-decoration:none;min-width:29px;min-height:29px;flex-shrink:0}
 @media(max-width:790px){.side-nav .nav-item{white-space:normal;overflow-wrap:anywhere}.profile-card button{max-width:100%}}
 @media(max-width:470px){.topbar .avatar{display:grid}.breadcrumb{min-width:0;overflow:hidden;text-overflow:ellipsis}.top-actions{flex-shrink:0}.profile-setting{align-items:flex-start}}

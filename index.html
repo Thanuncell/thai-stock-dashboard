@@ -26,9 +26,12 @@
       <form id="login-form" class="auth-form">
         <label>อีเมล<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label>
         <label>รหัสผ่าน<input name="password" type="password" autocomplete="current-password" required minlength="8" placeholder="อย่างน้อย 8 ตัวอักษร"></label>
+        <div class="login-options">
+          <label class="remember-device" hidden><input type="checkbox" id="remember-device" name="rememberDevice" disabled>จดจำอุปกรณ์นี้</label>
+          <button id="forgot-password-button" type="button">ลืมรหัสผ่าน?</button>
+        </div>
         <button class="auth-submit" type="submit" disabled>เข้าสู่ระบบ</button>
       </form>
-      <button id="forgot-password-button" class="auth-text-button" type="button">ลืมรหัสผ่าน?</button>
       <form id="forgot-password-form" class="auth-form" hidden>
         <label>อีเมล<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label>
         <button class="auth-submit" type="submit" disabled>รับรหัสผ่านใหม่</button>
