@@ -41,17 +41,17 @@ function payload(symbol, interval, rows, periods) {
   };
 }
 
-function responder(calls, { visibleLimit, mutate } = {}) {
+function responder(calls, { visibleLimit, mutate, observedAt = received } = {}) {
   return async input => {
     const url = new URL(input), query = url.searchParams;
     const symbol = decodeURIComponent(url.pathname.split('/').at(-1));
     const range = query.get('range'), interval = query.get('interval');
     const warmup = query.has('period1'), visible = symbol === 'PTT.BK' && ['1mo', '3mo'].includes(range);
-    const from = new Date(received);
+    const from = new Date(observedAt);
     if (months[range]) from.setUTCMonth(from.getUTCMonth() - months[range]);
     else from.setUTCDate(from.getUTCDate() - (range === '5d' ? 5 : 1));
     const start = warmup ? Number(query.get('period1')) * 1000 : +from;
-    const end = warmup ? Number(query.get('period2')) * 1000 : received + 1;
+    const end = warmup ? Number(query.get('period2')) * 1000 : observedAt + 1;
     const call = { symbol, range, interval, start, end, warmup, visible };
     calls.push(call);
     const { rows, periods } = barsBetween(start, end, interval);
