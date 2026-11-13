@@ -47,6 +47,7 @@ import {
 import { createTechnicalSnapshot, INDICATOR_PRESETS, RANGE_INTERVAL } from './client/technical.mjs';
 import { DrawingWorkspace } from './client/drawings.mjs';
 import { seriesPath, oscillatorPanel } from './client/technical-chart.mjs';
+import { marketTimeframe } from './client/chart-timeframe.mjs';
 
 // Gate activation is server-owned. Once observed ON, stale OFF responses cannot lower it;
  // an intentional switch back to OFF takes effect after a page reload.
@@ -59,6 +60,7 @@ const apiFetch = (url, options) => window.setscopeAuth.authorizedFetch(url, opti
 const decimalNumberFormatter = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const wholeNumberFormatter = new Intl.NumberFormat('th-TH', { maximumFractionDigits: 0 });
 const chartDateFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short' });
+const chartHistoricalFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: '2-digit' });
 const chartIntradayFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
   ? decimalNumberFormatter.format(Number(value)) : '—';
@@ -125,6 +127,10 @@ let searchQuery = '';
 let searchItems = [];
 let searchPending = false;
 let currentRange = initialNavigation.route === 'chart' ? initialNavigation.range : '1D';
+let currentTimeframe = initialNavigation.timeframe || 'Auto';
+let historicalRange = initialNavigation.historicalRange || '1Y';
+const chartSelectionKey = () => currentTimeframe === 'Auto' ? currentRange : `${currentTimeframe}:${historicalRange}`;
+const chartTimeframe = () => currentTimeframe === 'Auto' ? currentRange : currentTimeframe;
 const chartIndicators = new Set(['sma20', 'ema20', 'ema50', 'macd']);
 let technicalParameters = normalizeTechnicalParameters();
 let technicalCache = null;
@@ -133,10 +139,10 @@ let renderedEvidenceContext = null;
 let drawings = null;
 function technicalSnapshot() {
   const owner=userStorageScope,market=latestMarket,parameterKey=JSON.stringify(technicalParameters);
-  if(technicalCache?.market===market&&technicalCache.owner===owner&&technicalCache.parameterKey===parameterKey&&technicalCache.symbol===activeSymbol&&technicalCache.range===currentRange)return technicalCache.value;
-  const usable=market&&latestMarketSymbol===activeSymbol&&latestMarketRange===currentRange?market:{};
-  const value=createTechnicalSnapshot({...usable,symbol:activeSymbol,timeframe:currentRange,parameters:technicalParameters,dataState:usable.dataState||usable.guard?.state,guardReasons:usable.guard?.reasons||[]});
-  technicalCache={market,owner,parameterKey,symbol:activeSymbol,range:currentRange,value};return value;
+  if(technicalCache?.market===market&&technicalCache.owner===owner&&technicalCache.parameterKey===parameterKey&&technicalCache.symbol===activeSymbol&&technicalCache.range===chartSelectionKey())return technicalCache.value;
+  const usable=market&&latestMarketSymbol===activeSymbol&&latestMarketRange===chartSelectionKey()?market:{};
+  const value=createTechnicalSnapshot({...usable,symbol:activeSymbol,timeframe:chartTimeframe(),parameters:technicalParameters,dataState:usable.dataState||usable.guard?.state,guardReasons:usable.guard?.reasons||[]});
+  technicalCache={market,owner,parameterKey,symbol:activeSymbol,range:chartSelectionKey(),value};return value;
 }
 let chartLoadState = 'loading';
 let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
@@ -286,7 +292,8 @@ const workspaceRoutes = {
   profile: { nodes: ['#profile-page'], title: 'โปรไฟล์<span>ของคุณ</span>', description: 'บัญชีและการตั้งค่า SETscope', breadcrumb: 'โปรไฟล์' }
 };
 function currentNavigationState(route = document.body.dataset.workspacePage || initialNavigation.route || 'overview') {
-  if (route === 'chart') return { route, symbol: activeSymbol, range: currentRange };
+  if (route === 'chart') return { route, symbol: activeSymbol, range: currentRange,
+    ...(currentTimeframe === 'Auto' ? {} : { timeframe: currentTimeframe, historicalRange }) };
   if (route === 'news') return { route, query: newsQuery, source: activeSource, newsPage };
   if (route === 'watchlist') return { route, watchlistId: activeWatchlistId, watchPage: watchNewsPage };
   if (route === 'profile') return { route };
@@ -315,7 +322,20 @@ function syncNavigationControls() {
     const selected=activeSource;
     const active=selected.split(',').includes(button.dataset.source);button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));
   });
-  document.querySelectorAll('.range-tabs button').forEach(button => button.classList.toggle('selected', button.dataset.range === currentRange));
+  document.querySelectorAll('[data-range]').forEach(button => {
+    const selected = button.dataset.range === currentRange;
+    button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected));
+  });
+  document.querySelectorAll('[data-timeframe]').forEach(button => {
+    const selected = button.dataset.timeframe === currentTimeframe;
+    button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected));
+  });
+  document.querySelectorAll('[data-historical-range]').forEach(button => {
+    const selected = button.dataset.historicalRange === historicalRange;
+    button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected));
+  });
+  $('#auto-range-tabs').hidden = currentTimeframe !== 'Auto';
+  $('#historical-range-tabs').hidden = currentTimeframe === 'Auto';
 }
 function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   if (!workspaceRoutes[page]) page = 'overview';
@@ -354,12 +374,14 @@ function restoreNavigationFromLocation({ load = true } = {}) {
   const state = parseNavigationState(location.href, {...currentNavigationState(),...(ownedList ? { watchlistId: ownedList } : {}),newsPage:1,watchPage:1});
   if(state.route==='news')clearTimeout(newsSearchTimer);
   const previousRoute = document.body.dataset.workspacePage;
-  const previousSymbol = activeSymbol, previousRange = currentRange, previousWatchlist = activeWatchlistId;
+  const previousSymbol = activeSymbol, previousRange = chartSelectionKey(), previousWatchlist = activeWatchlistId;
   const previousNewsPage = newsPage, previousNewsSource = activeSource, previousNewsQuery = newsQuery;
   if (state.route === 'chart') {
     activeSymbol = state.symbol;
     activeName = watchlist.find(item => item.symbol === activeSymbol)?.name || activeSymbol;
     currentRange = state.range;
+    currentTimeframe = state.timeframe || 'Auto';
+    historicalRange = state.historicalRange || historicalRange;
   }
   if (state.route === 'news') { newsQuery = state.query; activeSource = state.source; newsPage = state.newsPage; }
   if (state.route === 'watchlist') {
@@ -372,7 +394,7 @@ function restoreNavigationFromLocation({ load = true } = {}) {
   renderWatchlistPicker();
   setWorkspacePage(state.route, { historyMode: 'none', scroll: false });
   renderNews(); renderWatchlistNews(); renderWatchlist(latestMarket?.stocks || []); renderMovers(latestMarket?.stocks || []);
-  if (load && state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== currentRange || previousRoute !== 'chart')) getMarket();
+  if (load && state.route === 'chart' && (previousSymbol !== activeSymbol || previousRange !== chartSelectionKey() || previousRoute !== 'chart')) getMarket();
   if (load && state.route === 'news' && archiveConfigured && (previousNewsPage !== newsPage || previousNewsSource !== activeSource || previousNewsQuery !== newsQuery || previousRoute !== 'news')) getArchiveNews({ page: newsPage, reason: 'restore' });
   if (load && state.route === 'watchlist' && (previousWatchlist !== activeWatchlistId || previousRoute !== 'watchlist')) getWatchlistNews({ reason: 'restore' });
   writeNavigation('replace', state.route);
@@ -732,8 +754,8 @@ function updateWatchlistAddButton() {
 function watchlistSignal(quote) {
   const meta = latestMarket?.technicalMeta?.indicator;
   if (quote?.symbol !== activeSymbol || quote.identityStatus !== 'accepted' || !usableWatchlistQuote(quote)
-    || latestMarketSymbol !== activeSymbol || latestMarketRange !== currentRange
-    || meta?.provider !== 'Yahoo Finance' || meta.interval !== RANGE_INTERVAL[currentRange]) return null;
+    || latestMarketSymbol !== activeSymbol || latestMarketRange !== chartSelectionKey()
+    || meta?.provider !== 'Yahoo Finance' || meta.interval !== RANGE_INTERVAL[chartTimeframe()]) return null;
   const observedAt = Date.parse(meta.receivedAt);
   const fetchedAt = Date.parse(latestMarket.fetchedAt);
   if (!(observedAt > 0 && observedAt <= fetchedAt)) return null;
@@ -843,7 +865,7 @@ function renderWatchlist(rows = []) {
 }
 
 function updateTradingViewChart() {
-  if (latestMarketSymbol !== activeSymbol || latestMarketRange !== currentRange) {
+  if (latestMarketSymbol !== activeSymbol || latestMarketRange !== chartSelectionKey()) {
     renderPriceChart([]);
     return;
   }
@@ -871,7 +893,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const host = $('#stock-price-chart');
   if (!host) return;
   const allRows = trustedMarketBars(bars).filter(bar=>[bar.open,bar.high,bar.low,bar.close].every(value=>toFiniteNumber(value)!==null));
-  const denseRange = currentRange === '1M' || currentRange === '3M';
+  const denseRange = currentTimeframe === 'Auto' && (currentRange === '1M' || currentRange === '3M');
   const cadence = latestMarket?.technicalMeta?.history?.cadence?.status;
   const cadenceNotice = cadence === 'INTERVAL_CADENCE_SUSPECT' ? ' · ความถี่ของแท่งอาจไม่ตรงกับช่วงที่ขอ'
     : cadence === 'INTERVAL_CADENCE_UNVERIFIED' ? ' · ยังยืนยันความถี่ของแท่งไม่ได้' : '';
@@ -901,13 +923,13 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   host.dataset.signalCandleTime=String(snapshot.candleTime??'');
   host.dataset.latestCandleTime=String(allRows.at(-1)?.time??'');
   host.dataset.signalStatus=snapshot.summary.status;
-  drawings?.bind(`${activeSymbol}:${currentRange}`);
-  const viewportKey = `${activeSymbol}:${currentRange}`;
+  drawings?.bind(`${activeSymbol}:${chartTimeframe()}`);
+  const viewportKey = `${activeSymbol}:${chartSelectionKey()}`;
   if (chartViewportKey !== viewportKey) {
     chartViewportKey = viewportKey;
-    chartViewport = defaultChartViewport({ rowCount: allRows.length, hostWidth, range: currentRange });
+    chartViewport = defaultChartViewport({ rowCount: allRows.length, hostWidth, range: currentTimeframe === 'Auto' ? currentRange : '1Y' });
   } else {
-    chartViewport = normalizeChartViewport(chartViewport, allRows.length, { hostWidth, range: currentRange });
+    chartViewport = normalizeChartViewport(chartViewport, allRows.length, { hostWidth, range: currentTimeframe === 'Auto' ? currentRange : '1Y' });
   }
   chartRowCount = allRows.length;
   const rows = allRows.slice(chartViewport.start, chartViewport.end);
@@ -921,7 +943,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const hasOscillator = showRsi || showAtr;
   wrap?.classList.toggle('has-macd', showMacd);
   wrap?.classList.toggle('has-oscillator', hasOscillator);
-  const geometry = chartGeometry({ rowCount: rows.length, hostWidth, range: currentRange });
+  const geometry = chartGeometry({ rowCount: rows.length, hostWidth, range: currentTimeframe === 'Auto' ? currentRange : '1Y' });
   const { left, right, width, plotWidth, step, candleWidth, x } = geometry;
   const top = 22;
   const naturalHeight = 390 + (showMacd ? 130 : 0) + (showRsi ? 130 : 0) + (showAtr ? 130 : 0);
@@ -957,7 +979,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
     const volumeHeight = volume === null ? 0 : volume / volumeMax * (volumeBottom - priceBottom - 6);
     const volumeBar = volume === null ? '' : `<rect class="volume-bar" x="${cx - candleWidth / 2}" y="${volumeBottom - volumeHeight}" width="${candleWidth}" height="${volumeHeight}"/>`;
     const date = new Date(bar.time);
-    const dateText = Number.isNaN(+date) ? '' : (currentRange === '1Y' ? chartDateFormatter : chartIntradayFormatter).format(date);
+    const dateText = Number.isNaN(+date) ? '' : (currentTimeframe !== 'Auto' ? chartHistoricalFormatter : currentRange === '1Y' ? chartDateFormatter : chartIntradayFormatter).format(date);
     const detail = `${dateText} · O ${number(open)} · H ${number(high)} · L ${number(low)} · C ${number(close)} · Vol ${number(volume)}`;
     return `<g class="price-candle ${rising ? 'rising' : 'falling'}"><title>${escapeHtml(detail)}</title><line x1="${cx}" y1="${y(high)}" x2="${cx}" y2="${y(low)}"/><rect x="${cx - candleWidth / 2}" y="${bodyTop}" width="${candleWidth}" height="${bodyHeight}" rx=".8"/>${volumeBar}<rect class="candle-hit" x="${cx - Math.max(candleWidth, step) / 2}" y="${top}" width="${Math.max(candleWidth, step)}" height="${volumeBottom - top}"/></g>`;
   }).join('');
@@ -994,7 +1016,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
     : [0, Math.floor(lastIndex / 3), Math.floor(lastIndex * 2 / 3), lastIndex])];
   const dateLabels = labelIndices.map(index => {
     const date = new Date(rows[index].time);
-    const label = Number.isNaN(+date) ? '' : (currentRange === '1D' ? chartIntradayFormatter : chartDateFormatter).format(date);
+    const label = Number.isNaN(+date) ? '' : (currentTimeframe !== 'Auto' ? chartHistoricalFormatter : currentRange === '1D' ? chartIntradayFormatter : chartDateFormatter).format(date);
     const anchor = index > 0 && index === lastIndex ? 'end' : 'middle';
     return `<text class="chart-axis-text" x="${x(index)}" y="${height-10}" text-anchor="${anchor}">${escapeHtml(label)}</text>`;
   }).join('');
@@ -1004,7 +1026,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   setText('#chart-updated', receiptText==='—' ? 'อัปเดตเมื่อ —' + candleNotice
     : `อัปเดตเมื่อ ${receiptText} (เวลาไทย)${stateText}${candleNotice}`);
   $('#chart-updated').title=`แท่งราคาล่าสุดเปิด ${technicalTimeText(allRows.at(-1)?.time)} · ดูแท่งอ้างอิงสัญญาณที่สรุปด้านล่าง`;
-  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentRange)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentRange)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
+  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentTimeframe === 'Auto' ? currentRange : `${currentTimeframe} · ${historicalRange}`)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentTimeframe === 'Auto' ? currentRange : `${currentTimeframe} · ${historicalRange}`)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
 }
 
 function scheduleChartRedraw() {
@@ -1344,7 +1366,7 @@ function renderPriceLevels(bars, last, calculatedLevels = null) {
   const primaryCount = latestMarket?.history?.length || 0;
   const levelCount = (bars || []).length;
   const historyNote = levelCount > primaryCount && primaryCount > 0 ? `ข้อมูลกราฟ ${primaryCount} แท่ง และย้อนหลังเพิ่มเติมรวม ${levelCount} แท่ง` : `${levelCount} แท่ง`;
-  setText('#levels-basis', `แนวรับ–แนวต้านช่วง ${currentRange} จาก ${historyNote} · จุดกลับตัวที่ยืนยันแล้ว${pivotCount ? ` และจุดหมุนจากแท่งก่อนหน้าที่ปิดแล้ว ${pivotCount} ระดับ (${levels.referenceInterval||'ตามต้นทาง'})` : ''}`);
+  setText('#levels-basis', `แนวรับ–แนวต้านช่วง ${chartTimeframe()} จาก ${historyNote} · จุดกลับตัวที่ยืนยันแล้ว${pivotCount ? ` และจุดหมุนจากแท่งก่อนหน้าที่ปิดแล้ว ${pivotCount} ระดับ (${levels.referenceInterval||'ตามต้นทาง'})` : ''}`);
   return levels;
 }
 
@@ -1586,7 +1608,7 @@ function updateStockCards(rows) {
   const guardedState = ['stale', 'suspect', 'quarantined', 'unavailable'].includes(latestMarket?.dataState)
     ? latestMarket.dataState
     : activeQuote?.dataState || latestMarket?.dataState;
-  if (latestMarketSymbol === activeSymbol && latestMarketRange === currentRange) renderPriceChart(latestMarket?.history || [], receivedAt, latestMarket?.levelsHistory || [], latestMarket?.indicatorHistory || [], guardedState);
+  if (latestMarketSymbol === activeSymbol && latestMarketRange === chartSelectionKey()) renderPriceChart(latestMarket?.history || [], receivedAt, latestMarket?.levelsHistory || [], latestMarket?.indicatorHistory || [], guardedState);
   const bySymbol = Object.fromEntries(rows.map(row => [row.symbol, row]));
   renderWatchlist(rows);
   const quote = bySymbol[activeSymbol];
@@ -1640,7 +1662,8 @@ async function getMarket() {
   if (!isCurrentPrivateIdentity(identity)) return;
   const requestId = marketRequestSequence.begin();
   const requestedSymbol = activeSymbol;
-  const requestedRange = currentRange;
+  const requestedRange = chartSelectionKey();
+  const requestedTimeframe = currentTimeframe, requestedHistory = historicalRange;
   const requestedSymbols = watchlist.map(item => item.symbol);
   const changingChart = latestMarketSymbol !== requestedSymbol || latestMarketRange !== requestedRange;
   if (changingChart) {
@@ -1655,16 +1678,17 @@ async function getMarket() {
     renderPriceChart([]);
   }
   try {
-    const params = new URLSearchParams({ symbols: requestedSymbols.join(','), symbol: requestedSymbol, range: requestedRange });
+    const params = new URLSearchParams({ symbols: requestedSymbols.join(','), symbol: requestedSymbol, range: requestedTimeframe === 'Auto' ? currentRange : '1Y' });
+    if (requestedTimeframe !== 'Auto' && requestedHistory === 'ALL') params.set('history', 'all');
     const response = await apiFetch(`/api/market?${params}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');
-    if (!isCurrentPrivateIdentity(identity) || !marketRequestSequence.isCurrent(requestId) || requestedSymbol !== activeSymbol || requestedRange !== currentRange) return;
-    latestMarket = data;
+    if (!isCurrentPrivateIdentity(identity) || !marketRequestSequence.isCurrent(requestId) || requestedSymbol !== activeSymbol || requestedRange !== chartSelectionKey()) return;
+    latestMarket = marketTimeframe(data, requestedTimeframe, requestedHistory);
     watchlistQuoteFailure = false;
     latestMarketSymbol = requestedSymbol;
     latestMarketRange = requestedRange;
-    setChartLoadState((data.history || []).length ? 'ready' : 'unavailable', (data.history || []).length ? '' : 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้');
+    setChartLoadState((latestMarket.history || []).length ? 'ready' : 'unavailable', (latestMarket.history || []).length ? '' : 'กราฟยังไม่พร้อมสำหรับหลักทรัพย์นี้');
     const stocks = data.stocks || [];
     evaluateWatchlistAlerts(stocks);
     updateStockCards(stocks);
@@ -2302,9 +2326,11 @@ function setupUiEventWiring() {
   });
   $('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
   $('#profile-theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
-  document.querySelectorAll('.range-tabs button').forEach(button => button.addEventListener('click', () => {
-    document.querySelectorAll('.range-tabs button').forEach(item => item.classList.remove('selected'));
-    button.classList.add('selected'); currentRange = button.dataset.range; writeNavigation('push', 'chart'); updateTradingViewChart(); getMarket();
+  document.querySelectorAll('[data-range], [data-timeframe], [data-historical-range]').forEach(button => button.addEventListener('click', () => {
+    if (button.dataset.range) currentRange = button.dataset.range;
+    if (button.dataset.timeframe) currentTimeframe = button.dataset.timeframe;
+    if (button.dataset.historicalRange) historicalRange = button.dataset.historicalRange;
+    syncNavigationControls(); writeNavigation('push', 'chart'); updateTradingViewChart(); getMarket();
   }));
   $('#chart-indicators').addEventListener('click', event => {
     const button = event.target.closest('[data-indicator]');

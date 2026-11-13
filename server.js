@@ -38,7 +38,7 @@ const TYPES = {
 };
 const PUBLIC_FILES = new Set([
   '/index.html', '/app.js', '/auth.js', '/theme-init.js', '/client/domain.mjs', '/lib/news-content.js',
-  '/client/technical.mjs', '/client/technical-chart.mjs', '/client/drawings.mjs', '/lib/market-time.js',
+  '/client/technical.mjs', '/client/technical-chart.mjs', '/client/drawings.mjs', '/lib/market-time.js', '/client/chart-timeframe.mjs',
   '/client/screener-core.mjs', '/client/screener-view.mjs',
   '/style.css', '/analysis.css', '/about.html', '/privacy.html', '/terms.html', '/disclaimer.html'
 ]);
@@ -375,11 +375,13 @@ async function handle(req, res, auth = authService) {
       if (!active) return send(res, 400, { error: 'ชื่อย่อหุ้นไม่ถูกต้อง' });
       if (!symbols.includes(active)) symbols.push(active);
       const range = url.searchParams.get('range') || '1D';
+      const allDailyHistory = range === '1Y' && url.searchParams.get('history') === 'all';
+      const cacheKey = `market:${symbols.join(',')}|${active}|${range}`;
       return send(res, 200, await loadCached(
         res,
-        `market:${symbols.join(',')}|${active}|${range}`,
+        `${cacheKey}${allDailyHistory ? '|all-daily' : ''}`,
         PROVIDER_POLICIES.market,
-        () => marketService.getMarket(symbols, active, range)
+        () => marketService.getMarket(symbols, active, range, { allDailyHistory })
       ));
     } catch (error) {
       return send(res, 502, { error: 'ไม่สามารถดึงข้อมูลจากแหล่งข้อมูลได้' });

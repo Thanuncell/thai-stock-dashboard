@@ -162,7 +162,7 @@ test('health and static responses have strict security headers without invalid C
   assert.equal(domain.status, 200);
   assert.match(domain.headers['content-type'], /^text\/javascript/);
   assert.equal((await request(base, '/theme-init.js')).status, 200);
-  for(const file of ['/client/technical.mjs','/client/technical-chart.mjs','/client/drawings.mjs','/lib/market-time.js']){
+  for(const file of ['/client/technical.mjs','/client/technical-chart.mjs','/client/drawings.mjs','/lib/market-time.js','/client/chart-timeframe.mjs']){
     const response=await request(base,file);assert.equal(response.status,200,file);assert.match(response.headers['content-type'],/^text\/javascript/);
   }
   for(const file of ['/server/market-service.js','/test/fixtures/technical-reference.json','/client/unapproved.mjs'])assert.notEqual((await request(base,file)).status,200,file);
@@ -455,4 +455,25 @@ test('Market range failure keeps the quote and blocks history without exposing e
   assert.equal(result.partial, true);
   assert.ok(result.errors.includes('PTT: PROVIDER_UNAVAILABLE'));
   assert.doesNotMatch(JSON.stringify(result), /fixture-private/);
+});
+
+test('daily timeframe reuse shares the market cache while ALL remains a distinct guarded request', async () => {
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { authorization: 'Bearer test-token' };
+  const ordinary = '/api/market?symbols=PTT&symbol=PTT&range=1Y';
+  const providerCalls = () => upstreamCalls.filter(call => call.url.includes('/v8/finance/chart/'));
+  assert.equal((await request(base, ordinary, {headers})).status, 200);
+  const cachedCount = providerCalls().length;
+  for (let i=0;i<3;i++) assert.equal((await request(base, ordinary, {headers})).status, 200);
+  assert.equal(providerCalls().length, cachedCount, 'D/W/M share the same daily HTTP request and cache');
+  const maximum = await request(base, ordinary + '&history=all', {headers});
+  assert.equal(maximum.status, 200);
+  assert.ok(providerCalls().slice(cachedCount).some(call => {
+    const query = new URL(call.url).searchParams;
+    return query.get('range') === 'max' && query.get('interval') === '1d';
+  }));
+  const allCount = providerCalls().length;
+  assert.equal((await request(base, ordinary + '&history=all', {headers})).status, 200);
+  assert.equal((await request(base, ordinary, {headers})).status, 200);
+  assert.equal(providerCalls().length, allCount, 'ALL and ordinary history each retain their own cached result');
 });

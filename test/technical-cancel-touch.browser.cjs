@@ -34,7 +34,17 @@ const frames=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    const captureClear=async()=>{await frames(page);check(await page.evaluate(()=>window.__gestureAudit.captured.length),0,'no captured pointer remains');};
    const parity=async()=>{check(await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),await page.locator('.analysis-panel').getAttribute('data-snapshot-id'),'chart/signal/explanation snapshot parity');};
    const mode=async name=>{await page.locator(`[data-draw-tool=${name}]`).evaluate(el=>el.click());await frames(page);};
-   const canvas=async()=>{await page.locator('#stock-price-chart').scrollIntoViewIfNeeded();return page.locator('.price-chart-svg').boundingBox();};
+   const canvas=async()=>{
+    await page.locator('#stock-price-chart').scrollIntoViewIfNeeded();
+    // Native scrollIntoView does not account for the existing sticky header.
+    // Keep the real input target visible rather than sending touch to that header.
+    await page.evaluate(()=>{
+     const top=document.querySelector('#stock-price-chart').getBoundingClientRect().top;
+     const headerBottom=document.querySelector('.topbar').getBoundingClientRect().bottom;
+     if(top<headerBottom+8)window.scrollBy(0,top-headerBottom-8);
+    });
+    await frames(page);return page.locator('.price-chart-svg').boundingBox();
+   };
    const swipe=async(from,to)=>{await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[from]});for(let i=1;i<=10;i++){await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:from.x+(to.x-from.x)*i/10,y:from.y+(to.y-from.y)*i/10}]});await frames(page);}await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await frames(page);};
    const mouseStart=async()=>{const b=await canvas();const a={x:b.x+b.width*.35,y:b.y+80},z={x:b.x+b.width*.65,y:b.y+150};await page.mouse.move(a.x,a.y);await page.mouse.down();await page.mouse.move(z.x,z.y,{steps:3});await frames(page);return {a,z};};
    const commit=async()=>{await mode('trend');await mouseStart();await page.mouse.up();await frames(page);await mode('select');await page.locator('[data-draw-list] button').first().evaluate(el=>el.click());await frames(page);};
@@ -62,7 +72,9 @@ const frames=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    phase=`${width}-${theme}-pinch-on`;await mode('trend');original=await saved();await pinch();check(await items(),0,'two fingers in drawing mode cannot leave a partial drawing');check(await saved(),original);
    phase=`${width}-${theme}-vertical-outside-drawing`;await page.locator('.macd-panel').scrollIntoViewIfNeeded();b=await page.locator('.macd-panel').boundingBox();scroll=await page.evaluate(()=>scrollY);await swipe({x:b.x+b.width*.5,y:b.y+Math.min(70,b.height*.7)},{x:b.x+b.width*.5,y:b.y-70});check(await page.evaluate(before=>scrollY>before+20,scroll),true,'drawing ON outside price plot still allows page scroll');await captureClear();
    phase=`${width}-${theme}-edge-draw`;await page.locator('#chart-reset').evaluate(el=>el.click());await frames(page);await mode('trend');b=await canvas();const plot=await page.locator('.chart-volume-separator').boundingBox(),left=await page.locator('.chart-grid').first().getAttribute('x1'),right=await page.locator('.chart-grid').first().getAttribute('x2'),svgWidth=Number((await page.locator('.price-chart-svg').getAttribute('viewBox')).split(' ')[2]),scale=b.width/svgWidth;
-   await swipe({x:b.x+(Number(left)+2)*scale,y:b.y+25*scale},{x:b.x+(Number(right)-2)*scale,y:plot.y-8*scale});check(await items(),1,'near-edge touch drawing commits');check((await saved()).includes('null'),false,'no invalid edge anchor');await captureClear();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal layout overflow');await parity();
+   const edgeStart={x:b.x+(Number(left)+2)*scale,y:b.y+25*scale};
+   check(await page.evaluate(({x,y})=>Boolean(document.elementFromPoint(x,y)?.closest('#stock-price-chart')),edgeStart),true,'near-edge touch starts on the chart');
+   await swipe(edgeStart,{x:b.x+(Number(right)-2)*scale,y:plot.y-8*scale});check(await items(),1,'near-edge touch drawing commits');check((await saved()).includes('null'),false,'no invalid edge anchor');await captureClear();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal layout overflow');await parity();
    check(await page.locator('.side-nav .nav-item').evaluateAll(nodes=>nodes.map(node=>{const b=node.getBoundingClientRect();return node.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2));})),Array(5).fill(true),'all navigation tabs remain reachable above chart/drawing layers');
    check(api.length,apiBefore,'gestures/cancel/mode/viewport create no API calls');
    phase=`${width}-${theme}-context-change`;await clear();await mode('trend');original=await saved();await mouseStart();await page.locator('[data-range="1W"]').evaluate(el=>el.click());await page.waitForFunction(()=>document.querySelector('.price-chart-svg')?.getAttribute('aria-label').endsWith('1W'));await page.mouse.up();await frames(page);check(await saved(),original,'timeframe switch cannot commit old-context draft');check(await items(),0);await captureClear();await parity();

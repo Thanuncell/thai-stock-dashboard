@@ -24,12 +24,12 @@ test('technical workspace has a bounded static module graph and preserves provid
   const scripts = [...indexSource.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(match => match[1]);
   const moduleImports = [...appSource.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(match => match[1]);
   assert.deepEqual(scripts, ['auth.js', 'app.js']);
-  assert.deepEqual(moduleImports, ['./client/domain.mjs','./client/technical.mjs','./client/drawings.mjs','./client/technical-chart.mjs']);
+  assert.deepEqual(moduleImports, ['./client/domain.mjs','./client/technical.mjs','./client/drawings.mjs','./client/technical-chart.mjs','./client/chart-timeframe.mjs']);
   const technicalSource=fs.readFileSync(path.join(__dirname,'..','client','technical.mjs'),'utf8');
   assert.deepEqual([...technicalSource.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(match=>match[1]),['./domain.mjs','../lib/market-time.js']);
-  assert.equal(new Set(moduleImports).size,4,'three feature modules; the time contract is shared once');
+  assert.equal(new Set(moduleImports).size,5,'four feature modules; the time contract is shared once');
   assert.doesNotMatch(technicalSource,/fetch\s*\(|setInterval|WebSocket|EventSource/);
-  for(const name of ['drawings.mjs','technical-chart.mjs'])assert.doesNotMatch(fs.readFileSync(path.join(__dirname,'..','client',name),'utf8'),/fetch\s*\(|setInterval|WebSocket|EventSource/);
+  for(const name of ['drawings.mjs','technical-chart.mjs','chart-timeframe.mjs'])assert.doesNotMatch(fs.readFileSync(path.join(__dirname,'..','client',name),'utf8'),/fetch\s*\(|setInterval|WebSocket|EventSource/);
   assert.equal((appSource.match(/setInterval\(/g)||[]).length,4);
 });
 

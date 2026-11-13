@@ -357,8 +357,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     return Number.isFinite(total) && total >= 0 ? total / 1_000_000 : null;
   }
 
-  async function getMarket(symbols, active, range) {
-    const [rangeName, interval] = PERIODS[range] || PERIODS['1D'];
+  async function getMarket(symbols, active, range, { allDailyHistory = false } = {}) {
+    const [rangeName, interval] = allDailyHistory ? ['max', '1d'] : PERIODS[range] || PERIODS['1D'];
     const base = await Promise.allSettled(symbols.map(async symbol => shapeChart(await yahooChart(`${symbol}.BK`, '1d', '5m'), symbol, 'quote:1d:5m')));
     const stocks = base.filter(result => result.status === 'fulfilled').map(result => result.value);
     const errors = base.flatMap((result, index) => result.status === 'rejected'
