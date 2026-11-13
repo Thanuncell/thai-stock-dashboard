@@ -6,8 +6,8 @@ const { createProductionRememberedRuntime } = require('../server/production-reme
 const { fixture, owners } = require('./fixtures/remembered-session.cjs');
 
 // Offline SQL transport double, not a production store or a TLS integration test.
-function setup(mode = 'cohort') {
-  const f = fixture({ initialTime: Date.now() });
+function setup(mode = 'cohort', fixtureOptions = {}) {
+  const f = fixture({ initialTime: Date.now(), ...fixtureOptions });
   const env = { NODE_ENV:'production', SUPABASE_URL:'https://nrlznztqtresaycbxuck.supabase.co',
     SUPABASE_ANON_KEY:'sb_publishable_fixture', SETSCOPE_REMEMBER_PROJECT:'nrlznztqtresaycbxuck',
     SETSCOPE_REMEMBER_ORIGIN:'https://setscope.onrender.com', SETSCOPE_REMEMBER_MODE:mode,
@@ -80,6 +80,19 @@ test('cohort requires an explicit all-instance attestation and immutable account
     const x=setup();Object.assign(x.env,change);await assert.rejects(x.start(),/COHORT/);assert.equal(x.stats.opened,0);
   }
 });
+test('public issuance requires explicit mode and all-instance guard readiness',async()=>{
+  for(const ready of ['',undefined,'0','true']) {
+    const x=setup('public');x.env.SETSCOPE_REMEMBER_GUARDS_READY=ready;
+    await assert.rejects(x.start(),/PRODUCTION_PUBLIC_PREREQUISITES_REQUIRED/);
+    assert.equal(x.stats.opened,0);
+  }
+  const x=setup('guard'),runtime=await x.start();
+  try {
+    assert.equal(runtime.auth.configPayload({headers:{'x-setscope-cohort-preview':'1'}}).rememberDevice,undefined);
+    assert.equal((await x.login(runtime.auth,'b')).status,404);
+    assert.equal(x.rows.size,0);assert.equal(x.stats.requests,0);
+  }finally{await runtime.close();}
+});
 test('production-only persisted key, public API key and explicit TLS credentials are mandatory',async()=>{
   const adminKey=['fixture',Buffer.from(JSON.stringify({role:'service_role',ref:'nrlznztqtresaycbxuck'})).toString('base64url'),'signature'].join('.');
   for(const change of [{SETSCOPE_REMEMBER_ENCRYPTION_KEY:''},{SETSCOPE_REMEMBER_ENCRYPTION_KEY:'fixture'},
@@ -91,12 +104,14 @@ test('production-only persisted key, public API key and explicit TLS credentials
   }
 });
 test('runtime validates least privilege, RLS and irreversible revocation',async()=>{
+  for(const mode of ['cohort','public']) {
   for(const change of [{superuser:true},{bypass:true},{create_role:true},{create_db:true},{replication:true},
     {connection_limit:-1},{connection_limit:2},{rotate:false},{extend:true},{remap:true},{member_data:true},
     {store_delete:true},{store_truncate:true},{store_read:false},{store_insert:false},{api_private:true},
     {api_truncate:true},{guard:false},{watchlist_rls:false},{store_rls:false},{tombstone_guard:false},
     {lookup_role_separate:false}]) {
-    const x=setup();Object.assign(x.state,change);await assert.rejects(x.start(),/SECURITY_REJECTED/);assert.equal(x.stats.closed,1);
+    const x=setup(mode);Object.assign(x.state,change);await assert.rejects(x.start(),/SECURITY_REJECTED/);assert.equal(x.stats.closed,1);
+  }
   }
 });
 test('verified pooler TLS accepts a backend without SSL; direct connections retain their backend check',async()=>{
@@ -115,12 +130,14 @@ test('verified pooler TLS accepts a backend without SSL; direct connections reta
   }
 });
 test('plaintext, unverified certificates, wrong hostnames and obsolete TLS fail before SQL',async()=>{
+  for(const mode of ['guard','public']) {
   for(const change of [{encrypted:false},{certificate:false},{missingStream:true},
     {protocol:'TLSv1.1'},{protocol:'TLSv1'},{protocol:null},{protocol:undefined},
     {peerHost:'untrusted.example.test'}]) {
-    const x=setup('guard');x.state.ssl=true;Object.assign(x.stats,change);
+    const x=setup(mode);x.state.ssl=true;Object.assign(x.stats,change);
     await assert.rejects(x.start(),/PRODUCTION_CERTIFICATE_REJECTED/);
     assert.equal(x.stats.startupQueries,0);assert.equal(x.stats.closed,1);assert.equal(x.stats.requests,0);
+  }
   }
   for(const protocol of ['TLSv1.2','TLSv1.3']) {
     const x=setup('guard');x.stats.protocol=protocol;x.state.ssl=false;
@@ -147,8 +164,33 @@ test('default UI hides cohort availability; preview never bypasses verified acco
     assert.equal(x.rows.size,1);assert.equal([...x.rows.values()][0].owner_id,owners.a);
   }finally{await r.close();}
 });
+test('public mode advertises opt-in without preview and accepts both verified fixture accounts',async()=>{
+  const x=setup('public');x.env.SETSCOPE_REMEMBER_COHORT_IDS='';const r=await x.start();
+  try {
+    assert.equal(r.auth.configPayload().rememberDevice,true);
+    assert.equal(r.auth.configPayload().rememberedSessionRoutes,true);
+    for(const owner of ['a','b']) {
+      const logged=await x.login(r.auth,owner);
+      assert.equal(logged.status,200);assert.equal(logged.body.user.id,owners[owner]);
+      const restored={};await r.auth.handleSession(x.req({cookie:logged.headers['set-cookie'].split(';')[0]}),restored,'restore');
+      assert.equal(restored.status,200);assert.equal(restored.body.user.id,owners[owner]);
+    }
+    assert.equal(x.rows.size,2);
+    const legacy=x.f.legacy('b').access_token;
+    assert.equal((await r.auth.authorize({headers:{authorization:`Bearer ${legacy}`}},{})).user.id,owners.b);
+  }finally{await r.close();}
+});
+test('public mode rejects provider-identity mismatches and invalid session claims without issuing a cookie',async()=>{
+  for(const change of [{sub:owners.b},{session_id:'invalid'},{exp:0}]) {
+    const x=setup('public',{signClaims:claims=>['fixture',Buffer.from(JSON.stringify({...claims,...change})).toString('base64url'),'fixture-signature'].join('.')});
+    const r=await x.start();
+    try {const denied=await x.login(r.auth,'a');assert.equal(denied.status,401);assert.equal(denied.headers,undefined);assert.equal(x.rows.size,0);}
+    finally{await r.close();}
+  }
+});
 test('non-cohort legacy sessions work; mapped Bearer and store outages fail closed without mock fallback',async()=>{
-  const x=setup(),r=await x.start();
+  for(const mode of ['cohort','public']) {
+  const x=setup(mode),r=await x.start();
   try {
     const legacy=x.f.legacy('b').access_token;
     const bearer=token=>({headers:{authorization:`Bearer ${token}`}});
@@ -160,9 +202,11 @@ test('non-cohort legacy sessions work; mapped Bearer and store outages fail clos
     assert.equal(outage.status,503);assert.ok(!JSON.stringify(outage).includes('fixture-private-db-detail'));
     x.stats.outage=false;assert.equal((await r.auth.authorize(bearer(legacy),{})).user.id,owners.b);
   }finally{await r.close();}
+  }
 });
 test('guard-only rollback retains restore/logout and tombstones across runtime restart with the same key',async()=>{
-  const x=setup(),r=await x.start();const logged=await x.login(r.auth);
+  for(const mode of ['cohort','public']) {
+  const x=setup(mode),r=await x.start();const logged=await x.login(r.auth);
   const cookie=logged.headers['set-cookie'].split(';')[0],generation=logged.body.generation;
   const deadline=[...x.rows.values()][0].expires_at_ms;await r.close();
   x.env.SETSCOPE_REMEMBER_MODE='guard';x.env.SETSCOPE_REMEMBER_COHORT_IDS='';
@@ -176,6 +220,7 @@ test('guard-only rollback retains restore/logout and tombstones across runtime r
     assert.equal(logout.status,200);assert.equal(x.rows.size,1);assert.equal([...x.rows.values()][0].encrypted,null);
     const denied={};await guarded.auth.handleSession(x.req({cookie}),denied,'restore');assert.equal(denied.status,401);
   }finally{await guarded.close();}
+  }
 });
 test('startup connection failure emits a fixed code without provider details',async()=>{
   const x=setup();x.stats.outage=true;

@@ -17,8 +17,9 @@ const refuse = code => { throw new ProductionRuntimeError(code); };
 // Dev-vault reader. This factory is activated only by the normal Node bootstrap.
 async function createProductionRememberedRuntime({ env, send, fetchImpl = globalThis.fetch,
   Pool, now = Date.now }) {
+  const publicIssue = env.SETSCOPE_REMEMBER_MODE === 'public';
   if (env.NODE_ENV !== 'production' || env.SETSCOPE_REMEMBER_REQUIRED !== '1'
-    || !['guard', 'cohort'].includes(env.SETSCOPE_REMEMBER_MODE)
+    || !['guard', 'cohort', 'public'].includes(env.SETSCOPE_REMEMBER_MODE)
     || env.SUPABASE_URL !== `https://${PROJECT}.supabase.co`
     || env.SETSCOPE_REMEMBER_PROJECT !== PROJECT || env.SETSCOPE_REMEMBER_ORIGIN !== ORIGIN) {
     refuse('PRODUCTION_REMEMBER_TARGET_REJECTED');
@@ -31,6 +32,9 @@ async function createProductionRememberedRuntime({ env, send, fetchImpl = global
     publicKey ||= claims.role === 'anon' && claims.ref === PROJECT;
   } catch (_) {}
   if (!publicKey) refuse('PRODUCTION_PUBLIC_KEY_REQUIRED');
+  if (publicIssue && env.SETSCOPE_REMEMBER_GUARDS_READY !== '1') {
+    refuse('PRODUCTION_PUBLIC_PREREQUISITES_REQUIRED');
+  }
   const cohort = new Set((env.SETSCOPE_REMEMBER_COHORT_IDS || '').split(',').filter(Boolean).map(x => x.toLowerCase()));
   if ([...cohort].some(x => !uuid.test(x)) || (env.SETSCOPE_REMEMBER_MODE === 'cohort'
     && (!cohort.size || cohort.size > 20 || env.SETSCOPE_REMEMBER_GUARDS_READY !== '1'))) {
@@ -103,9 +107,9 @@ async function createProductionRememberedRuntime({ env, send, fetchImpl = global
 
     const auth = createAuthService({ env, send, fetchImpl, remembered: {
       store: createPostgresRememberedSessionStore(pool), key, origin: ORIGIN, now,
-      allowIssue: env.SETSCOPE_REMEMBER_MODE === 'cohort', dataApiGuardVerified: true,
-      allowRestoreWhenOff: true, cohortPreviewOnly: true,
-      mayIssue: verifiedUser => cohort.has(verifiedUser.id.toLowerCase())
+      allowIssue: publicIssue || env.SETSCOPE_REMEMBER_MODE === 'cohort', dataApiGuardVerified: true,
+      allowRestoreWhenOff: true, cohortPreviewOnly: !publicIssue,
+      mayIssue: verifiedUser => publicIssue || cohort.has(verifiedUser.id.toLowerCase())
     } });
     return { auth, close: () => pool.end() };
   } catch (error) {
