@@ -20,10 +20,11 @@ function setup(mode = 'cohort') {
     create_role:false,create_db:false,replication:false,connection_limit:8,ssl:true,store_read:true,store_insert:true,
     rotate:true,extend:false,remap:false,store_delete:false,store_truncate:false,member_data:false,api_private:false,
     api_truncate:false,guard:true,watchlist_rls:true,store_rls:true,tombstone_guard:true,lookup_role_separate:true };
-  const rows = new Map(), stats = { opened:0,closed:0,requests:0,certificate:true,outage:false }, configs=[];
+  const rows = new Map(), stats = { opened:0,closed:0,requests:0,certificate:true,encrypted:true,
+    protocol:'TLSv1.3',startupQueries:0,outage:false }, configs=[];
   const query = async (sql, p = []) => {
     if (stats.outage) throw Error('fixture-private-db-detail');
-    if (/^select current_user/.test(sql)) return { rows:[state] };
+    if (/^select current_user/.test(sql)) { stats.startupQueries++; return { rows:[state] }; }
     if (/^select 1/.test(sql)) return { rowCount:[...rows.values()].filter(r=>r.provider_session_id===p[0]).length };
     if (/^select \*/.test(sql)) return { rows:rows.has(p[0])?[{...rows.get(p[0]),checked_at_ms:f.now()}]:[] };
     if (/^insert into/.test(sql)) {
@@ -44,7 +45,10 @@ function setup(mode = 'cohort') {
     constructor(config) { stats.opened++; configs.push(config); }
     on() {}
     query = query;
-    async connect() { return { query,release(){},connection:{stream:{authorized:stats.certificate}} }; }
+    async connect() { return { query,release(){},connection:{stream:stats.missingStream?undefined:{
+      encrypted:stats.encrypted,authorized:stats.certificate,getProtocol:()=>stats.protocol,
+      getPeerCertificate:()=>({subjectaltname:`DNS:${stats.peerHost || env.SETSCOPE_REMEMBER_DB_HOST}`})
+    }} }; }
     async end() {stats.closed++;}
   }
   const send=(res,status,body,headers)=>Object.assign(res,{status,body,headers});
@@ -86,15 +90,42 @@ test('production-only persisted key, public API key and explicit TLS credentials
     const x=setup();Object.assign(x.env,change);await assert.rejects(x.start(),/PRODUCTION_/);assert.equal(x.stats.opened,0);
   }
 });
-test('runtime validates least privilege, RLS, irreversible revocation and certificate state',async()=>{
+test('runtime validates least privilege, RLS and irreversible revocation',async()=>{
   for(const change of [{superuser:true},{bypass:true},{create_role:true},{create_db:true},{replication:true},
     {connection_limit:-1},{connection_limit:2},{rotate:false},{extend:true},{remap:true},{member_data:true},
     {store_delete:true},{store_truncate:true},{store_read:false},{store_insert:false},{api_private:true},
     {api_truncate:true},{guard:false},{watchlist_rls:false},{store_rls:false},{tombstone_guard:false},
-    {lookup_role_separate:false},{ssl:false}]) {
+    {lookup_role_separate:false}]) {
     const x=setup();Object.assign(x.state,change);await assert.rejects(x.start(),/SECURITY_REJECTED/);assert.equal(x.stats.closed,1);
   }
-  const x=setup();x.stats.certificate=false;await assert.rejects(x.start(),/CERTIFICATE_REJECTED/);assert.equal(x.stats.closed,1);
+});
+test('verified pooler TLS accepts a backend without SSL; direct connections retain their backend check',async()=>{
+  for(const ssl of [false,true,null,undefined]) {
+    const x=setup('guard');x.state.ssl=ssl;
+    const runtime=await x.start();
+    assert.equal(runtime.auth.configPayload().rememberDevice,undefined);
+    assert.equal(x.stats.requests,0);await runtime.close();assert.equal(x.stats.closed,1);
+  }
+  for(const ssl of [false,true]) {
+    const x=setup('guard');x.state.ssl=ssl;
+    Object.assign(x.env,{SETSCOPE_REMEMBER_DB_HOST:'db.nrlznztqtresaycbxuck.supabase.co',SETSCOPE_REMEMBER_DB_USER:'setscope_v165_bff'});
+    if(ssl) await (await x.start()).close();
+    else await assert.rejects(x.start(),/DATABASE_SECURITY_REJECTED/);
+    assert.equal(x.stats.closed,1);
+  }
+});
+test('plaintext, unverified certificates, wrong hostnames and obsolete TLS fail before SQL',async()=>{
+  for(const change of [{encrypted:false},{certificate:false},{missingStream:true},
+    {protocol:'TLSv1.1'},{protocol:'TLSv1'},{protocol:null},{protocol:undefined},
+    {peerHost:'untrusted.example.test'}]) {
+    const x=setup('guard');x.state.ssl=true;Object.assign(x.stats,change);
+    await assert.rejects(x.start(),/PRODUCTION_CERTIFICATE_REJECTED/);
+    assert.equal(x.stats.startupQueries,0);assert.equal(x.stats.closed,1);assert.equal(x.stats.requests,0);
+  }
+  for(const protocol of ['TLSv1.2','TLSv1.3']) {
+    const x=setup('guard');x.stats.protocol=protocol;x.state.ssl=false;
+    await (await x.start()).close();assert.equal(x.stats.closed,1);
+  }
 });
 test('fixed pool/TLS options ignore inherited PG and connection-string overrides',async()=>{
   const x=setup();Object.assign(x.env,{PGSSLMODE:'disable',DATABASE_URL:'fixture-ignore',PGUSER:'postgres'});
