@@ -55,14 +55,32 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    };
    const assertFit = async label => {
     await pause(page);
-    check(await svg.evaluate(node => {
+    const fit = await svg.evaluate(node => {
      const host = node.closest('#stock-price-chart');
      const {width, height} = node.viewBox.baseVal;
      const matrix = node.getScreenCTM();
-     return Math.abs(width * matrix.a - host.clientWidth) <= 1 &&
-      Math.abs(height * matrix.d - host.clientHeight) <= 1 &&
-      node.parentElement.scrollWidth <= host.clientWidth + 1;
-    }), true, label);
+     const hostWidth = host.clientWidth, hostHeight = host.clientHeight;
+     const renderedWidth = width * matrix.a, renderedHeight = height * matrix.d;
+     const parentScrollWidth = node.parentElement.scrollWidth;
+     const widthDelta = Math.abs(renderedWidth - hostWidth), heightDelta = Math.abs(renderedHeight - hostHeight);
+     const conditions = {
+      width: { expected: hostWidth, actual: renderedWidth, delta: widthDelta, tolerance: 1, pass: widthDelta <= 1 },
+      height: { expected: hostHeight, actual: renderedHeight, delta: heightDelta, tolerance: 1, pass: heightDelta <= 1 },
+      scrollWidth: { expectedMaximum: hostWidth + 1, actual: parentScrollWidth, pass: parentScrollWidth <= hostWidth + 1 }
+     };
+     return {
+      pass: conditions.width.pass && conditions.height.pass && conditions.scrollWidth.pass,
+      geometry: {
+       host: { width: hostWidth, height: hostHeight }, viewBox: { width, height },
+       screenCTM: { a: matrix.a, b: matrix.b, c: matrix.c, d: matrix.d, e: matrix.e, f: matrix.f },
+       parentScrollWidth
+      },
+      conditions
+     };
+    });
+    if (!fit.pass) console.error(JSON.stringify({ chartFit: 'FAIL', phase, width, theme, label,
+     ...fit, failedConditions: Object.keys(fit.conditions).filter(key => !fit.conditions[key].pass) }));
+    check(fit.pass, true, label);
     check(await svg.evaluate(node => {
      const {width, height} = node.viewBox.baseVal;
      const labels = [...node.querySelectorAll(`text.chart-axis-text[y="${height-10}"]`)];
