@@ -171,16 +171,13 @@ for (const range of ['1M', '3M']) {
     assert.deepEqual(market.errors, []);
   });
 
-  test(range + ' rejects explicit interval/timezone conflicts and cannot infer an unidentified market', async () => {
+  test(range + ' rejects explicit interval/timezone conflicts', async () => {
     const metadata = [
       { dataGranularity: '1d' }, { dataGranularity: '15m' }, { dataGranularity: '5m' },
       { dataGranularity: false }, { dataGranularity: 0 }, { dataGranularity: [] }, { dataGranularity: {} },
       { dataGranularity: range === '1M' ? '60m' : '30m' },
       { exchangeTimezoneName: 'UTC' }, { exchangeTimezoneName: 'Invalid/Zone' },
-      { exchangeTimezoneName: false },
-      ...[{ symbol: undefined }, { currency: undefined }, { exchangeName: undefined },
-        { currency: 'USD' }, { symbol: 'MSFT' }, { exchangeName: 'NASDAQ' }]
-        .map(meta => ({ ...meta, exchangeTimezoneName: undefined }))
+      { exchangeTimezoneName: false }
     ];
     for (const meta of metadata) {
       const calls = [], market = await getService(calls, { mutate: (raw, call) => {
@@ -194,12 +191,12 @@ for (const range of ['1M', '3M']) {
     }
   });
 
-  test(range + ' requires exact Thai exchange evidence when timezone is absent', () => {
+  test(range + ' does not add exchange-name requirements when timezone is absent', () => {
     const interval = PERIODS[range][1];
     const { rows, periods } = barsBetween(received - 86400000, received, interval);
-    const assess = meta => {
+    const assess = (meta, timezone) => {
       const raw = payload('PTT.BK', interval, rows, periods);
-      Object.assign(raw.meta, { exchangeTimezoneName: undefined, ...meta });
+      Object.assign(raw.meta, { exchangeTimezoneName: timezone, ...meta });
       return getService([]).shapeChart(raw, 'PTT', 'chart:review:' + interval);
     };
     for (const meta of [
@@ -207,20 +204,53 @@ for (const range of ['1M', '3M']) {
       { exchangeName: 'SET' }, { exchangeName: 'BKK' },
       { exchangeName: undefined, fullExchangeName: 'Thailand' },
       { exchangeName: undefined, fullExchangeName: 'Stock Exchange of Thailand' },
-      { exchangeName: ' set ', fullExchangeName: ' thailand ' }
+      { exchangeName: ' set ', fullExchangeName: ' thailand ' },
+      { exchangeName: 'SET Equity Market', fullExchangeName: 'The Stock Exchange of Thailand' },
+      { exchangeName: undefined, fullExchangeName: 'The Stock Exchange of Thailand' },
+      { exchangeName: 'Thailand Stock Exchange' },
+      { exchangeName: undefined, fullExchangeName: undefined },
+      { currency: undefined }, { symbol: undefined }
     ]) {
-      assert.deepEqual(assess(meta).history.map(ohlcv), rows, JSON.stringify(meta));
-    }
-    for (const name of ['OFFSET', 'NASDAQ_SET_FAKE', 'BKK_FAKE', 'NOT_THAILAND', 'NASDAQ']) {
-      for (const meta of [
-        { exchangeName: name },
-        { exchangeName: undefined, fullExchangeName: name },
-        { exchangeName: name, fullExchangeName: 'Thailand' },
-        { exchangeName: 'SET', fullExchangeName: name }
-      ]) {
-        assert.throws(() => assess(meta), /timezone mismatch/, JSON.stringify(meta));
+      const expected = assess(meta, 'Asia/Bangkok');
+      assert.deepEqual(expected.history.map(ohlcv), rows);
+      for (const missing of [undefined, null, '']) {
+        assert.deepEqual(assess(meta, missing), expected, JSON.stringify(meta));
       }
     }
+  });
+
+  test(range + ' retains shared Data Guard identity/market rejection and its existing name-format limitation', () => {
+    const interval = PERIODS[range][1];
+    const { rows, periods } = barsBetween(received - 86400000, received, interval);
+    for (const [meta, code] of [
+      [{ symbol: 'MSFT' }, 'SYMBOL_MISMATCH'],
+      [{ currency: 'USD' }, 'MARKET_MISMATCH'],
+      [{ exchangeName: 'NASDAQ' }, 'MARKET_MISMATCH'],
+      // These names describe the Thai market, but the unchanged shared guard
+      // does not recognize them. Record that limitation without adding a gate.
+      [{ exchangeName: 'Bangkok' }, 'MARKET_MISMATCH'],
+      [{ exchangeName: undefined, fullExchangeName: 'ตลาดหลักทรัพย์แห่งประเทศไทย' }, 'MARKET_MISMATCH']
+    ]) {
+      for (const timezone of ['Asia/Bangkok', undefined, null, '']) {
+        const raw = payload('PTT.BK', interval, rows, periods);
+        Object.assign(raw.meta, { exchangeTimezoneName: timezone, ...meta });
+        assert.throws(() => getService([]).shapeChart(raw, 'PTT', 'chart:review:' + interval),
+          error => error.code === code, JSON.stringify({ meta, timezone }));
+      }
+    }
+  });
+
+  test(range + ' rejects invalid OHLCV bars even when timezone is absent', async () => {
+    const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+      if (!call.visible) return;
+      delete raw.meta.exchangeTimezoneName;
+      const quote = raw.indicators.quote[0];
+      quote.high = quote.low.map(low => low - 1);
+    } }).getMarket(['PTT'], 'PTT', range);
+    assert.deepEqual(market.history, []);
+    assert.deepEqual(market.indicatorHistory, []);
+    assert.ok(market.technicalMeta.history.historyReasons.includes('INVALID_OHLC'));
+    assert.equal(calls.length, 3);
   });
 
   test(range + ' cannot infer missing granularity from one native gap, even with skipped or cross-session gaps', () => {

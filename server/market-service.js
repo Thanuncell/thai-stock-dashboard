@@ -99,19 +99,8 @@ function densityHistoryPolicy(result, interval, bounds) {
   }
   const timezone = meta.exchangeTimezoneName;
   const missingTimezone = timezone == null || timezone === '';
-  // Epoch timestamps do not need a timezone conversion. Only use the Thai
-  // session calendar without timezone metadata when market identity supports it;
-  // Data Guard still verifies the requested symbol and market below.
-  const exchangeCode = typeof meta.exchangeName === 'string' ? meta.exchangeName.trim().toUpperCase() : meta.exchangeName;
-  const exchangeName = typeof meta.fullExchangeName === 'string' ? meta.fullExchangeName.trim().toUpperCase() : meta.fullExchangeName;
-  const knownCode = ['SET', 'BKK'].includes(exchangeCode);
-  const knownName = ['THAILAND', 'STOCK EXCHANGE OF THAILAND'].includes(exchangeName);
-  const thaiExchange = (knownCode || knownName)
-    && (exchangeCode == null || exchangeCode === '' || knownCode)
-    && (exchangeName == null || exchangeName === '' || knownName);
-  const thaiMarket = /\.BK$/i.test(String(meta.symbol || '')) && meta.currency === 'THB'
-    && thaiExchange;
-  if (missingTimezone ? !thaiMarket : timezone !== 'Asia/Bangkok') {
+  // Shared Data Guard still assesses symbol, market and OHLCV when timezone is absent.
+  if (!missingTimezone && timezone !== 'Asia/Bangkok') {
     throw Object.assign(Error('Thai intraday chart timezone mismatch'), { code: 'PARSER_MISMATCH' });
   }
 
