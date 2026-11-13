@@ -94,7 +94,8 @@ test('Production additive SQL rehearsal against synthetic existing data on local
           async end() {}
           async connect() {
             const client=await bff.connect();
-            return { connection:{stream:{authorized:true}}, release:()=>client.release(),
+            return { connection:{stream:{encrypted:true,authorized:true,getProtocol:()=> 'TLSv1.3',
+              getPeerCertificate:()=>({subjectaltname:'DNS:db.nrlznztqtresaycbxuck.supabase.co'})}}, release:()=>client.release(),
               query:async(sql,args)=>{
                 const result=await client.query(sql,args);
                 if(sql.includes('pg_stat_ssl')) result.rows[0].ssl=true;

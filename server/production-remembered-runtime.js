@@ -2,6 +2,7 @@
 
 const { createAuthService } = require('./auth-service');
 const { createPostgresRememberedSessionStore } = require('./remembered-session-postgres');
+const { checkServerIdentity } = require('node:tls');
 
 const PROJECT = 'nrlznztqtresaycbxuck';
 const ORIGIN = 'https://setscope.onrender.com';
@@ -57,6 +58,12 @@ async function createProductionRememberedRuntime({ env, send, fetchImpl = global
   try {
     const client = await pool.connect();
     try {
+      const stream = client.connection?.stream;
+      if (stream?.encrypted !== true || stream.authorized !== true
+        || !['TLSv1.2', 'TLSv1.3'].includes(stream.getProtocol?.())
+        || checkServerIdentity(host, stream.getPeerCertificate?.() || {})) {
+        refuse('PRODUCTION_CERTIFICATE_REJECTED');
+      }
       const { rows: [s] } = await client.query(`select current_user as role,
         current_database() as database, r.rolcanlogin as login, r.rolsuper as superuser,
         r.rolbypassrls as bypass, r.rolcreaterole as create_role, r.rolcreatedb as create_db,
@@ -86,12 +93,12 @@ async function createProductionRememberedRuntime({ env, send, fetchImpl = global
         from pg_roles r where r.rolname=current_user`);
       if (!s || s.role !== ROLE || s.database !== 'postgres' || !s.login || s.superuser || s.bypass
         || s.create_role || s.create_db || s.replication || s.connection_limit < 4 || s.connection_limit > 8
-        || !s.ssl || !s.store_read || !s.store_insert || !s.rotate || s.extend || s.remap
+        // pg_stat_ssl describes the pooler's backend leg, not this Node TLS socket.
+        || (direct && !s.ssl) || !s.store_read || !s.store_insert || !s.rotate || s.extend || s.remap
         || s.store_delete || s.store_truncate || s.member_data || s.api_private || s.api_truncate
         || !s.guard || !s.watchlist_rls || !s.store_rls || !s.tombstone_guard || !s.lookup_role_separate) {
         refuse('PRODUCTION_DATABASE_SECURITY_REJECTED');
       }
-      if (client.connection?.stream?.authorized !== true) refuse('PRODUCTION_CERTIFICATE_REJECTED');
     } finally { client.release(); }
 
     const auth = createAuthService({ env, send, fetchImpl, remembered: {
