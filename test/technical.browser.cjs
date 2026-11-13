@@ -54,7 +54,24 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     return item;
    };
    const assertFit = async label => {
-    await pause(page);
+    const fitTimeoutMs = 3000;
+    let fitWaitError = null;
+    try {
+     // Poll independently of the mocked animation-frame clock.
+     await page.waitForFunction(() => {
+      const host = document.querySelector('#stock-price-chart');
+      const node = host?.querySelector('.price-chart-svg');
+      const matrix = node?.getScreenCTM();
+      if (!host?.clientWidth || !host.clientHeight || !matrix) return false;
+      const {width, height} = node.viewBox.baseVal;
+      return Math.abs(width * matrix.a - host.clientWidth) <= 1 &&
+       Math.abs(height * matrix.d - host.clientHeight) <= 1 &&
+       node.parentElement.scrollWidth <= host.clientWidth + 1;
+     }, undefined, { polling: 50, timeout: fitTimeoutMs });
+    } catch (error) {
+     if (error.name !== 'TimeoutError') throw error;
+     fitWaitError = error;
+    }
     const fit = await svg.evaluate(node => {
      const host = node.closest('#stock-price-chart');
      const {width, height} = node.viewBox.baseVal;
@@ -78,9 +95,11 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
       conditions
      };
     });
-    if (!fit.pass) console.error(JSON.stringify({ chartFit: 'FAIL', phase, width, theme, label,
+    if (!fit.pass || fitWaitError) console.error(JSON.stringify({ chartFit: 'FAIL', phase, width, theme, label,
+     ...(fitWaitError ? { synchronization: { status: 'TIMEOUT', timeoutMs: fitTimeoutMs } } : {}),
      ...fit, failedConditions: Object.keys(fit.conditions).filter(key => !fit.conditions[key].pass) }));
     check(fit.pass, true, label);
+    if (fitWaitError) throw fitWaitError;
     check(await svg.evaluate(node => {
      const {width, height} = node.viewBox.baseVal;
      const labels = [...node.querySelectorAll(`text.chart-axis-text[y="${height-10}"]`)];
