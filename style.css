@@ -526,3 +526,6 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 /* Chart timeframe controls reuse existing typography, buttons and theme tokens. */
 .chart-time-controls{display:grid;gap:8px;margin-top:8px}.chart-time-control{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.chart-time-control [hidden]{display:none}#timeframe-tabs{grid-template-columns:repeat(4,1fr)}
 @media(max-width:790px){.chart-time-control{display:grid;grid-template-columns:minmax(0,1fr)}}
+
+/* Transient chart inspection reuses the existing tooltip and grid styles. */
+#stock-price-chart{position:relative}.chart-crosshair-tooltip{max-width:calc(100% - 16px);white-space:normal}.chart-crosshair-tooltip:not([hidden]){display:block}

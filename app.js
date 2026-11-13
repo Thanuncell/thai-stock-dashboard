@@ -46,7 +46,7 @@ import {
 } from './client/domain.mjs';
 import { createTechnicalSnapshot, INDICATOR_PRESETS, RANGE_INTERVAL } from './client/technical.mjs';
 import { DrawingWorkspace } from './client/drawings.mjs';
-import { seriesPath, oscillatorPanel } from './client/technical-chart.mjs';
+import { seriesPath, oscillatorPanel, crosshairPoint } from './client/technical-chart.mjs';
 import { marketTimeframe } from './client/chart-timeframe.mjs';
 
 // Gate activation is server-owned. Once observed ON, stale OFF responses cannot lower it;
@@ -154,6 +154,7 @@ let chartRowCount = 0;
 const chartPointers = new Map();
 let chartGesture = null;
 let chartRenderFrame = null;
+let chartCrosshairContext = null, chartCrosshairIndex = null;
 let coverageSummaryRequested = false;
 let alertPrefs = {};
 let alertStates = {};
@@ -340,6 +341,7 @@ function syncNavigationControls() {
 function setWorkspacePage(page, { historyMode = 'push', scroll = true } = {}) {
   if (!workspaceRoutes[page]) page = 'overview';
   const previousPage = document.body.dataset.workspacePage;
+  if(page!=='chart')hideChartCrosshair();
   if (scroll && previousPage && previousPage !== page) workspaceScrollPositions.set(previousPage, window.scrollY);
   const visible = new Set(workspaceRoutes[page].nodes);
   ['#market-overview', '#market-data-overview', '#chart-section', '#activity-section', '#news-section', '#movers-section', '#watchlist-page', '#profile-page'].forEach(selector => {
@@ -892,6 +894,7 @@ function setTechnicalPanelState(state) {
 function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicatorBars = bars, dataState = 'delayed') {
   const host = $('#stock-price-chart');
   if (!host) return;
+  hideChartCrosshair();chartCrosshairContext=null;
   const allRows = trustedMarketBars(bars).filter(bar=>[bar.open,bar.high,bar.low,bar.close].every(value=>toFiniteNumber(value)!==null));
   const denseRange = currentTimeframe === 'Auto' && (currentRange === '1M' || currentRange === '3M');
   const cadence = latestMarket?.technicalMeta?.history?.cadence?.status;
@@ -900,6 +903,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const candleNotice = denseRange ? (allRows.length < 100
     ? ' · ข้อมูลแท่งเทียนยังไม่เพียงพอ' : '') + cadenceNotice : '';
   if (!allRows.length) {
+    host.removeAttribute('aria-describedby');
     chartLayoutPending = false;
     drawings?.suspend();
     const isError = chartLoadState === 'error';
@@ -1026,7 +1030,32 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   setText('#chart-updated', receiptText==='—' ? 'อัปเดตเมื่อ —' + candleNotice
     : `อัปเดตเมื่อ ${receiptText} (เวลาไทย)${stateText}${candleNotice}`);
   $('#chart-updated').title=`แท่งราคาล่าสุดเปิด ${technicalTimeText(allRows.at(-1)?.time)} · ดูแท่งอ้างอิงสัญญาณที่สรุปด้านล่าง`;
-  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentTimeframe === 'Auto' ? currentRange : `${currentTimeframe} · ${historicalRange}`)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentTimeframe === 'Auto' ? currentRange : `${currentTimeframe} · ${historicalRange}`)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}</svg></div>`;
+  host.innerHTML = `<div class="chart-svg-scroll"><svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="กราฟแท่งเทียน ${escapeHtml(activeSymbol)} ช่วง ${escapeHtml(currentTimeframe === 'Auto' ? currentRange : `${currentTimeframe} · ${historicalRange}`)}"><text class="chart-label" x="${left}" y="14">${escapeHtml(activeSymbol)} · ${escapeHtml(currentTimeframe === 'Auto' ? currentRange : `${currentTimeframe} · ${historicalRange}`)}</text>${grid}<line class="chart-volume-separator" x1="${left}" y1="${priceBottom + 5}" x2="${width - right}" y2="${priceBottom + 5}"/>${candles}${indicators}${levelLines}${drawingSvg}<text class="chart-axis-text" x="${left}" y="${volumeBottom + 13}">VOL</text>${macdPanel}${extraPanels}${dateLabels}<g class="chart-crosshair" visibility="hidden" pointer-events="none" aria-hidden="true"></g></svg></div><div class="chart-tooltip chart-crosshair-tooltip" role="tooltip" hidden></div>`;
+  host.querySelector('.chart-crosshair-tooltip').id='chart-crosshair-tooltip';
+  host.setAttribute('aria-describedby','chart-crosshair-tooltip');
+  chartCrosshairContext={rows,x,y,left,right,width,height,step,top,bottom:priceBottom};
+}
+
+function hideChartCrosshair(){
+ chartCrosshairIndex=null;
+ $('#stock-price-chart .chart-crosshair')?.setAttribute('visibility','hidden');
+ const tooltip=$('#stock-price-chart .chart-crosshair-tooltip');if(tooltip)tooltip.hidden=true;
+}
+function showChartCrosshair(event,index=null){
+ const host=$('#stock-price-chart'),c=chartCrosshairContext,svg=host?.querySelector('.price-chart-svg');
+ if(!c||!svg||drawings?.tool!=='pan')return hideChartCrosshair();
+ const bounds=svg.getBoundingClientRect();
+ const point=index===null?crosshairPoint(c,bounds,event):{index,row:c.rows[index],x:c.x(index),y:c.y(c.rows[index].close)};
+ if(!point)return hideChartCrosshair();
+ chartCrosshairIndex=point.index;
+ const layer=host.querySelector('.chart-crosshair'),tooltip=host.querySelector('.chart-crosshair-tooltip');
+ layer.innerHTML=`<line class="chart-grid" x1="${point.x}" x2="${point.x}" y1="${c.top}" y2="${c.bottom}"/><line class="chart-grid" x1="${c.left}" x2="${c.width-c.right}" y1="${point.y}" y2="${point.y}"/>`;
+ layer.setAttribute('visibility','visible');
+ const row=point.row,date=(currentTimeframe==='Auto'?chartIntradayFormatter:chartHistoricalFormatter).format(new Date(row.time));
+ tooltip.textContent=`${activeSymbol} · ${chartTimeframe()} · ${date} · O ${number(row.open)} · H ${number(row.high)} · L ${number(row.low)} · C ${number(row.close)} · Vol ${number(row.volume)}`;
+ tooltip.dataset.time=String(row.time);tooltip.hidden=false;
+ tooltip.style.left=Math.max(8,Math.min(host.clientWidth-tooltip.offsetWidth-8,point.x*bounds.width/c.width+12))+'px';
+ tooltip.style.top=Math.max(8,Math.min(host.clientHeight-tooltip.offsetHeight-8,point.y*bounds.height/c.height-tooltip.offsetHeight-8))+'px';
 }
 
 function scheduleChartRedraw() {
@@ -1059,6 +1088,10 @@ function resetChartViewport() {
   chartViewportKey = '';
   updateTradingViewChart();
 }
+function fitChartViewport(){
+ if(!chartRowCount)return;
+ chartViewport={start:0,end:chartRowCount,followLatest:true};queueChartViewportRender();
+}
 
 function beginChartGesture() {
   const points = [...chartPointers.values()];
@@ -1080,6 +1113,7 @@ function beginChartGesture() {
 }
 
 function cancelChartGestures() {
+  hideChartCrosshair();
   const host=$('#stock-price-chart');
   for(const id of chartPointers.keys())if(host?.hasPointerCapture?.(id))host.releasePointerCapture?.(id);
   chartPointers.clear();chartGesture=null;
@@ -1100,6 +1134,7 @@ function setupChartGestures() {
     if(drawings?.tool!=='pan'&&[...event.touches].some(touch=>drawings?.anchor(touch)))event.preventDefault();
   },{passive:false});
   host.addEventListener('pointerdown', event => {
+    hideChartCrosshair();
     chartPointers.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
     if([...chartPointers.values()].filter(point=>point.pointerType==='touch').length>=2){
       drawings?.cancelGesture();
@@ -1111,6 +1146,7 @@ function setupChartGestures() {
     if (event.pointerType !== 'touch') host.setPointerCapture?.(event.pointerId);
   });
   host.addEventListener('pointermove', event => {
+    if(!chartPointers.size&&event.pointerType!=='touch')showChartCrosshair(event);
     if(chartGesture?.type!=='pinch'&&drawings?.pointerMove(event))return;
     if (!chartPointers.has(event.pointerId) || !chartRowCount) return;
     const current = chartPointers.get(event.pointerId);
@@ -1145,13 +1181,25 @@ function setupChartGestures() {
     queueChartViewportRender();
   }, { passive: false });
   const finish = event => {
+    const inspect=event.type==='pointerup'&&event.pointerType==='touch'&&chartPointers.size===1&&chartGesture?.type==='pending'&&drawings?.tool==='pan';
     drawings?.pointerUp(event,event.type==='pointercancel');
     chartPointers.delete(event.pointerId);
     if (host.hasPointerCapture?.(event.pointerId)) host.releasePointerCapture?.(event.pointerId);
     if (chartPointers.size) beginChartGesture(); else chartGesture = null;
+    if(inspect)showChartCrosshair(event);
   };
   host.addEventListener('pointerup', finish);
   host.addEventListener('pointercancel', finish);
+  host.addEventListener('pointerleave',event=>{if(event.pointerType!=='touch')hideChartCrosshair();});
+  host.addEventListener('blur',hideChartCrosshair);
+  host.addEventListener('keydown',event=>{
+   if(event.key==='Escape'){hideChartCrosshair();return;}
+   if(!['ArrowLeft','ArrowRight'].includes(event.key)||drawings?.tool!=='pan'||!chartCrosshairContext)return;
+   event.preventDefault();
+   const last=chartCrosshairContext.rows.length-1;
+   const index=chartCrosshairIndex===null?last:Math.max(0,Math.min(last,chartCrosshairIndex+(event.key==='ArrowLeft'?-1:1)));
+   showChartCrosshair(null,index);
+  });
 }
 
 function updateFullscreenControl() {
@@ -2350,6 +2398,7 @@ function setupUiEventWiring() {
   $('#chart-zoom-in')?.addEventListener('click', () => setChartZoom(.8));
   $('#chart-zoom-out')?.addEventListener('click', () => setChartZoom(1.25));
   $('#chart-reset')?.addEventListener('click', resetChartViewport);
+  $('#chart-fit')?.addEventListener('click',fitChartViewport);
   setupChartGestures();
   $('#stock-price-chart')?.addEventListener('click', event => {
     if (event.target.closest('[data-chart-retry]')) getMarket();
