@@ -8,7 +8,8 @@ const { barsBetween, payload, received, responder } = require('./fixtures/chart-
 
 let technical;
 test.before(async () => { technical = await import('../client/technical.mjs'); });
-const getService = (calls, options) => createMarketService({ env: {}, now: () => received, fetchImpl: responder(calls, options) });
+const getService = (calls, options = {}) => createMarketService({ env: {}, now: () => options.observedAt ?? received,
+  fetchImpl: responder(calls, options) });
 const technicalSnapshot = (market, timeframe) => technical.createTechnicalSnapshot({ ...market, symbol: 'PTT', timeframe });
 const ohlcv = ({ time, open, high, low, close, volume }) => ({ time, open, high, low, close, volume });
 
@@ -80,8 +81,8 @@ for (const [interval, duration] of [['30m', 1800000], ['60m', 3600000]]) {
   });
 }
 
-test('missing or conflicting provider cadence and timezone fail closed without daily substitution', async () => {
-  for (const meta of [{ dataGranularity: '1d' }, { dataGranularity: undefined }, { exchangeTimezoneName: 'UTC' }]) {
+test('conflicting provider cadence and timezone fail closed without daily substitution', async () => {
+  for (const meta of [{ dataGranularity: '1d' }, { dataGranularity: '15m' }, { exchangeTimezoneName: 'UTC' }]) {
     const calls = [], service = getService(calls, { mutate: (result, call) => {
       if (call.visible) Object.assign(result.meta, meta);
     } });
@@ -91,6 +92,273 @@ test('missing or conflicting provider cadence and timezone fail closed without d
     assert.equal(market.dataState, 'unavailable');
     assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
     assert.equal(calls.length, 3);
+  }
+});
+
+for (const range of ['1M', '3M']) {
+  for (const [state, observedAt] of [['REGULAR', received], ['CLOSED', received + 3600000]]) {
+    for (const missing of [['dataGranularity'], ['exchangeTimezoneName'], ['dataGranularity', 'exchangeTimezoneName']]) {
+      test(`${range} ${state} retains verified OHLCV when ${missing.join('/')} is absent`, async () => {
+        const calls = [], options = { observedAt, mutate: (raw, call) => {
+          raw.meta.marketState = state;
+          if (call.visible || call.warmup) for (const key of missing) delete raw.meta[key];
+        } };
+        const expectedCalls = [], expected = await getService(expectedCalls, { observedAt,
+          mutate: raw => { raw.meta.marketState = state; }
+        }).getMarket(['PTT'], 'PTT', range);
+        const market = await getService(calls, options).getMarket(['PTT'], 'PTT', range);
+        assert.ok(market.history.length > 100);
+        assert.deepEqual(market.history, expected.history);
+        assert.deepEqual(market.indicatorHistory, expected.indicatorHistory);
+        assert.deepEqual(market.levelsHistory, expected.levelsHistory);
+        assert.deepEqual(market.errors, []);
+        assert.equal(market.dataState, 'delayed');
+        assert.equal(market.technicalMeta.history.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
+        assert.equal(market.history.at(-1).complete, state === 'CLOSED');
+        assert.deepEqual(calls, expectedCalls, 'metadata recovery adds no requests or warm-up changes');
+        const snapshot = technicalSnapshot(market, range), baseline = technicalSnapshot(expected, range);
+        assert.deepEqual(snapshot.signalSeries, baseline.signalSeries);
+        assert.deepEqual(snapshot.signalReference, baseline.signalReference);
+        if (state === 'REGULAR') {
+          const changed = structuredClone(market);
+          for (const key of ['history', 'indicatorHistory', 'levelsHistory']) Object.assign(changed[key].at(-1), {
+            open: 600, high: 700, low: 500, close: 650, volume: 99999
+          });
+          const replay = technicalSnapshot(changed, range);
+          assert.notDeepEqual(replay.series, snapshot.series, 'price overlays retain provisional prices');
+          for (const key of ['signalSeries', 'signalReference', 'summary', 'analysis', 'levels']) {
+            assert.deepEqual(replay[key], snapshot[key], `provisional candle cannot change ${key}`);
+          }
+        }
+      });
+    }
+  }
+
+  test(range + ' cannot recover missing interval metadata from sparse, daily-like or suspect cadence', async () => {
+    const interval = PERIODS[range][1];
+    const cases = [
+      [fixtureBar(6, 10)],
+      [2, 3, 4, 5, 6].map(date => fixtureBar(date, 10)),
+      [5, 6].flatMap(date => [fixtureBar(date, 10), fixtureBar(date, 12), fixtureBar(date, 14), fixtureBar(date, 16)])
+    ];
+    for (const rows of cases) {
+      const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+        if (!call.visible) return;
+        Object.assign(raw, payload('PTT.BK', interval, rows, undefined));
+        delete raw.meta.dataGranularity;
+      } }).getMarket(['PTT'], 'PTT', range);
+      assert.deepEqual(market.history, []);
+      assert.deepEqual(market.indicatorHistory, []);
+      assert.equal(market.dataState, 'unavailable');
+      assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
+      assert.equal(calls.length, 3);
+    }
+  });
+
+  test(range + ' validates short history and same-interval warm-up with missing metadata', async () => {
+    const calls = [], market = await getService(calls, { visibleLimit: 40, mutate: (raw, call) => {
+      if (call.visible || call.warmup) {
+        delete raw.meta.dataGranularity;
+        delete raw.meta.exchangeTimezoneName;
+      }
+    } }).getMarket(['PTT'], 'PTT', range);
+    assert.equal(market.history.length, 40);
+    assert.equal(market.candleTargetMet, false);
+    assert.equal(calls.filter(call => call.warmup).length, 1);
+    assert.equal(calls.at(-1).interval, PERIODS[range][1]);
+    assert.ok(market.indicatorHistory.length > 200);
+    assert.deepEqual(market.indicatorHistory.slice(-40), market.history);
+    assert.deepEqual(market.errors, []);
+  });
+
+  test(range + ' rejects explicit interval/timezone conflicts and cannot infer an unidentified market', async () => {
+    const metadata = [
+      { dataGranularity: '1d' }, { dataGranularity: '15m' }, { dataGranularity: '5m' },
+      { dataGranularity: false }, { dataGranularity: 0 }, { dataGranularity: [] }, { dataGranularity: {} },
+      { dataGranularity: range === '1M' ? '60m' : '30m' },
+      { exchangeTimezoneName: 'UTC' }, { exchangeTimezoneName: 'Invalid/Zone' },
+      { exchangeTimezoneName: false },
+      ...[{ symbol: undefined }, { currency: undefined }, { exchangeName: undefined },
+        { currency: 'USD' }, { symbol: 'MSFT' }, { exchangeName: 'NASDAQ' }]
+        .map(meta => ({ ...meta, exchangeTimezoneName: undefined }))
+    ];
+    for (const meta of metadata) {
+      const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+        if (call.visible) Object.assign(raw.meta, meta);
+      } }).getMarket(['PTT'], 'PTT', range);
+      assert.deepEqual(market.history, [], JSON.stringify(meta));
+      assert.deepEqual(market.indicatorHistory, []);
+      assert.equal(market.dataState, 'unavailable');
+      assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
+      assert.equal(calls.length, 3);
+    }
+  });
+
+  test(range + ' requires exact Thai exchange evidence when timezone is absent', () => {
+    const interval = PERIODS[range][1];
+    const { rows, periods } = barsBetween(received - 86400000, received, interval);
+    const assess = meta => {
+      const raw = payload('PTT.BK', interval, rows, periods);
+      Object.assign(raw.meta, { exchangeTimezoneName: undefined, ...meta });
+      return getService([]).shapeChart(raw, 'PTT', 'chart:review:' + interval);
+    };
+    for (const meta of [
+      { exchangeName: 'SET', fullExchangeName: 'Thailand' },
+      { exchangeName: 'SET' }, { exchangeName: 'BKK' },
+      { exchangeName: undefined, fullExchangeName: 'Thailand' },
+      { exchangeName: undefined, fullExchangeName: 'Stock Exchange of Thailand' },
+      { exchangeName: ' set ', fullExchangeName: ' thailand ' }
+    ]) {
+      assert.deepEqual(assess(meta).history.map(ohlcv), rows, JSON.stringify(meta));
+    }
+    for (const name of ['OFFSET', 'NASDAQ_SET_FAKE', 'BKK_FAKE', 'NOT_THAILAND', 'NASDAQ']) {
+      for (const meta of [
+        { exchangeName: name },
+        { exchangeName: undefined, fullExchangeName: name },
+        { exchangeName: name, fullExchangeName: 'Thailand' },
+        { exchangeName: 'SET', fullExchangeName: name }
+      ]) {
+        assert.throws(() => assess(meta), /timezone mismatch/, JSON.stringify(meta));
+      }
+    }
+  });
+
+  test(range + ' cannot infer missing granularity from one native gap, even with skipped or cross-session gaps', () => {
+    const interval = PERIODS[range][1], duration = intervalMs(interval);
+    const first = fixtureBar(5, 10), afternoon = fixtureBar(5, 14), nextDay = fixtureBar(6, 10);
+    const after = (bar, steps) => ({ ...bar, time: bar.time + steps * duration });
+    const cases = [
+      [first], [first, after(first, 1)], [first, after(first, 2)],
+      [first, after(first, 1), nextDay],
+      [first, after(first, 1), afternoon, after(afternoon, 2)],
+      [first, after(first, 1), { ...after(first, 2), volume: -1 }]
+    ];
+    for (const rows of cases) {
+      assert.throws(() => getService([]).shapeChart(payload('PTT.BK', undefined, rows, undefined),
+        'PTT', 'chart:review:' + interval), /interval cannot be verified/);
+    }
+  });
+
+  test(range + ' can infer missing granularity from repeated native gaps in a short or gapped history', () => {
+    const interval = PERIODS[range][1], duration = intervalMs(interval);
+    const first = fixtureBar(5, 10), afternoon = fixtureBar(5, 14), nextDay = fixtureBar(6, 10);
+    const after = (bar, steps) => ({ ...bar, time: bar.time + steps * duration });
+    const cases = [
+      [first, after(first, 1), after(first, 2)],
+      [first, after(first, 1), afternoon, after(afternoon, 1)],
+      [first, after(first, 1), afternoon, after(afternoon, 2), nextDay, after(nextDay, 1)]
+    ];
+    for (const rows of cases) {
+      const result = getService([]).shapeChart(payload('PTT.BK', undefined, rows, undefined),
+        'PTT', 'chart:review:' + interval);
+      assert.deepEqual(result.history.map(ohlcv), rows);
+      assert.equal(result.provenance.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
+      assert.equal(result.provenance.cadence.nativeGaps, 2);
+      assert.ok(result.history.length < 100);
+    }
+  });
+
+  test(range + ' preserves explicit two-bar history and requires repeated evidence only for missing granularity', async () => {
+    for (const [count, missing, accepted] of [[2, false, true], [2, true, false], [3, true, true]]) {
+      const calls = [], market = await getService(calls, { visibleLimit: count, mutate: (raw, call) => {
+        if (missing && (call.visible || call.warmup)) delete raw.meta.dataGranularity;
+      } }).getMarket(['PTT'], 'PTT', range);
+      assert.equal(market.history.length, accepted ? count : 0);
+      if (accepted) {
+        assert.equal(market.candleTargetMet, false);
+        assert.deepEqual(market.errors, []);
+        assert.equal(calls.filter(call => call.warmup).length, 1);
+        assert.equal(calls.at(-1).interval, PERIODS[range][1]);
+        assert.deepEqual(market.indicatorHistory.slice(-count), market.history);
+      } else {
+        assert.equal(market.dataState, 'unavailable');
+        assert.deepEqual(market.indicatorHistory, []);
+        assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
+        assert.equal(calls.filter(call => call.warmup).length, 0);
+      }
+    }
+  });
+
+  test(range + ' rejects shorter native cadence with or without interval metadata', async () => {
+    for (const actual of range === '1M' ? ['15m'] : ['15m', '30m']) for (const missing of [false, true]) {
+      const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+        if (!call.visible) return;
+        const { rows, periods } = barsBetween(call.start, call.end, actual);
+        Object.assign(raw, payload('PTT.BK', PERIODS[range][1], rows, periods));
+        if (missing) delete raw.meta.dataGranularity;
+      } }).getMarket(['PTT'], 'PTT', range);
+      assert.deepEqual(market.history, []);
+      assert.deepEqual(market.indicatorHistory, []);
+      assert.equal(market.dataState, 'unavailable');
+      assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
+      assert.equal(calls.length, 3);
+    }
+  });
+
+  test(range + ' filters corrupt timestamps and OHLCV before verifying missing metadata', async () => {
+    const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+      if (!call.visible) return;
+      delete raw.meta.dataGranularity;
+      delete raw.meta.exchangeTimezoneName;
+      const quote = raw.indicators.quote[0];
+      raw.timestamp[0] = null;
+      raw.timestamp[1] = 'corrupt';
+      raw.timestamp[2] += 0.0005;
+      raw.timestamp[3] = (call.end + 3600000) / 1000;
+      raw.timestamp[5] = raw.timestamp[4];
+      raw.timestamp[6] = Date.UTC(2026, 10, 5, 6, 15) / 1000;
+      quote.high[7] = quote.low[7] - 1;
+      quote.volume[8] = -1;
+    } }).getMarket(['PTT'], 'PTT', range);
+    const { start, end } = calls.find(call => call.visible);
+    assert.deepEqual(market.history.map(ohlcv), barsBetween(start, end, PERIODS[range][1]).rows.slice(9));
+    assert.equal(market.technicalMeta.history.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
+    for (const reason of ['INVALID_TIMESTAMP', 'FUTURE_TIMESTAMP', 'DUPLICATE_TIMESTAMP',
+      'OUTSIDE_TRADING_SESSION', 'INVALID_OHLC', 'NEGATIVE_VOLUME']) {
+      assert.ok(market.technicalMeta.history.historyReasons.includes(reason), reason);
+    }
+    assert.ok(market.history.every(bar => Number.isSafeInteger(bar.time) && bar.volume >= 0));
+  });
+
+  test(range + ' preserves quotes and isolates provider failure without retries or substitution', async () => {
+    for (const status of [403, 429, 503, 'no-data']) {
+      const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+        if (!call.visible) return;
+        return status === 'no-data'
+          ? { ok: true, json: async () => ({ chart: { error: { code: 'Not Found' }, result: null } }) }
+          : { ok: false, status };
+      } }).getMarket(['PTT'], 'PTT', range);
+      assert.deepEqual(market.history, []);
+      assert.deepEqual(market.indicatorHistory, []);
+      assert.equal(market.stocks.length, 1);
+      assert.ok(market.stocks[0].history.length > 0);
+      assert.equal(market.dataState, 'unavailable');
+      assert.match(market.errors.join(' '), /SOURCE_DENIED|SOURCE_RATE_LIMITED|ACQUISITION_GAP|SOURCE_NO_DATA/);
+      assert.equal(calls.length, 3);
+    }
+  });
+}
+
+test('invalid rows and cross-session gaps cannot establish an absent interval', () => {
+  const valid = [fixtureBar(5, 12), fixtureBar(5, 14), fixtureBar(6, 10)];
+  for (const interval of ['30m', '60m']) {
+    for (const rows of [valid, [fixtureBar(6, 10), {
+      ...fixtureBar(6, interval === '30m' ? 10 : 11, interval === '30m' ? 30 : 0), volume: -1
+    }]]) {
+      const raw = payload('PTT.BK', undefined, rows, undefined);
+      assert.throws(() => getService([]).shapeChart(raw, 'PTT', 'chart:1mo:' + interval), /interval cannot be verified/);
+    }
+  }
+});
+
+test('null and empty optional metadata use the same evidence requirements as absent fields', () => {
+  const { rows, periods } = barsBetween(received - 86400000, received, '30m');
+  for (const missing of [undefined, null, '']) {
+    const raw = payload('PTT.BK', missing, rows, periods);
+    raw.meta.exchangeTimezoneName = missing;
+    const result = getService([]).shapeChart(raw, 'PTT', 'chart:1mo:30m');
+    assert.deepEqual(result.history.map(ohlcv), rows);
+    assert.equal(result.provenance.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
   }
 });
 

@@ -91,11 +91,27 @@ function cadenceEvidence(rows, interval, sessionFor) {
 
 function densityHistoryPolicy(result, interval, bounds) {
   const meta = result?.meta || {};
-  const reported = String(meta.dataGranularity || '').toLowerCase();
-  if (reported !== interval && !(interval === '60m' && reported === '1h')) {
+  const granularity = meta.dataGranularity;
+  const missingGranularity = granularity == null || granularity === '';
+  const reported = typeof granularity === 'string' ? granularity.toLowerCase() : null;
+  if (!missingGranularity && reported !== interval && !(interval === '60m' && reported === '1h')) {
     throw Object.assign(Error('Yahoo interval differs from the requested interval'), { code: 'PARSER_MISMATCH' });
   }
-  if (meta.exchangeTimezoneName !== 'Asia/Bangkok') {
+  const timezone = meta.exchangeTimezoneName;
+  const missingTimezone = timezone == null || timezone === '';
+  // Epoch timestamps do not need a timezone conversion. Only use the Thai
+  // session calendar without timezone metadata when market identity supports it;
+  // Data Guard still verifies the requested symbol and market below.
+  const exchangeCode = typeof meta.exchangeName === 'string' ? meta.exchangeName.trim().toUpperCase() : meta.exchangeName;
+  const exchangeName = typeof meta.fullExchangeName === 'string' ? meta.fullExchangeName.trim().toUpperCase() : meta.fullExchangeName;
+  const knownCode = ['SET', 'BKK'].includes(exchangeCode);
+  const knownName = ['THAILAND', 'STOCK EXCHANGE OF THAILAND'].includes(exchangeName);
+  const thaiExchange = (knownCode || knownName)
+    && (exchangeCode == null || exchangeCode === '' || knownCode)
+    && (exchangeName == null || exchangeName === '' || knownName);
+  const thaiMarket = /\.BK$/i.test(String(meta.symbol || '')) && meta.currency === 'THB'
+    && thaiExchange;
+  if (missingTimezone ? !thaiMarket : timezone !== 'Asia/Bangkok') {
     throw Object.assign(Error('Thai intraday chart timezone mismatch'), { code: 'PARSER_MISMATCH' });
   }
 
@@ -114,7 +130,17 @@ function densityHistoryPolicy(result, interval, bounds) {
     }
     return calendar.get(date) ? null : 'OUTSIDE_TRADING_SESSION';
   };
-  return { barTimeIssue, sessionFor, requireVolume: true };
+  const validateHistory = rows => {
+    const cadence = cadenceEvidence(rows, interval, sessionFor);
+    // Missing metadata is not a contradictory interval. Recover only from
+    // repeated validated native spacing; a single pair, skipped gaps and
+    // cross-session gaps cannot establish the interval without metadata.
+    if (missingGranularity && (cadence.status !== 'INTERVAL_CADENCE_VERIFIED' || cadence.nativeGaps < 2)) {
+      throw Object.assign(Error('Yahoo interval cannot be verified'), { code: 'PARSER_MISMATCH' });
+    }
+    return cadence;
+  };
+  return { barTimeIssue, sessionFor, requireVolume: true, validateHistory };
 }
 
 const historySessionStatus = rows => rows.length > 0 && rows.every(row => row.sessionStatus === SESSION_VERIFIED)
@@ -250,7 +276,7 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
     const interval = contextKey.match(/:(1m|5m|15m|30m|60m|1d)$/)?.[1] || '1d';
     const densityPolicy = DENSE_INTERVALS.has(interval) ? densityHistoryPolicy(result, interval, bounds) : null;
     let cadence = null;
-    const validateHistory = densityPolicy ? rows => { cadence = cadenceEvidence(rows, interval, densityPolicy.sessionFor); } : undefined;
+    const validateHistory = densityPolicy ? rows => { cadence = densityPolicy.validateHistory(rows); } : undefined;
     const assessed = dataGuard.assess(result, symbol, { contextKey, providerSymbol, requireVolume, ...densityPolicy, validateHistory });
     if (assessed.value) {
       const value=assessed.value,meta=result?.meta||{};
