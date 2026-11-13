@@ -33,7 +33,9 @@ async function main() {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'setscope-v165-pg-'));
   let safeToRemove = true;
   try {
-    for (const [index, file] of ['test/remembered-session.postgres.cjs', 'test/dev-remembered-role.postgres.cjs'].entries()) {
+    const files = process.argv.includes('--production-only') ? ['test/production-remembered.postgres.cjs']
+      : ['test/remembered-session.postgres.cjs', 'test/dev-remembered-role.postgres.cjs', 'test/production-remembered.postgres.cjs'];
+    for (const [index, file] of files.entries()) {
       const directory = path.join(temporary, String(index), 'v165-pg-verification');
       const dataDir = path.join(directory, 'data');
       await fs.mkdir(directory, { recursive: true });

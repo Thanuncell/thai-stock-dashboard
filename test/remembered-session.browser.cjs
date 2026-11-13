@@ -18,8 +18,8 @@ const files = {
   });`, 'text/javascript']
 };
 
-async function installRoutes(context, f) {
-  const app = f.app();
+async function installRoutes(context, f, options) {
+  const app = f.app(options);
   await context.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
     if (url.origin === upstream) {
@@ -115,6 +115,30 @@ async function assertRemembered(page, owner) {
     await signIn(other, 'b', true);
     await assertRemembered(other, 'b');
     console.log('B2 browser fixture PASS: opt-in/out, cookie, tab reopen, cross-tab and cross-device logout, account switch and outage.');
+    // A public preview marker cannot grant cohort membership. Ordinary Login
+    // stays unadvertised, and an outsider's opted-in attempt stores no cookie.
+    const cohort = await browser.newContext(), scoped = fixture();
+    await installRoutes(cohort, scoped, { rememberedOptions: {
+      cohortPreviewOnly: true, mayIssue: user => user.id === owners.a
+    } });
+    const pilot = await cohort.newPage();
+    await pilot.goto(`${origin}/login`);
+    await pilot.waitForFunction(() => !document.querySelector('#login-form [type=submit]').disabled);
+    assert.equal(await pilot.locator('#remember-device').isVisible(), false);
+    await pilot.goto(`${origin}/login?remember-test=1`);
+    await pilot.locator('#remember-device').waitFor({state:'visible'});
+    await pilot.locator('#login-form [name=email]').fill('b@example.test');
+    await pilot.locator('#login-form [name=password]').fill('fixture-password');
+    await pilot.locator('#remember-device').check();
+    await pilot.locator('#login-form [type=submit]').click();
+    await pilot.locator('#auth-message.error').waitFor();
+    assert.equal(await pilot.evaluate(() => setscopeAuth.user), null);
+    assert.equal((await cohort.cookies(origin)).length, 0);
+    await signIn(pilot, 'a', true);
+    await assertRemembered(pilot, 'a');
+    await signOut(pilot);
+    await cohort.close();
+    console.log('Production cohort browser fixture PASS: hidden default, explicit preview, outsider denied, verified member opt-in and logout.');
   } finally {
     await browser.close();
   }

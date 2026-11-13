@@ -115,11 +115,13 @@ function fixture({ initialTime = Date.UTC(2026, 10, 8), signClaims } = {}) {
     return json({ error: 'denied' }, 401);
   }
 
-  function app({ issue = true, verified = true, records = state, wireStore = true, store = fixtureStore(records) } = {}) {
+  function app({ issue = true, verified = true, records = state, wireStore = true,
+    store = fixtureStore(records), rememberedOptions = {} } = {}) {
     const auth = createAuthService({
       env: { SUPABASE_URL: upstream, SUPABASE_ANON_KEY: 'fixture-public' },
       fetchImpl: fetchProvider,
-      remembered: wireStore ? { store, key, origin, now: () => time, allowIssue: issue, dataApiGuardVerified: verified } : undefined,
+      remembered: wireStore ? { store, key, origin, now: () => time, allowIssue: issue,
+        dataApiGuardVerified: verified, ...rememberedOptions } : undefined,
       send: (res, status, body, headers) => {
         res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers });
         res.end(JSON.stringify(body));

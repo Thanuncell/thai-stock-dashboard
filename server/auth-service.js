@@ -11,12 +11,14 @@ function createAuthService({ env = process.env, fetchImpl = globalThis.fetch, se
     verify: verifyUser
   });
 
-  function configPayload() {
+  function configPayload(req) {
+    const advertise = remembered?.cohortPreviewOnly !== true
+      || req?.headers?.['x-setscope-cohort-preview'] === '1';
     return {
       configured,
       url: configured ? env.SUPABASE_URL.replace(/\/$/, '') : null,
       anonKey: configured ? env.SUPABASE_ANON_KEY : null,
-      ...(configured && sessions?.canIssue ? { rememberDevice: true } : {}),
+      ...(configured && sessions?.canIssue && advertise ? { rememberDevice: true } : {}),
       ...(configured && sessions ? { rememberedSessionRoutes: true } : {})
     };
   }

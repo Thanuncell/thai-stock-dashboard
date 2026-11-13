@@ -6,6 +6,8 @@
     return { access_token: params.get('access_token'), refresh_token: params.get('refresh_token'), expires_in: params.get('expires_in') ?? 3600, type: params.get('type'), error: params.has('error') };
   }
   let authCallback = readAuthCallback();
+  // Capture before the existing auth-view router canonicalizes the login URL.
+  const cohortPreview = new URLSearchParams(location.search).get('remember-test') === '1';
   const STORAGE_KEY = 'setscope-auth-session-v1';
   const AUTH_BOUNDARY_KEY = 'setscope-auth-boundary-v1';
   const LOGOUT_PENDING_KEY = 'setscope-remembered-logout-pending';
@@ -705,7 +707,10 @@
   (async () => {
     try {
       message('กำลังเริ่มระบบ อาจใช้เวลาประมาณ 1 นาที');
-      const response = await fetchWithWake('/api/auth-config', { cache: 'no-store' }); config = await response.json();
+      // Preview only changes discoverability. The BFF independently requires a
+      // verified Owner-approved account before issuing any remembered session.
+      const response = await fetchWithWake('/api/auth-config', { cache: 'no-store',
+        ...(cohortPreview ? { headers: { 'x-setscope-cohort-preview': '1' } } : {}) }); config = await response.json();
       if (!config.configured) {
         authCallback = null;
         document.querySelectorAll('.auth-submit').forEach(button => { button.disabled = true; });
