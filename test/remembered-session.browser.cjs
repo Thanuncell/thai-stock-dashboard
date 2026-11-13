@@ -69,6 +69,9 @@ async function assertRemembered(page, owner) {
     await Promise.all([installRoutes(device, f), installRoutes(otherDevice, f)]);
     const page = await device.newPage(), other = await otherDevice.newPage();
     await Promise.all([page.goto(`${origin}/login`), other.goto(`${origin}/login`)]);
+    await page.waitForFunction(() => !document.querySelector('#login-form [type=submit]').disabled);
+    assert.equal(await page.locator('#remember-device').isVisible(), true);
+    assert.equal(await page.locator('#remember-device').isChecked(), false);
     await signIn(page, 'a', true);
     await signIn(other, 'a', true);
     await assertRemembered(page, 'a');
@@ -139,6 +142,18 @@ async function assertRemembered(page, owner) {
     await signOut(pilot);
     await cohort.close();
     console.log('Production cohort browser fixture PASS: hidden default, explicit preview, outsider denied, verified member opt-in and logout.');
+    const disabled = await browser.newContext();
+    await installRoutes(disabled, fixture(), { rememberedOptions: { allowIssue:false,allowRestoreWhenOff:true } });
+    const ordinary = await disabled.newPage();
+    await ordinary.goto(`${origin}/login?remember-test=1`);
+    await ordinary.waitForFunction(() => !document.querySelector('#login-form [type=submit]').disabled);
+    assert.equal(await ordinary.locator('#remember-device').isVisible(), false);
+    await signIn(ordinary,'b',false);
+    assert.equal((await disabled.cookies(origin)).length,0);
+    assert.equal(await ordinary.evaluate(() => Boolean(sessionStorage.getItem('setscope-auth-session-v1'))),true);
+    await signOut(ordinary);
+    await disabled.close();
+    console.log('Public ON/OFF browser fixture PASS: ordinary opt-in is unchecked; OFF hides it even in preview and preserves legacy login.');
   } finally {
     await browser.close();
   }
