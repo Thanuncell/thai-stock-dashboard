@@ -8,6 +8,7 @@ const { createMarketService } = require('../server/market-service');
 const { barsBetween, payload, responder, received } = require('./fixtures/chart-candle-density.cjs');
 const root = path.resolve(__dirname, '..'), evidence = process.env.SETSCOPE_TIMEFRAME_EVIDENCE;
 const baseline = process.env.SETSCOPE_TIMEFRAME_BASELINE === '1';
+const g3Only = process.env.SETSCOPE_G3_ONLY === '1';
 let checks = 0, phase = 'setup';
 const check = (actual, expected, message) => { assert.deepEqual(actual, expected, message); checks++; };
 const styles = page => page.evaluate(() => Object.fromEntries([
@@ -45,7 +46,7 @@ const styles = page => page.evaluate(() => Object.fromEntries([
         const data = barsBetween(received - 1500 * 86400000, received, '1d');
         return {ok:true,json:async()=>({chart:{result:[payload('PTT.BK','1d',data.rows,data.periods)]}})};
       }});
-      let hold = null;
+      let hold = null, g3Scenario = 'provisional', lastMarket = null;
       await context.route('**/*', async route => {
         const url = new URL(route.request().url());
         if (url.origin !== base && url.origin !== 'https://isolation-test.supabase.co') return route.abort();
@@ -53,16 +54,116 @@ const styles = page => page.evaluate(() => Object.fromEntries([
           const range = url.searchParams.get('range'), symbol = url.searchParams.get('symbol') || 'PTT';
           requests.push({range,history:url.searchParams.get('history'),symbol});
           const data = await service.getMarket([symbol],symbol,range,{allDailyHistory:url.searchParams.get('history')==='all'});
+          if (g3Only) {
+            if (g3Scenario === 'closed') {
+              data.fetchedAt = new Date(Date.UTC(2026,11,1,11,30)).toISOString();
+              for (const meta of Object.values(data.technicalMeta)) {
+                meta.receivedAt = data.fetchedAt;
+                meta.regularStart = data.history.at(-1).time;
+                meta.regularEnd = meta.regularStart + 6.5 * 3600000;
+              }
+            } else if (g3Scenario === 'short') {
+              for (const field of ['history','indicatorHistory','levelsHistory']) data[field] = data[field].slice(-5);
+            } else if (g3Scenario === 'unconfirmed') {
+              data.fetchedAt = null;
+              for (const meta of Object.values(data.technicalMeta)) meta.receivedAt = null;
+            }
+          }
           if (hold) { const pending=hold; hold=null; pending.started(); await pending.wait; }
+          if (g3Only) lastMarket = structuredClone(data);
           return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)});
         }
         return mockRequest(route,base,state);
       });
       const page = await context.newPage(); page.on('pageerror',error=>errors.push(error.message));
       await seedPage(page,'token-a'); await page.addInitScript(theme=>localStorage.setItem('setscope-theme',theme),theme);
-      await page.goto(base+'/?symbol=PTT&range=1D#chart');
+      await page.goto(base+(g3Only?'/?symbol=PTT&range=1D&timeframe=D&historicalRange=ALL#chart':'/?symbol=PTT&range=1D#chart'));
       await page.waitForSelector('.price-candle'); await page.waitForSelector('.compact-reasons',{state:'attached'});
       const filename = `${width}-${theme}`;
+      if (g3Only) {
+        const {marketTimeframe} = await import('../client/chart-timeframe.mjs');
+        const {createTechnicalSnapshot} = await import('../client/technical.mjs');
+        const stamp = value => new Intl.DateTimeFormat('th-TH',{timeZone:'Asia/Bangkok',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(value));
+        const reload = async action => {
+          const done = page.waitForResponse(response => new URL(response.url()).pathname === '/api/market');
+          await action(); await done; return structuredClone(lastMarket);
+        };
+        const verifyEvidence = async (timeframe,parameters={},data=lastMarket) => {
+          const selected = marketTimeframe(data,timeframe,'ALL');
+          const expected = createTechnicalSnapshot({...selected,symbol:'PTT',timeframe,parameters});
+          await page.waitForFunction(id=>document.querySelector('.analysis-panel').dataset.snapshotId===id,expected.id);
+          check(await page.locator('.analysis-panel').getAttribute('data-signal-status'),expected.summary.status,'selected timeframe status');
+          check(await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),expected.id,'chart/evidence use the selected calculation snapshot');
+          check(await page.locator('.analysis-panel').getAttribute('data-signal-candle-time'),String(expected.candleTime??''),'selected reference candle');
+          check(await page.locator('#overall-signal').textContent(),expected.summary.overall);
+          const note = await page.locator('#analysis-note').textContent();
+          check(note.includes(`· ช่วง ${timeframe} ·`),true,'reference note has the selected D/W/M');
+          const ref = expected.signalReference;
+          if (ref) {
+            check(note.includes(stamp(ref.barOpenTime)),true,'reference open date/time');
+            check(note.includes(stamp(ref.availableAt)),true,'reference confirmation date/time');
+            check(note.includes(ref.selection==='previous-confirmed'?'ใช้แท่งปิดก่อนหน้า; แท่งล่าสุดยังไม่ยืนยัน':'แท่งยืนยันแล้ว'),true,'confirmed versus provisional latest candle');
+          } else check(note.includes('ยังไม่มีแท่งที่ยืนยันได้'),true,'no invented confirmed reference');
+          if (expected.summary.status === 'ready') {
+            check(await page.locator('.analysis-panel .technical-reason-text').allTextContents(),expected.summary.reasons.map(reason=>reason.text),'reason values contain no previous-timeframe data');
+            const disclosure = page.locator('.analysis-panel #technical-reasons > .technical-evidence');
+            if (!await disclosure.evaluate(node=>node.open)) await disclosure.locator('summary').click();
+            const visible = expected.analysis.reasons.filter(reason=>['ซื้อ','ขาย','เป็นกลาง'].includes(reason.signal));
+            check((await disclosure.locator('.evidence-grid li strong').allTextContents()).sort(),visible.map(reason=>`${reason.key} · ${reason.value}`).sort(),'individual indicator evidence values');
+            check((await disclosure.locator('.evidence-grid li span').allTextContents()).sort(),visible.map(reason=>reason.detail).sort(),'individual indicator evidence detail');
+            for (const key of ['ema20','ema50','ema100','ema200']) {
+              if (expected.availability[key].state === 'insufficient')
+                check(await page.locator('#'+key+'-signal').textContent(),`ข้อมูลไม่ครบ (${expected.signalRows.length}/${expected.availability[key].required})`,key+' warm-up label uses the selected parameter');
+            }
+          } else {
+            check(await page.locator('.analysis-panel .technical-reason-card').count(),0,'previous reasons cleared');
+            check(await page.locator('.analysis-panel #technical-reasons > .technical-evidence').count(),0,'previous evidence cleared');
+            check(await page.locator('#rsi-value').textContent(),'—');
+          }
+          return expected;
+        };
+        for (const timeframe of ['D','W','M']) {
+          phase = `G3-${width}-${theme}-${timeframe}-provisional`;
+          g3Scenario = 'provisional';
+          await reload(()=>page.locator(`[data-timeframe="${timeframe}"]`).click());
+          const initial = await verifyEvidence(timeframe);
+          check(initial.summary.status,'ready');check(initial.latestCandle.complete,false);
+          check(initial.signalReference.selection,'previous-confirmed');
+          phase = `G3-${width}-${theme}-${timeframe}-parameters`;
+          const settings = page.locator('.indicator-workspace');
+          if (!await settings.evaluate(node=>node.open)) await settings.locator('summary').click();
+          const calls = requests.length;
+          await page.locator('#indicator-settings input[name=ema20]').fill('100');
+          await page.locator('#indicator-settings button[type=submit]').click();
+          const changed = await verifyEvidence(timeframe,{ema20:100});
+          check(changed.id!==initial.id,true,'parameter change recomputes selected timeframe');
+          await page.locator('#indicator-defaults').click();
+          check(await page.locator('#indicator-settings input[name=ema20]').inputValue(),'20');
+          const reset = await verifyEvidence(timeframe);check(reset.id,initial.id,'reset restores the original selected-timeframe evidence');
+          check(requests.length,calls,'parameter/reset remain local');
+          phase = `G3-${width}-${theme}-${timeframe}-closed`;
+          g3Scenario = 'closed';await reload(()=>page.locator('#refresh-chart').click());
+          const closed = await verifyEvidence(timeframe);check(closed.latestCandle.complete,true);check(closed.signalReference.selection,'latest-confirmed');
+          phase = `G3-${width}-${theme}-${timeframe}-insufficient`;
+          g3Scenario = 'short';await reload(()=>page.locator('#refresh-chart').click());
+          check((await verifyEvidence(timeframe)).summary.status,'insufficient');
+          phase = `G3-${width}-${theme}-${timeframe}-unconfirmed`;
+          g3Scenario = 'unconfirmed';await reload(()=>page.locator('#refresh-chart').click());
+          const unconfirmed = await verifyEvidence(timeframe);check(unconfirmed.confirmation,'provisional');check(unconfirmed.summary.status,'waiting-close');
+        }
+        phase = `G3-${width}-${theme}-late-W-response`;
+        g3Scenario = 'closed';
+        let release, began;
+        const wait = new Promise(resolve=>release=resolve), started = new Promise(resolve=>began=resolve);
+        hold = {wait,started:began};
+        await page.locator('[data-timeframe="W"]').click();await started;
+        g3Scenario = 'provisional';
+        const winningData = await reload(()=>page.locator('[data-timeframe="D"]').click());
+        await verifyEvidence('D',{},winningData);release();await page.waitForTimeout(100);
+        await verifyEvidence('D',{},winningData);
+        check(errors,[]);console.log(JSON.stringify({g3Evidence:'PASS',width,theme,checks}));
+        await context.close();continue;
+      }
       if (baseline) {
         if (evidence) {
           fs.mkdirSync(evidence,{recursive:true}); fs.writeFileSync(path.join(evidence,filename+'.json'),JSON.stringify(await styles(page),null,2));
@@ -128,6 +229,6 @@ const styles = page => page.evaluate(() => Object.fromEntries([
       console.log(JSON.stringify({width,theme,status:'PASS',checks}));
       await context.close();
     }
-    console.log(JSON.stringify({chartTimeframeBrowser:'PASS',baseline,checks,liveProviderRequests:0}));
+    console.log(JSON.stringify({chartTimeframeBrowser:'PASS',g3Only,baseline,checks,liveProviderRequests:0}));
   } finally { await browser?.close(); await new Promise(resolve=>server.close(resolve)); }
 })().catch(error=>{console.error(JSON.stringify({chartTimeframeBrowser:'FAIL',phase,message:error.message,stack:error.stack}));process.exitCode=1;});

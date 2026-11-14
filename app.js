@@ -1479,7 +1479,7 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     const el = document.getElementById(id);
     if (!el) return;
     const value = analysis.signals[key];
-    const requiredBars = { ema20: 20, ema50: 50, ema100: 100, ema200: 200 }[key];
+    const requiredBars = key.startsWith('ema') ? snapshot.availability[key]?.required : undefined;
     el.textContent = !snapshot.summary.actionable?snapshot.summary.overall:value || (requiredBars ? `ข้อมูลไม่ครบ (${analysis.values.length}/${requiredBars})` : 'รอข้อมูล');
     el.className = `pill ${!snapshot.summary.actionable?'neutral-pill':value === 'ซื้อ' ? 'buy-pill' : value === 'ขาย' ? 'sell-pill' : 'neutral-pill'}`;
   });
