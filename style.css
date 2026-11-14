@@ -529,3 +529,30 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 
 /* Transient chart inspection reuses the existing tooltip and grid styles. */
 #stock-price-chart{position:relative}.chart-crosshair-tooltip{max-width:calc(100% - 16px);white-space:normal}.chart-crosshair-tooltip:not([hidden]){display:block}
+
+/* Desktop controls only; keep the existing mobile rules and DOM intact. */
+@media (min-width: 791px) {
+  .chart-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; align-content: start; }
+  .chart-panel > * { grid-column: 1 / -1; min-width: 0; }
+  .chart-panel .chart-time-controls { grid-template-columns: max-content max-content; justify-content: start; align-items: start; gap: 24px; }
+  .chart-panel .chart-time-control { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; gap: 8px; margin-top: 0; }
+  .chart-panel .chart-time-control .range-tabs:not([hidden]) { display: flex; width: max-content; max-width: 100%; margin: 0; order: initial; }
+  .chart-panel > .chart-data-meta { display: contents; }
+  .chart-panel #chart-updated { grid-column: 1; align-self: center; margin-top: 8px; }
+  .chart-panel > .chart-controls { grid-column: 2; align-self: center; gap: 6px; margin: 8px 0 0; }
+  .chart-panel > .chart-controls button { flex: 0 0 auto; min-width: 0; min-height: 0; width: 34px; height: 34px; padding: 0; }
+  .chart-panel #chart-reset { width: 56px; }
+  .chart-panel #chart-fit { width: 72px; }
+}
+
+/* Reuse the news refresh button skin; only its chart header placement is new. */
+.chart-panel #chart-fullscreen { display: none; }
+.chart-panel > .panel-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.chart-panel > .panel-heading > div { min-width: 0; }
+.technical-refresh-btn { display: inline-flex; align-items: center; gap: 6px; justify-self: end; max-width: none; white-space: nowrap; }
+.technical-refresh-btn > span:last-child { min-width: 0; }
+.chart-panel > .chart-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.chart-footer > .chart-source-note { margin-inline-start: auto; max-width: 100%; }
+@media (max-width: 790px) {
+  .technical-refresh-btn { max-width: 104px; white-space: normal; }
+}
