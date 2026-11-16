@@ -282,8 +282,6 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .chart-data-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:10px;color:var(--muted);font-size:9px;line-height:1.5}
 .chart-source-note{color:var(--muted)}
 .watch-data-state{color:#a56a27;font-size:7px;font-weight:600;white-space:nowrap}
-.chart-fullscreen-btn{border:1px solid var(--line);border-radius:6px;background:var(--paper);color:#4d756a;font:600 10px var(--font);padding:7px 10px;cursor:pointer}
-.chart-fullscreen-btn:hover{border-color:#a9cfc2;background:#f0f7f4}
 .indicator-toggle{display:inline-flex;align-items:center;gap:5px;border:1px solid transparent;border-radius:5px;padding:4px 6px;background:transparent;color:#98a2ab;font:500 9px var(--font);cursor:pointer}
 .indicator-toggle.active{border-color:var(--line);background:var(--paper);color:var(--ink)}
 .indicator-toggle i{width:11px;height:2px;border-radius:2px;background:#9aa4ac}
@@ -340,18 +338,11 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .analysis-panel.signals-unavailable .signal-summary,.analysis-panel.signals-unavailable .rsi-meter,.analysis-panel.signals-unavailable .signal-list,.analysis-panel.signals-unavailable #technical-reasons{display:none}
 .analysis-panel.no-chart-data .technical-levels,.analysis-panel.no-chart-data .technical-plan,.analysis-panel.no-chart-data #levels-basis{display:none}
 .technical-levels b{overflow-wrap:anywhere;line-height:1.45}
-body.chart-fullscreen-open{overflow:hidden}
-.chart-panel:fullscreen,.chart-panel.chart-fullscreen-fallback{background:var(--paper);border:0;border-radius:0;padding:18px 22px;overflow:auto}
-.chart-panel:fullscreen{width:100vw;height:100vh}
-.chart-panel.chart-fullscreen-fallback{position:fixed;inset:0;z-index:1000;width:100vw;height:100dvh}
-.chart-panel:fullscreen .own-chart-wrap,.chart-panel.chart-fullscreen-fallback .own-chart-wrap{height:max(360px,calc(100vh - 270px));height:max(360px,calc(100dvh - 270px))}
-.chart-panel:fullscreen .price-chart-svg,.chart-panel.chart-fullscreen-fallback .price-chart-svg{min-width:100%}
 html[data-theme="dark"] .own-chart-wrap{background:#111a23}
 html[data-theme="dark"] .indicator-toggle.active{background:#172532}
-html[data-theme="dark"] .chart-fullscreen-btn{background:#172532;color:#9ad6c1}
 html[data-theme="dark"] .chart-level text{stroke:#111a23}
-@media(max-width:790px){.own-chart-wrap{height:330px}.own-chart-wrap.has-macd{height:470px}.chart-data-meta{display:grid;gap:2px}.chart-fullscreen-btn{min-height:40px}.chart-panel:fullscreen,.chart-panel.chart-fullscreen-fallback{padding:12px}.chart-panel:fullscreen .chart-toolbar,.chart-panel.chart-fullscreen-fallback .chart-toolbar{margin-top:9px}.chart-panel:fullscreen .own-chart-wrap,.chart-panel.chart-fullscreen-fallback .own-chart-wrap{height:max(330px,calc(100dvh - 285px))}}
-@media(max-width:470px){.own-chart-wrap{height:300px}.own-chart-wrap.has-macd{height:440px}.chart-panel:fullscreen .own-chart-wrap,.chart-panel.chart-fullscreen-fallback .own-chart-wrap{height:max(300px,calc(100dvh - 305px))}.chart-panel:fullscreen .price-chart-svg,.chart-panel.chart-fullscreen-fallback .price-chart-svg{min-width:100%}.chart-level text{font-size:8px}}
+@media(max-width:790px){.own-chart-wrap{height:330px}.own-chart-wrap.has-macd{height:470px}.chart-data-meta{display:grid;gap:2px}}
+@media(max-width:470px){.own-chart-wrap{height:300px}.own-chart-wrap.has-macd{height:440px}.chart-level text{font-size:8px}}
 /* News summaries and Watchlist-specific news */
 .news-item{align-items:start}
 .news-title-link{display:inline-block;text-decoration:none}
@@ -546,7 +537,6 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 }
 
 /* Reuse the news refresh button skin; only its chart header placement is new. */
-.chart-panel #chart-fullscreen { display: none; }
 .chart-panel > .panel-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
 .chart-panel > .panel-heading > div { min-width: 0; }
 .technical-refresh-btn { display: inline-flex; align-items: center; gap: 6px; justify-self: end; max-width: none; white-space: nowrap; }

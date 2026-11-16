@@ -147,7 +147,6 @@ function technicalSnapshot() {
 let chartLoadState = 'loading';
 let chartLoadMessage = 'กำลังโหลดข้อมูลจาก Yahoo Finance…';
 let chartLayoutPending = false;
-let chartCssFullscreen = false;
 let chartViewport = null;
 let chartViewportKey = '';
 let chartRowCount = 0;
@@ -1200,46 +1199,6 @@ function setupChartGestures() {
    const index=chartCrosshairIndex===null?last:Math.max(0,Math.min(last,chartCrosshairIndex+(event.key==='ArrowLeft'?-1:1)));
    showChartCrosshair(null,index);
   });
-}
-
-function updateFullscreenControl() {
-  const button = $('#chart-fullscreen');
-  const panel = $('.chart-panel');
-  const active = chartCssFullscreen || document.fullscreenElement === panel;
-  if (panel) panel.classList.toggle('is-chart-fullscreen', active);
-  document.body.classList.toggle('chart-fullscreen-open', active);
-  if (button) {
-    button.textContent = active ? 'ย่อกราฟ' : 'เต็มจอ';
-    button.setAttribute('aria-pressed', String(active));
-    button.setAttribute('aria-label', active ? 'ออกจากโหมดเต็มจอ' : 'เปิดกราฟเต็มจอ');
-  }
-  scheduleChartRedraw();
-}
-
-function setCssChartFullscreen(active) {
-  chartCssFullscreen = active;
-  $('.chart-panel')?.classList.toggle('chart-fullscreen-fallback', active);
-  updateFullscreenControl();
-}
-
-async function toggleChartFullscreen() {
-  const panel = $('.chart-panel');
-  if (!panel) return;
-  if (document.fullscreenElement === panel) {
-    await document.exitFullscreen?.();
-    return;
-  }
-  if (chartCssFullscreen) {
-    setCssChartFullscreen(false);
-    return;
-  }
-  if (typeof panel.requestFullscreen === 'function') {
-    try {
-      await panel.requestFullscreen();
-      return;
-    } catch (_) {}
-  }
-  setCssChartFullscreen(true);
 }
 
 function setTheme(theme) {
@@ -2394,7 +2353,6 @@ function setupUiEventWiring() {
   $('#indicator-defaults').addEventListener('click',()=>{technicalParameters={...TECHNICAL_DEFAULTS};chartIndicators.clear();INDICATOR_PRESETS.basic.forEach(key=>chartIndicators.add(key));$('#indicator-settings-error').textContent='';saveIndicatorWorkspace();});
   drawings=new DrawingWorkspace({host:$('#stock-price-chart'),controls:$('#drawing-workspace'),read:readScopedLocal,write:writeScopedLocal,redraw:queueChartViewportRender,onModeChange:cancelChartGestures});
   syncIndicatorWorkspace();
-  $('#chart-fullscreen')?.addEventListener('click', toggleChartFullscreen);
   $('#chart-zoom-in')?.addEventListener('click', () => setChartZoom(.8));
   $('#chart-zoom-out')?.addEventListener('click', () => setChartZoom(1.25));
   $('#chart-reset')?.addEventListener('click', resetChartViewport);
@@ -2403,13 +2361,8 @@ function setupUiEventWiring() {
   $('#stock-price-chart')?.addEventListener('click', event => {
     if (event.target.closest('[data-chart-retry]')) getMarket();
   });
-  document.addEventListener('fullscreenchange', () => {
-    if (!document.fullscreenElement) chartCssFullscreen = false;
-    updateFullscreenControl();
-  });
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !alertsPanel.hidden) $('#alerts-close').click();
-    if (event.key === 'Escape' && chartCssFullscreen) setCssChartFullscreen(false);
   });
   if (typeof ResizeObserver === 'function') {
     new ResizeObserver(scheduleChartRedraw).observe($('#stock-price-chart'));

@@ -74,7 +74,7 @@ test('frontend wires global UI once and initializes every authenticated owner se
   assert.match(appSource, /setupUiEventWiring\(\);[\s\S]*?window\.addEventListener\('setscope:authenticated', initializeAccountSession\);[\s\S]*?if \(window\.setscopeAuth\?\.user\) initializeAccountSession\(\)/);
   assert.equal((appSource.match(/window\.addEventListener\('resize'/g) || []).length, 1);
   assert.equal((appSource.match(/new ResizeObserver\(scheduleChartRedraw\)\.observe\(\$\('#stock-price-chart'\)\)/g) || []).length, 1);
-  assert.equal((appSource.match(/document\.addEventListener\('fullscreenchange'/g) || []).length, 1);
+  for (const source of [appSource, indexSource, styleSource]) assert.doesNotMatch(source, /fullscreen|เต็มจอ/i);
   assert.equal((appSource.match(/document\.addEventListener\('keydown'/g) || []).length, 1);
 });
 
