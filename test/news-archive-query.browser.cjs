@@ -4,7 +4,16 @@ const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation
 module.exports=async function checkBrowser({http,pool}){
  const {chromium}=require(process.env.SETSCOPE_PLAYWRIGHT_MODULE||'playwright'),port=await freePort(),base='http://127.0.0.1:'+port,rows=(await pool.query('select * from news_archive order by published_at desc,id desc limit 60')).rows;
  const items=rows.map(r=>({title:r.title,url:r.url,source:r.source,sourceName:r.source_name,snippet:r.snippet,pubDate:r.published_at.toISOString(),matchedSymbols:r.matched_symbols,verification:{status:'VERIFIED',basis:'metadata'}}));
- const totalRows=(await pool.query('select count(*)::int n from news_archive')).rows[0].n,formatted=n=>new Intl.NumberFormat('th-TH').format(n)+' ข่าว';
+ // Browser counts follow the accepted display policy, including removed publishers.
+ const {createNewsArchiveService}=require('../server/news-archive-service');
+ const oracleEnv={SUPABASE_URL:'https://browser-oracle.invalid',SUPABASE_SECRET_KEY:http.token,SETSCOPE_NEWS_EVIDENCE:'read',SETSCOPE_NEWS_ARCHIVE_QUERY:'off'};
+ const localFetch=async(input,init)=>{
+  const u=new URL(input);assert.equal(u.origin,'https://browser-oracle.invalid');return fetch(http.base+u.pathname.slice('/rest/v1'.length)+u.search,init);
+ };
+ const oracle=createNewsArchiveService({env:oracleEnv,fetchImpl:localFetch});
+ const totalRows=(await oracle.list()).total,formatted=n=>new Intl.NumberFormat('th-TH').format(n)+' ข่าว';
+ const watchlistItems=(await oracle.list({symbol:'PTT',pageSize:50})).items.slice(0,25);
+ assert.equal(watchlistItems.length,25,'watchlist paging fixture contains 25 accepted stories');
  const sourceCounts=(await pool.query("select source_name,count(*)::int n from news_archive group by source_name")).rows;
  const countFor=names=>sourceCounts.filter(r=>names.includes(r.source_name)).reduce((sum,r)=>sum+r.n,0);
  const server=spawn(process.execPath,[path.join(__dirname,'fixtures/news-archive-query-app.cjs')],{cwd:path.join(__dirname,'..'),env:{...process.env,PORT:String(port),SETSCOPE_WS7_HTTP_BASE:http.base,SETSCOPE_WS7_HTTP_TOKEN:http.token},windowsHide:true,stdio:'ignore'});let browser;
@@ -16,7 +25,7 @@ module.exports=async function checkBrowser({http,pool}){
     if(u.origin!==base&&u.origin!=='https://isolation-test.supabase.co')return route.abort();
     if(u.origin===base&&u.pathname==='/api/news'){calls.news++;return json({items,dataState:'fresh'});}
     if(u.origin===base&&u.pathname==='/api/news-archive'){calls.archive++;return route.continue();}
-    if(u.origin===base&&u.pathname==='/api/watchlist-news')return json({items:items.filter(x=>x.matchedSymbols.includes('PTT')).slice(0,25),dataState:'fresh'});
+    if(u.origin===base&&u.pathname==='/api/watchlist-news')return json({items:watchlistItems,dataState:'fresh'});
     if(u.origin===base&&u.pathname==='/api/news-analysis')return json({items:request.postDataJSON().items.map(()=>({summary:'',mode:'unavailable'}))});
     return mockRequest(route,base,state);
    });
@@ -30,5 +39,27 @@ module.exports=async function checkBrowser({http,pool}){
    assert.equal(await page.locator('#watchlist-news-sources,#watchlist-news-count').count(),0);await page.locator('#watchlist-news-pager').getByRole('button',{name:'2',exact:true}).click();assert.equal(await page.locator('#watchlist-news-list .news-title-link').count(),10);
    console.log('WS7_BROWSER '+JSON.stringify({viewport:label,actualNodeArchiveApi:true,actualPostgrest:true,rows:totalRows,frozenPagination:'PASS',deepPage:Math.ceil((totalRows-5)/10),orCounts:'PASS',watchlist:'PASS',upstreamOnPage:0,productionRequests:0}));await context.close();
   }
+  // Exercise the real HTTP contract, including normalization and unavailable index.
+  const api=async(args={},authorized=true)=>{
+   const params=new URLSearchParams(args),response=await fetch(base+'/api/news-archive?'+params,{headers:authorized?{Authorization:'Bearer token-a'}:{}});
+   return {status:response.status,body:await response.json()};
+  };
+  const cases=[{}, {page:'invalid',pageSize:'invalid'}, {page:'-2',pageSize:'999'}, {page:'99999'},
+   {query:'missing-g3-story'}, {source:'bangkokbiznews,thansettakij',symbol:'PTT',query:'การลงทุน',featuredCount:'2'},
+   {source:'infoquest',symbol:'ADVANC'}, {source:'invalid',symbol:'../bad'}];
+  for(const args of cases){
+   const actual=await api(args),expected=await oracle.list(args);assert.equal(actual.status,200);
+   for(const key of ['page','pageSize','total','matchingTotal','countExact'])assert.equal(actual.body[key],expected[key],key);
+   assert.deepEqual(actual.body.items.map(x=>x.url),expected.items.map(x=>x.url));
+   assert.deepEqual(actual.body.featured.map(x=>x.url),expected.featured.map(x=>x.url));
+   assert.equal(actual.body.queryMode,'database');assert.equal(actual.body.dataState,'fresh');
+  }
+  assert.equal((await api({query:'missing-g3-story'})).body.cached,true);
+  assert.equal((await api({},false)).status,401);
+  await pool.query('select news_archive_query_reset($1)',['news-query-2:read:metadata']);
+  const unavailable=await api({query:'uncached-g3-index-not-ready'});assert.equal(unavailable.status,502);
+  assert.equal(unavailable.body.dataState,'unavailable');assert.deepEqual(unavailable.body.items,[]);
+  assert.equal((await createNewsArchiveService({env:{...oracleEnv,SETSCOPE_NEWS_ARCHIVE_QUERY:'on'},fetchImpl:localFetch}).refreshQueryIndex({maxBatches:10,batchSize:500})).pending,0);
+  console.log('G3_ARCHIVE_HTTP '+JSON.stringify({cases:cases.length,normalization:'PASS',filtersAndCounts:'PASS',emptyAndOverflow:'PASS',cache:'PASS',authRequired:'PASS',unreadyIndex502:'PASS',recovery:'PASS',productionRequests:0}));
  }finally{await browser?.close().catch(()=>{});server.kill();}
 };

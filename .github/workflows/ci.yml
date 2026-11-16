@@ -28,6 +28,7 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: npm install --ignore-scripts
       - run: npm test
+      - run: node --test test/news-archive-egress.test.js
       - run: npm run check
 
   remembered-security:
@@ -73,6 +74,17 @@ jobs:
       - run: npx --no-install playwright install --with-deps chromium
       - name: Verify Remember ON/OFF in offline browsers
         run: npm run test:remembered:browser
+      - name: Ensure accepted baseline object exists for G2 parity
+        if: matrix.node == '20'
+        run: |
+          git fetch --no-tags --depth=1 origin 3e705d6d221710a55c5e561e2ef2af906ffa582e
+          git cat-file -e '3e705d6d221710a55c5e561e2ef2af906ffa582e^{commit}'
+      - name: Verify Archive G2, PostgreSQL query, HTTP/browser, and evidence
+        if: matrix.node == '20'
+        env:
+          SETSCOPE_PG_BIN: /usr/lib/postgresql/17/bin
+          SETSCOPE_POSTGREST_BIN: ${{ runner.temp }}/setscope-postgrest/postgrest
+        run: node scripts/test-remembered-postgres.cjs --local-only --archive-only
 
   test:
     runs-on: ubuntu-latest
@@ -88,6 +100,8 @@ jobs:
         run: npm install --ignore-scripts
       - name: Run tests
         run: npm test
+      - name: Run retained-only Archive egress regression
+        run: node --test test/news-archive-egress.test.js
       - name: Run syntax checks
         run: npm run check
 
@@ -164,6 +178,12 @@ jobs:
       - name: Run shared News quality regression
         timeout-minutes: 3
         run: npm run test:news-quality:browser
+      - name: Run dedicated Watchlist News browser regression
+        timeout-minutes: 3
+        run: node test/watchlist-news-reliability.browser.cjs
+      - name: Run dedicated account isolation browser regression
+        timeout-minutes: 3
+        run: node test/account-isolation.browser.cjs
 
   technical-browser:
     name: Technical and touch regression

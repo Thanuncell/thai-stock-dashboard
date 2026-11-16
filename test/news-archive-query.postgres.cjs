@@ -25,6 +25,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
    case when i%5=0 then array['ADVANC'] else array['PTT'] end,case when i%7=0 then array['KS'] else '{}'::text[] end,
    case when i%11=0 then 'ai' else null end,case when i%11=0 then 'Stored AI '||i else null end from generate_series($2::integer+1,$1::integer) i`,[n,start]);
   await seed(125);
+  // The current publisher policy excludes 31 Investing rows from these 125 source rows.
   assert.equal((await pool.query('select source_revision::int n from news_archive_query_state')).rows[0].n,1);
   await t.test('migration transaction rehearsal preserves populated Archive and can roll back every derived object',async()=>{
    const dbName='ws7_rehearsal_'+randomUUID().replaceAll('-','');await admin.query('create database '+dbName);const db=new Pool({...config,database:dbName,max:1});
@@ -38,10 +39,10 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
    }finally{await db.end();await admin.query('drop database '+dbName+' with(force)');}
   });
   await t.test('default OFF performs no query-index RPC; incomplete projection refuses exact counts',async()=>{
-   const old=service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'});const before=stats.paths.length;assert.equal((await old.list()).total,125);assert.ok(stats.paths.slice(before).every(x=>!x.includes('_query')));
+   const old=service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'});const before=stats.paths.length;assert.equal((await old.list()).total,94);assert.ok(stats.paths.slice(before).every(x=>!x.includes('_query')));
    await assert.rejects(service().list(),/HTTP 400/);
   });
-  await t.test('bounded bootstrap and actual named RPC payload/response',async()=>{const r=await service().refreshQueryIndex({maxBatches:10,batchSize:50});assert.equal(r.pending,0);assert.equal((await service().list()).total,125);});
+  await t.test('bounded bootstrap and actual named RPC payload/response',async()=>{const r=await service().refreshQueryIndex({maxBatches:10,batchSize:50});assert.equal(r.pending,0);assert.equal((await service().list()).total,94);});
   await t.test('query matches legacy order/count/search/OR/broker/symbol/featured and overflow contract',async()=>{
    const old=service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'}),indexed=service();
    for(const args of [{},{page:2},{page:3},{page:999},{source:'bangkokbiznews,thansettakij'},{source:'investing,broker',query:'การลงทุน'},{symbol:'PTT'},{symbol:'ADVANC'},{query:'Stored AI'},{query:'%_'},{featuredCount:5},{source:'other',featuredCount:5,page:2}]){
@@ -78,7 +79,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   });
   await t.test('concurrent maintenance has revision conflicts without partial index commits',async()=>{
    await pool.query("update news_archive set snippet=snippet||' updated' where id in(select id from news_archive order by id limit 3)");
-   await Promise.all([service().refreshQueryIndex({maxBatches:6}),service().refreshQueryIndex({maxBatches:6})]);assert.equal((await service().refreshQueryIndex({maxBatches:6})).pending,0);assert.equal((await service().list()).total,125);
+   await Promise.all([service().refreshQueryIndex({maxBatches:6}),service().refreshQueryIndex({maxBatches:6})]);assert.equal((await service().refreshQueryIndex({maxBatches:6})).pending,0);assert.equal((await service().list()).total,94);
   });
   await t.test('legacy quality negatives, positive keyword headlines and true documents match the existing classifier',async()=>{
    const row=(await pool.query('select * from news_archive order by id limit 1')).rows[0],cases=[
@@ -95,7 +96,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
    await pool.query("delete from news_archive where fingerprint like 'fixture-%'");await service().refreshQueryIndex({maxBatches:5});
   });
   await t.test('stored Article proof, canonical duplicate winner, AI and First Seen survive index/read/restart',async()=>{
-   const beforeCount=(await pool.query('select count(*)::int n from news_archive')).rows[0].n,pubDate=new Date(Date.now()-60000).toISOString();
+   const beforeCount=(await service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'}).list()).total,pubDate=new Date(Date.now()-60000).toISOString();
    const writer=service({SETSCOPE_NEWS_EVIDENCE:'write'}),a=article({url:'https://thunhoon.com/article-ws7-proof?fbclid=a',title:'PTT บริษัทเติบโตจากธุรกิจหลัก',pubDate,matchedSymbols:['PTT']}),b=article({url:'https://thunhoon.com/article-ws7-proof?gclid=b',title:a.title,pubDate,matchedSymbols:['OR']});
    assert.equal((await writer.ingest([a,b])).ingested,2);await pool.query("update news_archive set analysis_mode='ai',analysis_summary='Stored AI canonical',first_seen_at=first_seen_at where url like '%fbclid=a'");await writer.refreshQueryIndex({maxBatches:5});
    const rawBefore=(await pool.query("select to_jsonb(a) data from news_archive a where url like '%article-ws7-proof%' order by id")).rows;
@@ -107,8 +108,8 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   await t.test('failed/lost projection acknowledgement is recoverable without rewriting Archive',async()=>{
    await pool.query('update news_archive set snippet=snippet where id=(select min(id) from news_archive)');let lost=true;
    const flaky=createNewsArchiveService({env,fetchImpl:async(...args)=>{const response=await transport(...args);if(String(args[0]).endsWith('/news_archive_query_commit')&&lost){lost=false;await response.text();throw Error('SYNTHETIC_LOST_ACK');}return response;}});
-   await assert.rejects(flaky.refreshQueryIndex(),/SYNTHETIC_LOST_ACK/);assert.equal((await service().refreshQueryIndex()).pending,0);assert.equal((await service().list()).total,125);
-   const broken=createNewsArchiveService({env,fetchImpl:async()=>{throw Error('SYNTHETIC_DB_FAILURE');}});await assert.rejects(broken.list(),/SYNTHETIC_DB_FAILURE/);assert.equal((await service().list()).total,125);
+   await assert.rejects(flaky.refreshQueryIndex(),/SYNTHETIC_LOST_ACK/);assert.equal((await service().refreshQueryIndex()).pending,0);assert.equal((await service().list()).total,94);
+   const broken=createNewsArchiveService({env,fetchImpl:async()=>{throw Error('SYNTHETIC_DB_FAILURE');}});await assert.rejects(broken.list(),/SYNTHETIC_DB_FAILURE/);assert.equal((await service().list()).total,94);
   });
   await t.test('sub-millisecond publication ordering matches the original stable database order',async()=>{
    for(const [i,fraction]of ['999','001'].entries())await pool.query("insert into news_archive(fingerprint,title,url,source,source_name,snippet,published_at,fetched_at) values($1,$2,$3,'infoquest','InfoQuest','Sufficient synthetic article metadata content',$4,now())",['micro-'+i,'PTT micro precision '+i,'https://news.google.com/rss/articles/micro-'+i,new Date(Date.now()-60000).toISOString().slice(0,-1)+fraction+'Z']);
@@ -118,9 +119,9 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   await t.test('actual database and PostgREST restart preserve Archive and durable projection',async()=>{
    const digest=async()=>(await pool.query("select md5(string_agg(to_jsonb(a)::text,'' order by id)) raw,(select count(*)::int from news_archive_query_groups) groups from news_archive a")).rows[0];const before=await digest();
    await http.stop();http=null;await pool.end();await admin.end();
-   const {spawn}=require('node:child_process');await new Promise((resolve,reject)=>{const child=spawn(path.join(process.env.SETSCOPE_TEST_PG_BIN,'pg_ctl.exe'),['-D',process.env.SETSCOPE_WS3_PG_DATA,'-m','fast','-w','restart'],{windowsHide:true,stdio:'ignore'});child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error('Isolated database restart failed')));});
+   const {spawn}=require('node:child_process');await new Promise((resolve,reject)=>{const child=spawn(path.join(process.env.SETSCOPE_TEST_PG_BIN,process.platform==='win32'?'pg_ctl.exe':'pg_ctl'),['-D',process.env.SETSCOPE_WS3_PG_DATA,'-m','fast','-w','restart'],{windowsHide:true,stdio:'ignore'});child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error('Isolated database restart failed')));});
    admin=new Pool({...config,max:1});pool=new Pool({...config,database,max:5,options:'-c statement_timeout=30000'+(process.env.SETSCOPE_TEST_SAFEUPDATE_LIBRARY?' -c session_preload_libraries='+process.env.SETSCOPE_TEST_SAFEUPDATE_LIBRARY:'')});http=await require('./fixtures/news-archive-query-http.cjs')(pool,{...config,database});env.SUPABASE_SECRET_KEY=http.token;
-   assert.deepEqual(await digest(),before);assert.equal((await service().list()).total,125);
+   assert.deepEqual(await digest(),before);assert.equal((await service().list()).total,94);
   });
   await t.test(['browser-only','query-40k'].includes(process.env.SETSCOPE_WS7_SCALE)?'optimized scale measurements and browser fixture':'40k/50k scale measurements',{skip:!['on','browser-only','query-40k'].includes(process.env.SETSCOPE_WS7_SCALE)},async()=>{
    if(['browser-only','query-40k'].includes(process.env.SETSCOPE_WS7_SCALE)){const size=process.env.SETSCOPE_WS7_SCALE==='query-40k'?40000:50000;await pool.query('delete from news_archive where id>0');await seed(size);assert.equal((await service().refreshQueryIndex({reset:true,maxBatches:150,batchSize:500})).pending,0);assert.equal((await service().list({page:size/10,featuredCount:5})).total,size-5);const {execFile}=require('node:child_process'),{promisify}=require('node:util');const measured=await promisify(execFile)(process.execPath,['--expose-gc',path.join(__dirname,'fixtures/news-archive-benchmark.cjs')],{cwd:repo,env:{...process.env,SETSCOPE_WS7_HTTP_BASE:http.base,SETSCOPE_WS7_HTTP_TOKEN:http.token,SETSCOPE_WS7_BENCH_MODE:'database',SETSCOPE_WS7_BENCH_SIZE:String(size)}});const m=JSON.parse(measured.stdout);assert.ok(m.requestCounts.every(x=>x===1));console.log('WS7_FINAL_METRIC '+JSON.stringify(m));if(process.env.SETSCOPE_WS7_METRICS)await fs.writeFile(process.env.SETSCOPE_WS7_METRICS,JSON.stringify(m,null,2));return;}
@@ -146,7 +147,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   await t.test('frozen frontend uses real Node API, PostgREST and PostgreSQL',{skip:process.env.SETSCOPE_WS7_BROWSER!=='on'},async()=>{await require('./news-archive-query.browser.cjs')({http,pool});});
   await t.test('rollback removes only derived objects and preserves all original archive data',async()=>{
    const before=(await pool.query("select count(*)::int n,md5(string_agg(to_jsonb(a)::text,'' order by id)) digest from news_archive a")).rows[0];await pool.query(await fs.readFile(path.join(repo,'supabase/news_archive_query_rollback.sql'),'utf8'));
-   assert.deepEqual((await pool.query("select count(*)::int n,md5(string_agg(to_jsonb(a)::text,'' order by id)) digest from news_archive a")).rows[0],before);if(['on','browser-only','query-40k'].includes(process.env.SETSCOPE_WS7_SCALE))await assert.rejects(service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'}).list(),/bounded scan limit/);else assert.equal((await service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'}).list()).total,125);
+   assert.deepEqual((await pool.query("select count(*)::int n,md5(string_agg(to_jsonb(a)::text,'' order by id)) digest from news_archive a")).rows[0],before);if(['on','browser-only','query-40k'].includes(process.env.SETSCOPE_WS7_SCALE))await assert.rejects(service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'}).list(),/bounded scan limit/);else assert.equal((await service({SETSCOPE_NEWS_ARCHIVE_QUERY:'off'}).list()).total,94);
   });
  }finally{await http?.stop();await pool.end();await admin.query('drop database '+database+' with(force)');await admin.end();}
 });
