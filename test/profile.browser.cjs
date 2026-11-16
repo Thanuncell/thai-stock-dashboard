@@ -241,10 +241,10 @@ async function makeContext(width) {
     const expectChart = async (url, range) => {
       await expectNavigation(url, 'chart');
       check(await page.locator('#stock-search').inputValue(), 'CPALL', 'restored chart symbol');
-      check(await page.locator('.range-tabs .selected').getAttribute('data-range'), range, 'restored chart range');
+      check(await page.locator('#auto-range-tabs [data-range].selected').getAttribute('data-range'), range, 'restored chart range');
     };
     await expectChart(chartUrl, '1M');
-    await page.locator('.range-tabs [data-range="3M"]').click();
+    await page.locator('#auto-range-tabs [data-range="3M"]').click();
     const changedChartUrl = `${base}/?symbol=CPALL&range=3M#chart`;
     await expectChart(changedChartUrl, '3M');
     await page.locator('#user-avatar').click();

@@ -18,7 +18,7 @@ export function measurement(d){return {change:d.b.price-d.a.price,percent:(d.b.p
 // Local-only drawing state uses the caller's existing authenticated storage boundary.
 export class DrawingWorkspace {
  constructor({host,controls,read,write,redraw,onModeChange=()=>{}}){
-  Object.assign(this,{host,controls,read,write,redraw,onModeChange,key:'',items:[],selected:'',tool:'pan',gesture:null,context:null});
+  Object.assign(this,{host,controls,read,write,redraw,onModeChange,key:'',items:[],selected:'',tool:'pan',gesture:null,context:null,history:new Map()});
   controls.addEventListener('click',e=>{
    const tool=e.target.closest('[data-draw-tool]')?.dataset.drawTool;
    if(tool){this.cancelGesture();this.onModeChange();this.tool=tool;this.sync();return;}
@@ -26,6 +26,8 @@ export class DrawingWorkspace {
    if(select){this.cancelGesture();this.onModeChange();this.selected=select;this.tool='select';this.sync();redraw();return;}
    if(e.target.closest('[data-draw-delete]'))this.remove();
    if(e.target.closest('[data-draw-reset]')){this.cancelGesture();this.onModeChange();this.items=[];this.selected='';this.save();}
+   if(e.target.closest('[data-draw-undo]'))this.travel(-1);
+   if(e.target.closest('[data-draw-redo]'))this.travel(1);
   });
   controls.querySelector('form').addEventListener('submit',e=>{
    e.preventDefault();const selected=this.selected;
@@ -36,10 +38,15 @@ export class DrawingWorkspace {
    if(!point(a)||!point(b)){this.message('กรุณาระบุวันเวลาและราคามากกว่าศูนย์');return;}
    d.a=a;d.b=d.type==='horizontal'?{...b,price:a.price}:b;this.save();
   });
-  host.addEventListener('keydown',e=>{
+  const keyboard=e=>{
+   if(e.target?.closest('input,textarea,select,[contenteditable="true"]'))return;
+   if((e.ctrlKey||e.metaKey)&&['z','y'].includes(e.key.toLowerCase())){
+    e.preventDefault();this.travel(e.key.toLowerCase()==='y'||e.shiftKey?1:-1);return;
+   }
    if(['Delete','Backspace'].includes(e.key)&&this.selected){e.preventDefault();this.remove();}
    if(e.key==='Escape'){this.cancelGesture();this.onModeChange();this.tool='pan';this.sync();redraw();}
-  });
+  };
+  host.addEventListener('keydown',keyboard);controls.addEventListener('keydown',keyboard);
  }
  release(pointer){if(this.host.hasPointerCapture?.(pointer))this.host.releasePointerCapture?.(pointer);}
  cancelGesture(){
@@ -51,8 +58,13 @@ export class DrawingWorkspace {
   this.release(g.pointer);this.sync();this.redraw();
  }
  suspend(){this.cancelGesture();this.onModeChange();this.context=null;}
- reset(){this.suspend();this.key='';this.items=[];this.selected='';this.tool='pan';this.sync();}
- bind(key){if(key===this.key)return;this.suspend();this.key=key;this.items=validDrawings(this.read('setscope-drawings:'+key,[]));this.selected='';this.tool='pan';this.sync();}
+ reset(){this.suspend();this.key='';this.items=[];this.selected='';this.tool='pan';this.history.clear();this.sync();}
+ bind(key){
+  if(key===this.key)return;this.suspend();this.key=key;this.items=validDrawings(this.read('setscope-drawings:'+key,[]));
+  const previous=this.history.get(key);
+  if(!previous||JSON.stringify(previous.current)!==JSON.stringify(this.items))this.history.set(key,{past:[],future:[],current:structuredClone(this.items)});
+  this.selected='';this.tool='pan';this.sync();
+ }
  message(text){this.controls.querySelector('[data-draw-status]').textContent=text;}
  sync(){
   this.host.classList.toggle('drawing-active',this.tool!=='pan');
@@ -60,10 +72,30 @@ export class DrawingWorkspace {
   this.controls.querySelector('[data-draw-list]').innerHTML=this.items.map((d,i)=>`<button type="button" data-drawing-id="${d.id}" aria-pressed="${d.id===this.selected}">${escapeHtml(({trend:'เส้นแนวโน้ม',horizontal:'เส้นราคา',measure:'วัดราคา'})[d.type])} ${i+1}</button>`).join('');
   const form=this.controls.querySelector('form'),d=this.items.find(d=>d.id===this.selected);form.hidden=!d;
   this.controls.querySelector('[data-draw-delete]').disabled=!d;
+  const history=this.history.get(this.key);
+  const undo=this.controls.querySelector('[data-draw-undo]'),redo=this.controls.querySelector('[data-draw-redo]');
+  if(undo)undo.disabled=!history?.past.length;
+  if(redo)redo.disabled=!history?.future.length;
   if(d){for(const end of ['a','b']){form.elements[end+'Time'].value=new Date(d[end].time).toISOString().slice(0,-1);form.elements[end+'Price'].value=d[end].price;}}
   this.message(this.tool==='pan'?'เลื่อน/ซูมกราฟตามปกติ · ภาพวาดบันทึกแยกตามบัญชีบนอุปกรณ์นี้':this.tool==='select'?'เลือกเส้นเพื่อย้าย · ลากจุดปลายเพื่อแก้ไข · แก้ตัวเลขด้านล่างได้':'ลากบนกราฟราคาเพื่อวาด · Esc กลับโหมดเลื่อนกราฟ');
  }
- save(){this.items=validDrawings(this.items);try{this.write('setscope-drawings:'+this.key,this.items);this.sync();}catch{this.sync();this.message('บันทึกบนอุปกรณ์นี้ไม่สำเร็จ ภาพวาดยังอยู่ในหน้านี้');}this.redraw();}
+ save(record=true){
+  this.items=validDrawings(this.items);
+  const history=this.history.get(this.key);
+  if(record&&history&&JSON.stringify(history.current)!==JSON.stringify(this.items)){
+   history.past.push(history.current);history.future=[];history.current=structuredClone(this.items);
+  }
+  try{this.write('setscope-drawings:'+this.key,this.items);this.sync();}catch{this.sync();this.message('บันทึกบนอุปกรณ์นี้ไม่สำเร็จ ภาพวาดยังอยู่ในหน้านี้');}this.redraw();
+ }
+ travel(direction){
+  this.cancelGesture();this.onModeChange();
+  const history=this.history.get(this.key),from=direction<0?history?.past:history?.future;
+  if(!from?.length)return;
+  (direction<0?history.future:history.past).push(history.current);
+  history.current=from.pop();this.items=structuredClone(history.current);
+  if(!this.items.some(d=>d.id===this.selected))this.selected='';
+  this.save(false);
+ }
  remove(){this.cancelGesture();this.onModeChange();this.items=this.items.filter(d=>d.id!==this.selected);this.selected='';this.save();}
  anchor(event){
   const c=this.context,svg=this.host.querySelector('svg');if(!c||!svg)return null;

@@ -117,10 +117,12 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await page.waitForSelector('.price-candle');
    await assertFit('first visible render fills the chart without Reset');
    const host=page.locator('#stock-price-chart');
+   check(await page.locator('#chart-fullscreen, .chart-fullscreen-btn').count(),0,'retired chart control is absent');
+   check(await page.locator('.chart-fullscreen-fallback, .is-chart-fullscreen, body.chart-fullscreen-open').count(),0,'retired layout state is absent');
    check(await page.locator('.price-candle').count(), await host.evaluate(node=>node.clientWidth<520?42:68), 'default viewport uses the visible width');
    check(marketCalls.length,initialCalls,'revealing the chart makes no market request');
    if ([390,1366].includes(width)) {
-    phase=`${width}-${theme}-resize-fullscreen`;
+    phase=`${width}-${theme}-resize-orientation`;
     const viewport=page.viewportSize();
     if (process.env.SETSCOPE_FIT_SCREENSHOT_DIR) {
      await host.screenshot({path:path.join(process.env.SETSCOPE_FIT_SCREENSHOT_DIR,`fit-${width}-${theme}.png`),style:'.topbar,.topbar *,.sidebar,.sidebar *{visibility:hidden!important}'});
@@ -139,17 +141,8 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await assertFit('visible resize fits in the rotated viewport');
     check(await bars(),zoomed,'orientation change preserves the zoomed window');
     await page.setViewportSize(viewport);
-    // Exercise the fallback on mobile and the native Fullscreen API on desktop.
-    const chartPanel=page.locator('.chart-panel');
-    if(width===390)await chartPanel.evaluate(node=>{node.requestFullscreen=undefined;});
-    await page.locator('#chart-fullscreen').click();
-    await page.waitForFunction(()=>document.body.classList.contains('chart-fullscreen-open'));
-    check(await chartPanel.evaluate(node=>document.fullscreenElement===node),width!==390);
-    await assertFit('fullscreen fills the chart area');
-    await page.locator('#chart-fullscreen').click();
-    await page.waitForFunction(()=>!document.body.classList.contains('chart-fullscreen-open'));
-    await assertFit('fullscreen exit fits');
-    check(await bars(),zoomed,'fullscreen round trip preserves the zoomed window');
+    await assertFit('returning to the original viewport fits');
+    check(await bars(),zoomed,'resize round trip preserves the zoomed window');
     check(await host.getAttribute('data-snapshot-id'),snapshot,'layout keeps the same technical snapshot');
     check(marketCalls.length,initialCalls,'layout redraws use cached data');
     const rendered=await svg.elementHandle();
