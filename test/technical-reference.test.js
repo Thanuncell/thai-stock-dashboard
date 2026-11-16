@@ -21,7 +21,7 @@ async function g3Snapshot(entry,timeframe,count=entry.rows.length,parameters={})
  const rows=entry.rows.slice(0,count).map((row,index)=>{
   const date=timeframe==='D'?dailyDates[index].time:timeframe==='W'
    ?historyBars(1,new Date(Date.UTC(2026,9,30)-(entry.rows.length-1-index)*7*86400000).toISOString().slice(0,10))[0].time
-   :historyBars(1,new Date(Date.UTC(2005,index,15)).toISOString().slice(0,10))[0].time;
+   :historyBars(1,new Date(Date.UTC(2026,9-(count-1-index),15)).toISOString().slice(0,10))[0].time;
   return {...row,time:date};
  });
  const last=rows.at(-1)?.time;
@@ -29,7 +29,7 @@ async function g3Snapshot(entry,timeframe,count=entry.rows.length,parameters={})
   regularStart:last??null,regularEnd:last?last+6.5*3600000:null};
  const market={history:rows,indicatorHistory:rows,levelsHistory:rows,fetchedAt:meta.receivedAt,dataState:'delayed',
   technicalMeta:{history:meta,indicator:meta,levels:meta}};
- const projected=marketTimeframe(market,timeframe,'ALL');
+ const projected=marketTimeframe(market,timeframe,'5Y');
  return {snapshot:createTechnicalSnapshot({...projected,symbol:'PTT',timeframe,parameters}),projected};
 }
 function compareG3Reference(got,want,label){
@@ -43,7 +43,7 @@ for(const timeframe of ['D','W','M']){
  for(const entry of fixture.cases)test(`G3 ${timeframe} selected OHLCV matches independent six-indicator reference: ${entry.name}`,async()=>{
   const {snapshot,projected}=await g3Snapshot(entry,timeframe);
   const ohlcv=({open,high,low,close,volume})=>({open,high,low,close,volume});
-  assert.deepEqual(projected.history.map(ohlcv),entry.rows.map(ohlcv));
+  assert.deepEqual(projected.indicatorHistory.map(ohlcv),entry.rows.map(ohlcv));
   assert.equal(snapshot.timeframe,timeframe);assert.equal(snapshot.signalRows.length,entry.rows.length);
   assert.ok(snapshot.signalRows.every(row=>row.interval===({D:'1d',W:'1wk',M:'1mo'}[timeframe])));
   compareG3Reference(snapshot.signalSeries,entry.expected,timeframe+'.'+entry.name);

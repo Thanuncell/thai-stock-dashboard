@@ -1686,7 +1686,7 @@ async function getMarket() {
   }
   try {
     const params = new URLSearchParams({ symbols: requestedSymbols.join(','), symbol: requestedSymbol, range: requestedTimeframe === 'Auto' ? currentRange : '1Y' });
-    if (requestedTimeframe !== 'Auto' && requestedHistory === 'ALL') params.set('history', 'all');
+    if (requestedTimeframe !== 'Auto' && requestedHistory === '5Y') params.set('history', '5y');
     const response = await apiFetch(`/api/market?${params}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'เชื่อมต่อ Yahoo Finance ไม่สำเร็จ');

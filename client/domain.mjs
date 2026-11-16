@@ -1,6 +1,6 @@
 'use strict';
 import * as newsContent from '../lib/news-content.js';
-import { HISTORICAL_RANGES } from './chart-timeframe.mjs';
+import { normalizeHistoricalRange } from './chart-timeframe.mjs';
 const { NEWS_FILTER_SOURCES, normalizeNewsSources, newsPublisherKey, newsMatchesSources, newsUrlIdentity, isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols, newsClickUrl } = newsContent.default || globalThis.SETscopeNewsContent;
 export { normalizeNewsSources, newsPublisherKey, newsMatchesSources, newsSecuritySymbols, newsClickUrl };
 
@@ -360,7 +360,7 @@ export function parseNavigationState(value, fallback = {}) {
       symbol: validSymbol(url.searchParams.get('symbol') || fallback.symbol || 'PTT'),
       range: CHART_RANGES.includes(range) ? range : '1D',
       ...(['D', 'W', 'M'].includes(timeframe) ? { timeframe,
-        historicalRange: HISTORICAL_RANGES.includes(historicalRange) ? historicalRange : '1Y' } : {})
+        historicalRange: normalizeHistoricalRange(historicalRange) } : {})
     };
   }
   if (route === 'news') {
@@ -388,7 +388,7 @@ export function navigationUrl(state = {}, pathname = '/') {
     params.set('range', CHART_RANGES.includes(range) ? range : '1D');
     if (['D', 'W', 'M'].includes(state.timeframe)) {
       params.set('timeframe', state.timeframe);
-      params.set('historicalRange', HISTORICAL_RANGES.includes(state.historicalRange) ? state.historicalRange : '1Y');
+      params.set('historicalRange', normalizeHistoricalRange(state.historicalRange));
     }
   } else if (route === 'news') {
     const query = String(state.query || '').trim().slice(0, 80);

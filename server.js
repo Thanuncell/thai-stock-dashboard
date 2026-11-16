@@ -375,13 +375,13 @@ async function handle(req, res, auth = authService) {
       if (!active) return send(res, 400, { error: 'ชื่อย่อหุ้นไม่ถูกต้อง' });
       if (!symbols.includes(active)) symbols.push(active);
       const range = url.searchParams.get('range') || '1D';
-      const allDailyHistory = range === '1Y' && url.searchParams.get('history') === 'all';
+      const fiveYearDailyHistory = range === '1Y' && ['5y', 'all'].includes(url.searchParams.get('history'));
       const cacheKey = `market:${symbols.join(',')}|${active}|${range}`;
       return send(res, 200, await loadCached(
         res,
-        `${cacheKey}${allDailyHistory ? '|all-daily' : ''}`,
+        `${cacheKey}${fiveYearDailyHistory ? '|5y-daily' : ''}`,
         PROVIDER_POLICIES.market,
-        () => marketService.getMarket(symbols, active, range, { allDailyHistory })
+        () => marketService.getMarket(symbols, active, range, { fiveYearDailyHistory })
       ));
     } catch (error) {
       return send(res, 502, { error: 'ไม่สามารถดึงข้อมูลจากแหล่งข้อมูลได้' });

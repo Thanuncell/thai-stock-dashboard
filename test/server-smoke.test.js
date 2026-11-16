@@ -457,7 +457,7 @@ test('Market range failure keeps the quote and blocks history without exposing e
   assert.doesNotMatch(JSON.stringify(result), /fixture-private/);
 });
 
-test('daily timeframe reuse shares the market cache while ALL remains a distinct guarded request', async () => {
+test('daily timeframe reuse shares the market cache while 5Y remains a distinct guarded request', async () => {
   const base = `http://127.0.0.1:${server.address().port}`;
   const headers = { authorization: 'Bearer test-token' };
   const ordinary = '/api/market?symbols=PTT&symbol=PTT&range=1Y';
@@ -466,14 +466,16 @@ test('daily timeframe reuse shares the market cache while ALL remains a distinct
   const cachedCount = providerCalls().length;
   for (let i=0;i<3;i++) assert.equal((await request(base, ordinary, {headers})).status, 200);
   assert.equal(providerCalls().length, cachedCount, 'D/W/M share the same daily HTTP request and cache');
-  const maximum = await request(base, ordinary + '&history=all', {headers});
+  const maximum = await request(base, ordinary + '&history=5y', {headers});
   assert.equal(maximum.status, 200);
   assert.ok(providerCalls().slice(cachedCount).some(call => {
     const query = new URL(call.url).searchParams;
-    return query.get('range') === 'max' && query.get('interval') === '1d';
+    return query.get('range') === '5y' && query.get('interval') === '1d';
   }));
   const allCount = providerCalls().length;
-  assert.equal((await request(base, ordinary + '&history=all', {headers})).status, 200);
+  assert.equal((await request(base, ordinary + '&history=5y', {headers})).status, 200);
+  assert.equal((await request(base, ordinary + '&history=all', {headers})).status, 200, 'legacy API alias resolves to the same bounded window');
   assert.equal((await request(base, ordinary, {headers})).status, 200);
-  assert.equal(providerCalls().length, allCount, 'ALL and ordinary history each retain their own cached result');
+  assert.equal(providerCalls().length, allCount, '5Y and ordinary history each retain their own cached result');
+  assert.ok(providerCalls().every(call=>new URL(call.url).searchParams.get('range') !== 'max'));
 });
