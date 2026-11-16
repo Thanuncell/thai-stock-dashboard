@@ -56,7 +56,7 @@ test('Bangkok calendar boundaries, year crossover, missing periods and zero/unkn
 test('Historical Range is independent of D/W/M and warm-up uses the same selected interval', () => {
   const market = fixture();
   for (const timeframe of ['D', 'W', 'M']) {
-    const full = chart.marketTimeframe(market, timeframe, 'ALL');
+    const full = chart.marketTimeframe(market, timeframe, '5Y');
     let previous = 0;
     for (const range of chart.HISTORICAL_RANGES) {
       const selected = chart.marketTimeframe(market, timeframe, range);
@@ -72,14 +72,14 @@ test('Historical Range is independent of D/W/M and warm-up uses the same selecte
 for (const timeframe of ['W', 'M']) {
   test(timeframe + ' shows the partial last period but excludes it from confirmed signals', () => {
     const market = fixture(480);
-    const projected = chart.marketTimeframe(market, timeframe, 'ALL');
+    const projected = chart.marketTimeframe(market, timeframe, '5Y');
     const snapshot = technical.createTechnicalSnapshot({ ...projected, symbol: 'PTT', timeframe });
     assert.equal(snapshot.latestCandle.complete, false);
     assert.ok(snapshot.signalRows.length > 0);
     assert.ok(snapshot.signalRows.every(row => row.availableAt <= observedAt));
     const changed = structuredClone(market);
     Object.assign(changed.indicatorHistory.at(-1), { high: 99999, close: 99999 });
-    const replay = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(changed, timeframe, 'ALL'), symbol: 'PTT', timeframe });
+    const replay = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(changed, timeframe, '5Y'), symbol: 'PTT', timeframe });
     assert.deepEqual(replay.signalSeries, snapshot.signalSeries);
     assert.equal(replay.series.sma20.at(-1) === snapshot.series.sma20.at(-1), false);
   });
@@ -90,7 +90,7 @@ test('Selected weekly SMA uses weekly closes and monthly insufficient warm-up ke
   const weekly = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(market, 'W', '3M'), symbol: 'PTT', timeframe: 'W' });
   const expected = weekly.signalRows.slice(-20).reduce((sum, row) => sum + row.close, 0) / 20;
   assert.ok(Math.abs(weekly.signalSeries.sma20.at(-1) - expected) < 1e-9);
-  const monthly = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(fixture(25), 'M', 'ALL'), symbol: 'PTT', timeframe: 'M' });
+  const monthly = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(fixture(25), 'M', '5Y'), symbol: 'PTT', timeframe: 'M' });
   assert.ok(monthly.rows.length > 0); assert.equal(monthly.summary.status, 'insufficient');
   assert.equal(monthly.summary.actionable, false); assert.equal(monthly.availability.ema200.state, 'insufficient');
 });
@@ -119,20 +119,83 @@ test('Legacy Auto mappings and navigation URLs remain compatible; new selection 
       assert.deepEqual(domain.parseNavigationState(domain.navigationUrl(expanded)), expanded);
     }
   }
-  assert.deepEqual(domain.parseNavigationState('/?symbol=PTT&range=1M#chart', { timeframe:'W', historicalRange:'ALL' }), {route:'chart',symbol:'PTT',range:'1M'});
+  assert.deepEqual(domain.parseNavigationState('/?symbol=PTT&range=1M#chart', { timeframe:'W', historicalRange:'5Y' }), {route:'chart',symbol:'PTT',range:'1M'});
+  for (const timeframe of ['D','W','M']) {
+    const old = domain.parseNavigationState(`/?symbol=PTT&range=1Y&timeframe=${timeframe}&historicalRange=ALL#chart`);
+    assert.equal(old.historicalRange, '5Y');
+    assert.ok(domain.navigationUrl(old).includes('historicalRange=5Y'));
+    assert.equal(domain.navigationUrl({...old,historicalRange:'ALL'}), domain.navigationUrl(old));
+  }
+  assert.ok(!chart.HISTORICAL_RANGES.includes('ALL'), 'ALL remains deferred, not a visible range');
 });
 
-test('ALL uses the existing guarded Yahoo daily path and preserves quotes', async () => {
+test('5Y uses the existing guarded Yahoo daily path and preserves quotes', async () => {
   const calls = [], standard = responder(calls);
   const service = createMarketService({ env: {}, now: () => received, fetchImpl: async input => {
     const url = new URL(input);
-    if (url.searchParams.get('range') !== 'max') return standard(input);
-    calls.push({ range:'max', interval:url.searchParams.get('interval') });
+    if (url.searchParams.get('range') !== '5y') return standard(input);
+    calls.push({ range:'5y', interval:url.searchParams.get('interval') });
     const rows = barsBetween(received - 800 * 86400000, received, '1d');
     return {ok:true,json:async()=>({chart:{result:[payload('PTT.BK','1d',rows.rows,rows.periods)]}})};
   }});
-  const market = await service.getMarket(['PTT'], 'PTT', '1Y', {allDailyHistory:true});
+  const market = await service.getMarket(['PTT'], 'PTT', '1Y', {fiveYearDailyHistory:true});
   assert.ok(market.history.length > 365); assert.equal(market.stocks[0].symbol, 'PTT');
-  assert.equal(calls.filter(call => call.range === 'max').length, 1);
-  assert.equal(calls.find(call => call.range === 'max').interval, '1d');
+  assert.equal(calls.filter(call => call.range === '5y').length, 1);
+  assert.equal(calls.find(call => call.range === '5y').interval, '1d');
+  assert.ok(calls.every(call => call.range !== 'max'), 'never fetch max and truncate afterward');
+  const visible = chart.marketTimeframe(market, 'D', '5Y');
+  assert.deepEqual(visible.history.map(fields), market.history.map(fields), 'shorter available history is shown without filling missing years');
+});
+
+for (const timeframe of ['D','W','M']) test(`5Y ${timeframe} retains actual calendar intervals, OHLCV and bounded warm-up`, () => {
+  const start = new Date(received); start.setUTCFullYear(start.getUTCFullYear() - 5);
+  const data = barsBetween(+start, received, '1d');
+  const service = createMarketService({now:()=>received,env:{}});
+  const source = service.shapeChart(payload('PTT.BK','1d',data.rows,data.periods),'PTT','chart:5y:1d');
+  const market = {history:source.history,indicatorHistory:source.history,levelsHistory:source.history,
+    fetchedAt:new Date(received).toISOString(),technicalMeta:{history:source.provenance,indicator:source.provenance,levels:source.provenance}};
+  const selected = chart.marketTimeframe(market,timeframe,'5Y');
+  const groups = new Map();
+  for (const row of source.history) {
+    const date = new Date(row.time + 25200000);
+    if (timeframe === 'W') date.setUTCDate(date.getUTCDate() - (date.getUTCDay() || 7) + 1);
+    const key = date.toISOString().slice(0,timeframe === 'M' ? 7 : 10);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  const expected = [...groups.values()].map(rows=>({time:rows[0].time,open:rows[0].open,
+    high:Math.max(...rows.map(row=>row.high)),low:Math.min(...rows.map(row=>row.low)),
+    close:rows.at(-1).close,volume:rows.reduce((sum,row)=>sum+row.volume,0)}));
+  assert.deepEqual(selected.history.map(fields),expected);
+  assert.ok(selected.history.every(row=>row.time >= +start && row.time <= received));
+  assert.equal(selected.technicalMeta.history.interval,{D:'1d',W:'1wk',M:'1mo'}[timeframe]);
+  const snapshot = technical.createTechnicalSnapshot({...selected,symbol:'PTT',timeframe});
+  assert.ok(snapshot.signalRows.every(row=>row.complete && row.availableAt<=received));
+  if (timeframe === 'M') {
+    assert.ok(snapshot.signalRows.length >= 59 && snapshot.signalRows.length <= 61);
+    assert.equal(snapshot.availability.ema100.state,'insufficient');
+    assert.equal(snapshot.availability.ema200.state,'insufficient');
+    const custom = technical.createTechnicalSnapshot({...selected,symbol:'PTT',timeframe,parameters:{ema20:100}});
+    assert.equal(custom.availability.ema20.required,100);
+    assert.equal(custom.availability.ema20.state,'insufficient');
+  } else {
+    assert.equal(snapshot.availability.ema200.state,'available');
+  }
+  const unknown = structuredClone(market); unknown.fetchedAt=null;
+  for (const meta of Object.values(unknown.technicalMeta)) meta.receivedAt=null;
+  const provisional = technical.createTechnicalSnapshot({...chart.marketTimeframe(unknown,timeframe,'5Y'),symbol:'PTT',timeframe});
+  assert.equal(provisional.confirmation,'provisional');
+  assert.equal(provisional.summary.status,'waiting-close');
+  assert.ok(provisional.rows.length>0,'missing receipt time does not erase available real bars');
+});
+
+test('unavailable 5Y history preserves the existing unavailable state and never invents bars', async () => {
+  const calls=[], standard=responder(calls);
+  const service=createMarketService({env:{},now:()=>received,fetchImpl:async input=>{
+    if(new URL(input).searchParams.get('range')==='5y') return {ok:false,status:503};
+    return standard(input);
+  }});
+  const market=await service.getMarket(['PTT'],'PTT','1Y',{fiveYearDailyHistory:true});
+  assert.deepEqual(market.history,[]);assert.equal(market.dataState,'unavailable');
+  for(const timeframe of ['D','W','M']) assert.deepEqual(chart.marketTimeframe(market,timeframe,'5Y').history,[]);
 });

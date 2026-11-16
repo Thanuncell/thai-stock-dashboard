@@ -1,6 +1,11 @@
 import * as timeModule from '../lib/market-time.js';
 const { temporalBars } = timeModule.default || globalThis.SETscopeMarketTime;
-export const HISTORICAL_RANGES = Object.freeze(['1M', '3M', '6M', '1Y', 'ALL']);
+// ALL is deferred; legacy selections resolve to the supported bounded window.
+export const HISTORICAL_RANGES = Object.freeze(['1M', '3M', '6M', '1Y', '5Y']);
+export function normalizeHistoricalRange(range) {
+  const selected = range === 'ALL' ? '5Y' : range;
+  return HISTORICAL_RANGES.includes(selected) ? selected : '1Y';
+}
 const offset = 7 * 3600000;
 
 function bucket(time, timeframe) {
@@ -31,10 +36,9 @@ export function aggregateDailyBars(rows, timeframe) {
 }
 
 function rangeStart(time, range) {
-  if (range === 'ALL') return -Infinity;
   const date = new Date(time + offset), dateOfMonth = date.getUTCDate();
   date.setUTCDate(1);
-  date.setUTCMonth(date.getUTCMonth() - ({ '1M': 1, '3M': 3, '6M': 6, '1Y': 12 }[range] || 12));
+  date.setUTCMonth(date.getUTCMonth() - ({ '1M': 1, '3M': 3, '6M': 6, '1Y': 12, '5Y': 60 }[normalizeHistoricalRange(range)]));
   const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
   date.setUTCDate(Math.min(dateOfMonth, last));
   return +date - offset;
@@ -52,7 +56,7 @@ export function marketTimeframe(market, timeframe, historicalRange) {
     metadata[metaKey] = { ...meta, interval, sourceInterval: meta.interval, aggregation: timeframe === 'D' ? undefined : 'daily-ohlcv' };
     const rows = temporalBars(aggregateDailyBars(daily, timeframe), { ...meta, interval, observedAt: meta.receivedAt || market.fetchedAt });
     // Include the whole real bucket intersecting the selected historical window.
-    histories[field] = field === 'history' ? rows.filter(row => cutoff === -Infinity || (timeframe === 'D' ? row.time >= cutoff
+    histories[field] = field === 'history' ? rows.filter(row => !Number.isFinite(cutoff) || (timeframe === 'D' ? row.time >= cutoff
       : bucket(row.time, timeframe) >= bucket(cutoff, timeframe))) : rows;
   }
   return { ...market, ...histories, technicalMeta: metadata };

@@ -42,8 +42,10 @@ const styles = page => page.evaluate(() => Object.fromEntries([
       const standard = responder(providerCalls);
       const service = createMarketService({env:{},now:()=>received,fetchImpl:async input => {
         const url = new URL(input);
-        if (url.searchParams.get('range') !== 'max') return standard(input);
-        const data = barsBetween(received - 1500 * 86400000, received, '1d');
+        if (url.searchParams.get('range') !== '5y') return standard(input);
+        const start = new Date(received); start.setUTCFullYear(start.getUTCFullYear()-5);
+        providerCalls.push({range:'5y',interval:url.searchParams.get('interval')});
+        const data = barsBetween(+start, received, '1d');
         return {ok:true,json:async()=>({chart:{result:[payload('PTT.BK','1d',data.rows,data.periods)]}})};
       }});
       let hold = null, g3Scenario = 'provisional', lastMarket = null;
@@ -53,7 +55,7 @@ const styles = page => page.evaluate(() => Object.fromEntries([
         if (url.origin === base && url.pathname === '/api/market') {
           const range = url.searchParams.get('range'), symbol = url.searchParams.get('symbol') || 'PTT';
           requests.push({range,history:url.searchParams.get('history'),symbol});
-          const data = await service.getMarket([symbol],symbol,range,{allDailyHistory:url.searchParams.get('history')==='all'});
+          const data = await service.getMarket([symbol],symbol,range,{fiveYearDailyHistory:url.searchParams.get('history')==='5y'});
           if (g3Only) {
             if (g3Scenario === 'closed') {
               data.fetchedAt = new Date(Date.UTC(2026,11,1,11,30)).toISOString();
@@ -70,14 +72,14 @@ const styles = page => page.evaluate(() => Object.fromEntries([
             }
           }
           if (hold) { const pending=hold; hold=null; pending.started(); await pending.wait; }
-          if (g3Only) lastMarket = structuredClone(data);
+          lastMarket = structuredClone(data);
           return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)});
         }
         return mockRequest(route,base,state);
       });
       const page = await context.newPage(); page.on('pageerror',error=>errors.push(error.message));
       await seedPage(page,'token-a'); await page.addInitScript(theme=>localStorage.setItem('setscope-theme',theme),theme);
-      await page.goto(base+(g3Only?'/?symbol=PTT&range=1D&timeframe=D&historicalRange=ALL#chart':'/?symbol=PTT&range=1D#chart'));
+      await page.goto(base+(g3Only?'/?symbol=PTT&range=1D&timeframe=D&historicalRange=5Y#chart':'/?symbol=PTT&range=1D#chart'));
       await page.waitForSelector('.price-candle'); await page.waitForSelector('.compact-reasons',{state:'attached'});
       const filename = `${width}-${theme}`;
       if (g3Only) {
@@ -89,7 +91,7 @@ const styles = page => page.evaluate(() => Object.fromEntries([
           await action(); await done; return structuredClone(lastMarket);
         };
         const verifyEvidence = async (timeframe,parameters={},data=lastMarket) => {
-          const selected = marketTimeframe(data,timeframe,'ALL');
+          const selected = marketTimeframe(data,timeframe,'5Y');
           const expected = createTechnicalSnapshot({...selected,symbol:'PTT',timeframe,parameters});
           await page.waitForFunction(id=>document.querySelector('.analysis-panel').dataset.snapshotId===id,expected.id);
           check(await page.locator('.analysis-panel').getAttribute('data-signal-status'),expected.summary.status,'selected timeframe status');
@@ -189,26 +191,55 @@ const styles = page => page.evaluate(() => Object.fromEntries([
         check(requests.at(-1).range,'1Y');
       }
       let previous = 0;
-      for (const range of ['1M','3M','6M','1Y','ALL']) {
+      for (const range of ['1M','3M','6M','1Y','5Y']) {
         await page.locator(`[data-historical-range="${range}"]`).click(); await waitLabel(`M · ${range}`);
         const count = Number(await page.locator('#stock-price-chart').getAttribute('data-source-candles'));
         check(count>=previous,true,'range changes data coverage independently of Monthly'); previous=count;
       }
-      check(requests.at(-1).history,'all');
+      check(requests.at(-1).history,'5y');
+      check(await page.locator('[data-historical-range]').allTextContents(),['1M','3M','6M','1Y','5Y']);
+      const {marketTimeframe} = await import('../client/chart-timeframe.mjs');
+      for (const timeframe of ['D','W','M']) {
+        await page.locator(`[data-timeframe="${timeframe}"]`).click(); await waitLabel(`${timeframe} · 5Y`);
+        const expected = marketTimeframe(lastMarket,timeframe,'5Y');
+        const host = page.locator('#stock-price-chart');
+        check(Number(await host.getAttribute('data-source-candles')),expected.history.length,'D/W/M use actual selected calendar buckets');
+        const initial = await page.locator('.price-candle').count(), calls = requests.length;
+        await page.locator('#chart-fit').click();
+        await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length===count,expected.history.length);
+        const dates = await page.locator('.price-candle title').allTextContents();
+        const dateFormat = new Intl.DateTimeFormat('th-TH',{timeZone:'Asia/Bangkok',day:'2-digit',month:'short',year:'2-digit'});
+        const valueFormat = new Intl.NumberFormat('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2});
+        const expectedTitles = expected.history.map(row=>dateFormat.format(new Date(row.time))+' · '+
+          [['O','open'],['H','high'],['L','low'],['C','close'],['Vol','volume']].map(([label,key])=>label+' '+valueFormat.format(row[key])).join(' · '));
+        check(dates,expectedTitles,'Fit All retains each real candle date and OHLCV, not axis-label sampling');
+        await page.locator('#chart-zoom-in').click();
+        await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length<count,expected.history.length);
+        await page.locator('#chart-reset').click();
+        await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length===count,initial);
+        check(requests.length,calls,'Fit/Zoom/Reset remain local');
+        check(requests.at(-1).history,'5y');
+      }
+      check(providerCalls.some(call=>call.range==='5y'&&call.interval==='1d'),true);
+      check(providerCalls.some(call=>call.range==='max'),false,'5Y never fetches max');
       check(await page.locator('.price-chart-svg').evaluate(node=>{
         const {width,height}=node.viewBox.baseVal;
         return [...node.querySelectorAll(`text.chart-axis-text[y="${height-10}"]`)].every(label=>{
           const bounds=label.getBBox();return bounds.x>=-1&&bounds.x+bounds.width<=width+1;
         });
       }),true,'historical dates with years stay inside the chart');
-      await page.locator('[data-timeframe="W"]').focus(); await page.keyboard.press('Enter'); await waitLabel('W · ALL');
-      check(await page.locator('[data-historical-range="ALL"]').getAttribute('aria-pressed'),'true');
+      await page.locator('[data-timeframe="W"]').focus(); await page.keyboard.press('Enter'); await waitLabel('W · 5Y');
+      check(await page.locator('[data-historical-range="5Y"]').getAttribute('aria-pressed'),'true');
       await page.locator('#chart-zoom-in').click();
       check(await page.locator('.price-candle').count()>0,true);
       if (evidence) { fs.mkdirSync(path.join(evidence,'after'),{recursive:true}); await page.locator('.chart-panel').screenshot({path:path.join(evidence,'after',filename+'-weekly.png'),style:'.topbar,.sidebar,.side-nav{opacity:0!important}'}); }
-      await page.goBack(); await waitLabel('M · ALL');
-      await page.reload(); await page.waitForSelector('.price-candle'); await waitLabel('M · ALL');
-      check(await page.locator('[data-historical-range="ALL"]').getAttribute('aria-pressed'),'true');
+      await page.goBack(); await waitLabel('M · 5Y');
+      await page.reload(); await page.waitForSelector('.price-candle'); await waitLabel('M · 5Y');
+      check(await page.locator('[data-historical-range="5Y"]').getAttribute('aria-pressed'),'true');
+      await page.goto(base+'/?symbol=PTT&range=1Y&timeframe=W&historicalRange=ALL#chart');
+      await page.waitForSelector('.price-candle'); await waitLabel('W · 5Y');
+      check(await page.locator('[data-historical-range="5Y"]').getAttribute('aria-pressed'),'true','legacy ALL URL selects bounded 5Y');
+      check(requests.at(-1).history,'5y');
       await page.locator('[data-timeframe="Auto"]').click(); await waitLabel('1Y');
       check(await page.locator('[data-range="1Y"]').getAttribute('aria-pressed'),'true','Auto remembers its independent range');
       if (width===390 && theme==='light') {
@@ -216,7 +247,7 @@ const styles = page => page.evaluate(() => Object.fromEntries([
         const wait = new Promise(resolve=>release=resolve), started = new Promise(resolve=>began=resolve);
         hold={wait,started:began};
         await page.locator('[data-timeframe="W"]').click(); await started;
-        await page.locator('[data-timeframe="D"]').click(); await waitLabel('D · ALL');
+        await page.locator('[data-timeframe="D"]').click(); await waitLabel('D · 5Y');
         const snapshot=await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'); release();
         await page.waitForTimeout(100);
         check(await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),snapshot,'late response cannot overwrite new timeframe');
