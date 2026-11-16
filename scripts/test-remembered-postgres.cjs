@@ -30,10 +30,14 @@ async function main() {
   assert.ok(bin && path.isAbsolute(bin), 'SETSCOPE_PG_BIN must name existing PostgreSQL 17 tools');
   assert.match((await run(executable('postgres'), ['--version'], { env })).stdout, /PostgreSQL\) 17\./);
   if (postgrest) assert.ok(path.isAbsolute(postgrest));
+  const archiveOnly = process.argv.includes('--archive-only');
+  if (archiveOnly) assert.ok(postgrest && path.isAbsolute(postgrest), 'Archive mode requires isolated PostgREST');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'setscope-v165-pg-'));
   let safeToRemove = true;
   try {
-    const files = process.argv.includes('--production-only') ? ['test/production-remembered.postgres.cjs']
+    const files = archiveOnly
+      ? ['test/news-archive-g2.postgres.cjs', 'test/news-archive-query.postgres.cjs', 'test/news-evidence.postgres.cjs']
+      : process.argv.includes('--production-only') ? ['test/production-remembered.postgres.cjs']
       : ['test/remembered-session.postgres.cjs', 'test/dev-remembered-role.postgres.cjs', 'test/production-remembered.postgres.cjs'];
     for (const [index, file] of files.entries()) {
       const directory = path.join(temporary, String(index), 'v165-pg-verification');
@@ -51,12 +55,23 @@ async function main() {
         started = true;
         const testEnv = { ...env, SETSCOPE_V165_LOCAL_PG: JSON.stringify({ port: localPort, dataDir, pgCtl }) };
         if (postgrest) testEnv.SETSCOPE_V165_LOCAL_HTTP = JSON.stringify({ executable: postgrest });
+        if (archiveOnly) {
+          const config = JSON.stringify({ host: '127.0.0.1', port: localPort, user: 'setscope_test_admin', database: 'postgres' });
+          Object.assign(testEnv, {
+            SETSCOPE_WS7_PG: config,
+            SETSCOPE_G1_TEST_PG: config,
+            SETSCOPE_WS3_PG_DATA: dataDir,
+            SETSCOPE_TEST_PG_BIN: bin,
+            SETSCOPE_TEST_POSTGREST: postgrest,
+            SETSCOPE_WS7_BROWSER: 'on'
+          });
+        }
         const code = await new Promise((resolve, reject) => {
           const child = spawn(process.execPath, ['--test', file], { cwd: root, env: testEnv, stdio: 'inherit', windowsHide: true });
           child.once('error', reject);
           child.once('exit', resolve);
         });
-        assert.equal(code, 0, 'Offline PostgreSQL suite failed');
+        assert.equal(code, 0, archiveOnly ? `Archive PostgreSQL suite failed: ${file}` : 'Offline PostgreSQL suite failed');
       } finally {
         // A suite can restart the cluster itself. Check actual state before cleanup.
         let running = false;

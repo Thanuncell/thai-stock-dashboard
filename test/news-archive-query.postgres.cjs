@@ -119,7 +119,7 @@ test('WS7 isolated PostgreSQL 17 and actual PostgREST archive query',{skip:!proc
   await t.test('actual database and PostgREST restart preserve Archive and durable projection',async()=>{
    const digest=async()=>(await pool.query("select md5(string_agg(to_jsonb(a)::text,'' order by id)) raw,(select count(*)::int from news_archive_query_groups) groups from news_archive a")).rows[0];const before=await digest();
    await http.stop();http=null;await pool.end();await admin.end();
-   const {spawn}=require('node:child_process');await new Promise((resolve,reject)=>{const child=spawn(path.join(process.env.SETSCOPE_TEST_PG_BIN,'pg_ctl.exe'),['-D',process.env.SETSCOPE_WS3_PG_DATA,'-m','fast','-w','restart'],{windowsHide:true,stdio:'ignore'});child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error('Isolated database restart failed')));});
+   const {spawn}=require('node:child_process');await new Promise((resolve,reject)=>{const child=spawn(path.join(process.env.SETSCOPE_TEST_PG_BIN,process.platform==='win32'?'pg_ctl.exe':'pg_ctl'),['-D',process.env.SETSCOPE_WS3_PG_DATA,'-m','fast','-w','restart'],{windowsHide:true,stdio:'ignore'});child.once('error',reject);child.once('close',code=>code===0?resolve():reject(Error('Isolated database restart failed')));});
    admin=new Pool({...config,max:1});pool=new Pool({...config,database,max:5,options:'-c statement_timeout=30000'+(process.env.SETSCOPE_TEST_SAFEUPDATE_LIBRARY?' -c session_preload_libraries='+process.env.SETSCOPE_TEST_SAFEUPDATE_LIBRARY:'')});http=await require('./fixtures/news-archive-query-http.cjs')(pool,{...config,database});env.SUPABASE_SECRET_KEY=http.token;
    assert.deepEqual(await digest(),before);assert.equal((await service().list()).total,94);
   });
