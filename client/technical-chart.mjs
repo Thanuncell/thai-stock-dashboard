@@ -1,4 +1,12 @@
 import { escapeHtml } from './domain.mjs';
+export function crosshairPoint(context,bounds,event){
+ if(!context?.rows.length||!bounds?.width||!bounds?.height)return null;
+ const px=(event.clientX-bounds.left)*context.width/bounds.width;
+ const py=(event.clientY-bounds.top)*context.height/bounds.height;
+ if(px<context.left||px>context.width-context.right||py<context.top||py>context.bottom)return null;
+ const index=Math.max(0,Math.min(context.rows.length-1,Math.round((px-context.x(0))/context.step)));
+ return {index,row:context.rows[index],x:context.x(index),y:py};
+}
 export function seriesPath(values,x,y){let open=false;return values.map((v,i)=>{if(!Number.isFinite(v)){open=false;return '';}const s=`${open?'L':'M'}${x(i)},${y(v)}`;open=true;return s;}).join(' ');}
 export function oscillatorPanel({values,x,left,right,width,top,label,type='rsi'}){
  const finite=values.filter(Number.isFinite),bottom=top+90;

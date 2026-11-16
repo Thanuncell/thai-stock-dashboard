@@ -199,7 +199,7 @@ function drawingHarness(){
  const escape=()=>hostHandlers.keydown({key:'Escape',preventDefault(){}});
  const mode=tool=>controlHandlers.click({target:{closest:q=>q==='[data-draw-tool]'?{dataset:{drawTool:tool}}:null}});
  const original={id:'existing',type:'trend',a:{time:at,price:100},b:{time:at+step,price:110}};
- return {workspace,event,escape,mode,original,writes,captures,status};
+ return {workspace,event,escape,mode,original,writes,captures,status,keyboard:event=>hostHandlers.keydown(event)};
 }
 
 test('drawing persistence wording names this device on normal and failed local writes',()=>{
@@ -232,4 +232,69 @@ test('symbol/timeframe bind and account reset cancel in-flight edits without wri
  for(const action of ['bind','reset']){const h=drawingHarness(),w=h.workspace;w.items=[structuredClone(h.original)];h.mode('select');w.pointerDown(h.event(1,100,at,{dataset:{drawShape:'existing',handle:'a'}}));w.pointerMove(h.event(1,120,at+step));
   if(action==='bind')w.bind('CPALL:1W');else w.reset();w.pointerUp(h.event(1));assert.deepEqual(w.items,[]);assert.equal(w.gesture,null);assert.equal(h.captures.size,0);assert.equal(h.writes.length,0);
  }
+});
+
+test('crosshair maps scaled input to the nearest real candle without filling missing timestamps',async()=>{
+ const {crosshairPoint}=await import('../client/technical-chart.mjs');
+ const rows=[{time:at,close:100},{time:at+10*step,close:101},{time:at+40*step,close:102}];
+ const c={rows,width:400,height:300,left:50,right:10,top:20,bottom:200,step:100,x:i=>70+i*100};
+ const bounds={left:100,top:40,width:800,height:600};
+ assert.deepEqual(crosshairPoint(c,bounds,{clientX:100+171*2,clientY:40+80*2}),{index:1,row:rows[1],x:170,y:80});
+ assert.equal(crosshairPoint(c,bounds,{clientX:100+51*2,clientY:40+21*2}).row,rows[0]);
+ for(const [x,y]of[[10,80],[399,80],[170,10],[170,210]])assert.equal(crosshairPoint(c,bounds,{clientX:100+x*2,clientY:40+y*2}),null);
+ assert.equal(crosshairPoint({...c,rows:[]},bounds,{clientX:200,clientY:100}),null);
+});
+
+function persistentDrawingHarness(){
+ const h=drawingHarness(),records=new Map(),w=h.workspace;
+ w.reset();w.read=key=>structuredClone(records.get(key)||[]);w.write=(key,items)=>{records.set(key,structuredClone(items));h.writes.push({key,items:structuredClone(items)});};
+ records.set('setscope-drawings:PTT:1D',[structuredClone(h.original)]);w.bind('PTT:1D');
+ return{...h,records};
+}
+
+test('session undo/redo protects preloaded legacy drawings and restores exact edit/delete/clear anchors',()=>{
+ const {workspace:w,original,records}=persistentDrawingHarness();
+ w.travel(-1);assert.deepEqual(w.items,[original]);assert.equal(records.size,1);
+ const added={...structuredClone(original),id:'session-added'};w.items.push(added);w.save();
+ w.travel(-1);assert.deepEqual(w.items,[original]);w.travel(1);assert.deepEqual(w.items,[original,added]);
+ w.items[0].a.price=101;w.save();w.travel(-1);assert.equal(w.items[0].a.price,100);w.travel(1);assert.equal(w.items[0].a.price,101);
+ w.selected=added.id;w.remove();assert.equal(w.items.length,1);w.travel(-1);assert.deepEqual(w.items[1],added);
+ const before=structuredClone(w.items);w.items=[];w.save();w.travel(-1);assert.deepEqual(w.items,before);
+ assert.deepEqual([...records.keys()],['setscope-drawings:PTT:1D'],'history never creates a new storage contract');
+});
+
+test('a cancelled draft is excluded from undo and a new edit after undo replaces only the redo branch',()=>{
+ const h=persistentDrawingHarness(),w=h.workspace;
+ h.mode('trend');w.pointerDown(h.event(1));w.pointerMove(h.event(1,120,at+step));w.pointerUp(h.event(1),true);
+ w.travel(-1);assert.deepEqual(w.items,[h.original]);assert.equal(h.writes.length,0);
+ w.items.push({...structuredClone(h.original),id:'first'});w.save();w.travel(-1);
+ w.items.push({...structuredClone(h.original),id:'replacement'});w.save();w.travel(1);
+ assert.deepEqual(w.items.map(item=>item.id),['existing','replacement']);
+});
+
+test('symbol/timeframe histories remain separate and owner reset forgets undo without erasing legacy storage',()=>{
+ const h=persistentDrawingHarness(),w=h.workspace;
+ w.items.push({...structuredClone(h.original),id:'session'});w.save();
+ w.bind('CPALL:1W');w.travel(-1);assert.deepEqual(w.items,[]);
+ w.bind('PTT:1D');w.travel(-1);assert.deepEqual(w.items,[h.original]);w.travel(1);assert.equal(w.items.length,2);
+ const committed=structuredClone(h.records.get('setscope-drawings:PTT:1D'));
+ w.reset();w.bind('PTT:1D');w.travel(-1);assert.deepEqual(w.items,committed,'new session cannot undo the previous session');
+ w.reset();w.read=()=>[];w.bind('PTT:1D');w.travel(1);assert.deepEqual(w.items,[],'another owner receives no prior history');
+ assert.deepEqual(h.records.get('setscope-drawings:PTT:1D'),committed,'reset does not delete saved legacy data');
+});
+
+test('a changed legacy storage snapshot invalidates an old context history instead of overwriting it',()=>{
+ const h=persistentDrawingHarness(),w=h.workspace;
+ w.items.push({...structuredClone(h.original),id:'session'});w.save();w.bind('CPALL:1W');
+ const external=[{...structuredClone(h.original),id:'external-update'}];h.records.set('setscope-drawings:PTT:1D',external);
+ w.bind('PTT:1D');w.travel(-1);assert.deepEqual(w.items,external);w.travel(1);assert.deepEqual(w.items,external);
+});
+
+test('drawing undo shortcuts leave native form editing alone and no-op saves do not add undo steps',()=>{
+ const h=persistentDrawingHarness(),w=h.workspace;
+ w.items.push({...structuredClone(h.original),id:'session'});w.save();w.save();
+ const event=input=>({key:'z',ctrlKey:true,target:{closest:()=>input},preventDefault(){if(input)throw Error('Native editor shortcut was intercepted');}});
+ h.keyboard(event(true));assert.equal(w.items.length,2,'input shortcut cannot edit drawings');
+ h.keyboard(event(false));assert.deepEqual(w.items,[h.original]);h.keyboard(event(false));assert.deepEqual(w.items,[h.original],'unchanged save creates no extra undo step');
+ h.keyboard({...event(false),key:'y'});assert.equal(w.items.length,2);
 });

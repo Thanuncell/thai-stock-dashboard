@@ -2,7 +2,7 @@ import { analyseTechnicals,computeTechnicalSeries,normalizeTechnicalParameters,t
 import * as timeModule from '../lib/market-time.js';
 const {temporalBars}=timeModule.default||globalThis.SETscopeMarketTime;
 export const TECHNICAL_VERSION='setscope-ta-2';
-export const RANGE_INTERVAL=Object.freeze({'1D':'1m','1W':'15m','1M':'30m','3M':'60m','1Y':'1d'});
+export const RANGE_INTERVAL=Object.freeze({'1D':'1m','1W':'15m','1M':'30m','3M':'60m','1Y':'1d',D:'1d',W:'1wk',M:'1mo'});
 export const INDICATOR_PRESETS=Object.freeze({basic:['sma20','ema20','ema50','macd'],trend:['sma20','ema20','ema50','ema100','ema200'],momentum:['macd','rsi'],volatility:['bb','atr']});
 const STRUCTURE_EVENT_LABELS = Object.freeze({
  'breakout-confirmed': 'ยืนยันการทะลุระดับราคา',

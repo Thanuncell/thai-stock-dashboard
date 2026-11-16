@@ -1,5 +1,6 @@
 'use strict';
 import * as newsContent from '../lib/news-content.js';
+import { HISTORICAL_RANGES } from './chart-timeframe.mjs';
 const { NEWS_FILTER_SOURCES, normalizeNewsSources, newsPublisherKey, newsMatchesSources, newsUrlIdentity, isNewsDocumentForDisplay, newsDisplayBlocked, newsSecuritySymbols, newsAssociationSymbols, newsClickUrl } = newsContent.default || globalThis.SETscopeNewsContent;
 export { normalizeNewsSources, newsPublisherKey, newsMatchesSources, newsSecuritySymbols, newsClickUrl };
 
@@ -352,10 +353,14 @@ export function parseNavigationState(value, fallback = {}) {
   if (route === 'overview' || route === 'profile') return { route };
   if (route === 'chart') {
     const range = String(url.searchParams.get('range') || fallback.range || '1D').toUpperCase();
+    const timeframe = url.searchParams.get('timeframe') || (url.searchParams.has('range') ? 'Auto' : fallback.timeframe);
+    const historicalRange = url.searchParams.get('historicalRange') || fallback.historicalRange || '1Y';
     return {
       route,
       symbol: validSymbol(url.searchParams.get('symbol') || fallback.symbol || 'PTT'),
-      range: CHART_RANGES.includes(range) ? range : '1D'
+      range: CHART_RANGES.includes(range) ? range : '1D',
+      ...(['D', 'W', 'M'].includes(timeframe) ? { timeframe,
+        historicalRange: HISTORICAL_RANGES.includes(historicalRange) ? historicalRange : '1Y' } : {})
     };
   }
   if (route === 'news') {
@@ -381,6 +386,10 @@ export function navigationUrl(state = {}, pathname = '/') {
     params.set('symbol', validSymbol(state.symbol));
     const range = String(state.range || '1D').toUpperCase();
     params.set('range', CHART_RANGES.includes(range) ? range : '1D');
+    if (['D', 'W', 'M'].includes(state.timeframe)) {
+      params.set('timeframe', state.timeframe);
+      params.set('historicalRange', HISTORICAL_RANGES.includes(state.historicalRange) ? state.historicalRange : '1Y');
+    }
   } else if (route === 'news') {
     const query = String(state.query || '').trim().slice(0, 80);
     const source = normalizeNewsSources(state.source);
