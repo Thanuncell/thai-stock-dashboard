@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { createMarketDataGuard } = require('../server/data-guard');
 const { PERIODS, createMarketService } = require('../server/market-service');
 const { intervalMs, temporalBars } = require('../lib/market-time');
 const { barsBetween, payload, received, responder } = require('./fixtures/chart-candle-density.cjs');
@@ -25,7 +26,7 @@ for (const [range, providerRange, interval] of [['1M', '1mo', '30m'], ['3M', '3m
     assert.equal(market.candleTargetMet, true);
     assert.equal(market.technicalMeta.history.interval, interval);
     assert.equal(market.technicalMeta.history.sessionStatus, 'SESSION_VERIFIED');
-    assert.equal(market.technicalMeta.history.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
+    assert.equal(market.technicalMeta.history.cadence, undefined);
     assert.equal(market.technicalMeta.indicator.interval, interval);
     assert.equal(new Set(market.indicatorHistory.map(row => row.time)).size, market.indicatorHistory.length);
     assert.deepEqual(market.indicatorHistory.slice(-market.history.length), market.history);
@@ -81,20 +82,6 @@ for (const [interval, duration] of [['30m', 1800000], ['60m', 3600000]]) {
   });
 }
 
-test('conflicting provider cadence and timezone fail closed without daily substitution', async () => {
-  for (const meta of [{ dataGranularity: '1d' }, { dataGranularity: '15m' }, { exchangeTimezoneName: 'UTC' }]) {
-    const calls = [], service = getService(calls, { mutate: (result, call) => {
-      if (call.visible) Object.assign(result.meta, meta);
-    } });
-    const market = await service.getMarket(['PTT'], 'PTT', '1M');
-    assert.deepEqual(market.history, []);
-    assert.deepEqual(market.indicatorHistory, []);
-    assert.equal(market.dataState, 'unavailable');
-    assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
-    assert.equal(calls.length, 3);
-  }
-});
-
 for (const range of ['1M', '3M']) {
   for (const [state, observedAt] of [['REGULAR', received], ['CLOSED', received + 3600000]]) {
     for (const missing of [['dataGranularity'], ['exchangeTimezoneName'], ['dataGranularity', 'exchangeTimezoneName']]) {
@@ -113,7 +100,7 @@ for (const range of ['1M', '3M']) {
         assert.deepEqual(market.levelsHistory, expected.levelsHistory);
         assert.deepEqual(market.errors, []);
         assert.equal(market.dataState, 'delayed');
-        assert.equal(market.technicalMeta.history.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
+        assert.equal(market.technicalMeta.history.cadence, undefined);
         assert.equal(market.history.at(-1).complete, state === 'CLOSED');
         assert.deepEqual(calls, expectedCalls, 'metadata recovery adds no requests or warm-up changes');
         const snapshot = technicalSnapshot(market, range), baseline = technicalSnapshot(expected, range);
@@ -134,61 +121,114 @@ for (const range of ['1M', '3M']) {
     }
   }
 
-  test(range + ' cannot recover missing interval metadata from sparse, daily-like or suspect cadence', async () => {
-    const interval = PERIODS[range][1];
-    const cases = [
-      [fixtureBar(6, 10)],
-      [2, 3, 4, 5, 6].map(date => fixtureBar(date, 10)),
-      [5, 6].flatMap(date => [fixtureBar(date, 10), fixtureBar(date, 12), fixtureBar(date, 14), fixtureBar(date, 16)])
-    ];
-    for (const rows of cases) {
-      const calls = [], market = await getService(calls, { mutate: (raw, call) => {
-        if (!call.visible) return;
-        Object.assign(raw, payload('PTT.BK', interval, rows, undefined));
-        delete raw.meta.dataGranularity;
-      } }).getMarket(['PTT'], 'PTT', range);
-      assert.deepEqual(market.history, []);
-      assert.deepEqual(market.indicatorHistory, []);
-      assert.equal(market.dataState, 'unavailable');
-      assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
-      assert.equal(calls.length, 3);
-    }
-  });
 
-  test(range + ' validates short history and same-interval warm-up with missing metadata', async () => {
-    const calls = [], market = await getService(calls, { visibleLimit: 40, mutate: (raw, call) => {
-      if (call.visible || call.warmup) {
-        delete raw.meta.dataGranularity;
-        delete raw.meta.exchangeTimezoneName;
-      }
-    } }).getMarket(['PTT'], 'PTT', range);
-    assert.equal(market.history.length, 40);
-    assert.equal(market.candleTargetMet, false);
-    assert.equal(calls.filter(call => call.warmup).length, 1);
-    assert.equal(calls.at(-1).interval, PERIODS[range][1]);
-    assert.ok(market.indicatorHistory.length > 200);
-    assert.deepEqual(market.indicatorHistory.slice(-40), market.history);
-    assert.deepEqual(market.errors, []);
-  });
-
-  test(range + ' rejects explicit interval/timezone conflicts', async () => {
-    const metadata = [
+  test(range + ' uses the standard guard when granularity or timezone metadata conflicts', async () => {
+    for (const meta of [
       { dataGranularity: '1d' }, { dataGranularity: '15m' }, { dataGranularity: '5m' },
       { dataGranularity: false }, { dataGranularity: 0 }, { dataGranularity: [] }, { dataGranularity: {} },
       { dataGranularity: range === '1M' ? '60m' : '30m' },
       { exchangeTimezoneName: 'UTC' }, { exchangeTimezoneName: 'Invalid/Zone' },
       { exchangeTimezoneName: false }
-    ];
-    for (const meta of metadata) {
+    ]) {
       const calls = [], market = await getService(calls, { mutate: (raw, call) => {
-        if (call.visible) Object.assign(raw.meta, meta);
+        if (call.visible || call.warmup) Object.assign(raw.meta, meta);
       } }).getMarket(['PTT'], 'PTT', range);
-      assert.deepEqual(market.history, [], JSON.stringify(meta));
-      assert.deepEqual(market.indicatorHistory, []);
-      assert.equal(market.dataState, 'unavailable');
-      assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
-      assert.equal(calls.length, 3);
+      const visible = calls.find(call => call.visible);
+      assert.deepEqual(market.history.map(ohlcv), barsBetween(visible.start, visible.end, PERIODS[range][1]).rows);
+      assert.deepEqual(market.indicatorHistory.slice(-market.history.length), market.history);
+      assert.deepEqual(market.errors, []);
+      assert.equal(market.dataState, 'delayed');
+      assert.equal(market.technicalMeta.history.interval, PERIODS[range][1]);
+      assert.equal(market.technicalMeta.history.cadence, undefined);
+      assert.ok(calls.every(call => call.visible || call.warmup ? call.interval === PERIODS[range][1] : true));
     }
+  });
+
+  test(range + ' preserves sparse and irregular OHLCV without inferring cadence', () => {
+    const interval = PERIODS[range][1], duration = intervalMs(interval);
+    const first = fixtureBar(5, 10), afternoon = fixtureBar(5, 14), nextDay = fixtureBar(6, 10);
+    const after = (bar, steps) => ({ ...bar, time: bar.time + steps * duration });
+    for (const rows of [
+      [first], [first, after(first, 1)], [first, after(first, 2)],
+      [first, after(first, 0.5), after(first, 1)],
+      [first, after(first, 1), nextDay],
+      [first, after(first, 1), afternoon, after(afternoon, 2)],
+      [first, after(first, 1), afternoon, after(afternoon, 1)],
+      [2, 3, 4, 5, 6].map(date => fixtureBar(date, 10))
+    ]) {
+      for (const granularity of [undefined, null, '', interval]) {
+        const raw = payload('PTT.BK', granularity, rows, undefined);
+        delete raw.meta.exchangeTimezoneName;
+        const result = getService([]).shapeChart(raw, 'PTT', 'chart:review:' + interval);
+        assert.deepEqual(result.history.map(ohlcv), rows);
+        assert.equal(result.provenance.cadence, undefined);
+        assert.ok(!result.historyReasons.includes('INTERVAL_MISMATCH'));
+        assert.equal(result.historyStatus, 'usable');
+      }
+    }
+  });
+
+  test(range + ' keeps one/two/three/forty bars visible and warms up on the native interval', async () => {
+    for (const count of [1, 2, 3, 40]) {
+      const calls = [], market = await getService(calls, { visibleLimit: count, mutate: (raw, call) => {
+        if (call.visible || call.warmup) {
+          delete raw.meta.dataGranularity;
+          delete raw.meta.exchangeTimezoneName;
+        }
+      } }).getMarket(['PTT'], 'PTT', range);
+      assert.equal(market.history.length, count);
+      assert.equal(market.candleCount, count);
+      assert.equal(market.candleTargetMet, false);
+      assert.deepEqual(market.errors, []);
+      assert.equal(calls.filter(call => call.warmup).length, 1);
+      assert.equal(calls.at(-1).interval, PERIODS[range][1]);
+      assert.deepEqual(market.indicatorHistory.slice(-count), market.history);
+      assert.ok(market.indicatorHistory.length > 200);
+      assert.equal(technicalSnapshot(market, range).availability.ema200.state, 'available');
+    }
+  });
+
+  test(range + ' keeps shared OHLCV/timestamp filtering without special session or volume requirements', () => {
+    const interval = PERIODS[range][1];
+    const rows = [
+      { ...fixtureBar(5, 10), time: null },
+      { ...fixtureBar(5, 11), high: 98 },
+      { ...fixtureBar(5, 12), volume: -1 },
+      { ...fixtureBar(5, 13), volume: null },
+      { ...fixtureBar(5, 14), volume: undefined },
+      { ...fixtureBar(5, 15), volume: '' },
+      fixtureBar(5, 16), fixtureBar(5, 16),
+      { ...fixtureBar(6, 10), time: received + 3600000 },
+      { ...fixtureBar(6, 11), time: fixtureBar(6, 11).time + 0.5 },
+      fixtureBar(6, 12)
+    ];
+    const raw = payload('PTT.BK', undefined, rows, undefined);
+    delete raw.meta.exchangeTimezoneName;
+    delete raw.meta.regularMarketTime;
+    const standard = createMarketDataGuard({ now: () => received }).assess(raw, 'PTT').value;
+    const shaped = getService([]).shapeChart(raw, 'PTT', 'chart:review:' + interval);
+    assert.deepEqual(shaped.history.map(ohlcv), standard.history);
+    assert.deepEqual(shaped.historyReasons, standard.historyReasons);
+    assert.equal(shaped.rejectedBars, 6);
+    for (const reason of ['INVALID_TIMESTAMP', 'INVALID_OHLC', 'NEGATIVE_VOLUME', 'DUPLICATE_TIMESTAMP', 'FUTURE_TIMESTAMP']) {
+      assert.ok(shaped.historyReasons.includes(reason), reason);
+    }
+    assert.ok(shaped.history.some(bar => bar.time % 1 !== 0), 'no extra timestamp precision rejection');
+    assert.equal(shaped.history.filter(bar => bar.volume === null).length, 3);
+  });
+
+  test(range + ' rejects invalid OHLC bars with the shared guard when metadata is missing', async () => {
+    const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+      if (!call.visible) return;
+      delete raw.meta.dataGranularity;
+      delete raw.meta.exchangeTimezoneName;
+      const quote = raw.indicators.quote[0];
+      quote.high = quote.low.map(low => low - 1);
+    } }).getMarket(['PTT'], 'PTT', range);
+    assert.deepEqual(market.history, []);
+    assert.deepEqual(market.indicatorHistory, []);
+    assert.ok(market.technicalMeta.history.historyReasons.includes('INVALID_OHLC'));
+    assert.equal(calls.length, 3);
   });
 
   test(range + ' does not add exchange-name requirements when timezone is absent', () => {
@@ -240,116 +280,6 @@ for (const range of ['1M', '3M']) {
     }
   });
 
-  test(range + ' rejects invalid OHLCV bars even when timezone is absent', async () => {
-    const calls = [], market = await getService(calls, { mutate: (raw, call) => {
-      if (!call.visible) return;
-      delete raw.meta.exchangeTimezoneName;
-      const quote = raw.indicators.quote[0];
-      quote.high = quote.low.map(low => low - 1);
-    } }).getMarket(['PTT'], 'PTT', range);
-    assert.deepEqual(market.history, []);
-    assert.deepEqual(market.indicatorHistory, []);
-    assert.ok(market.technicalMeta.history.historyReasons.includes('INVALID_OHLC'));
-    assert.equal(calls.length, 3);
-  });
-
-  test(range + ' cannot infer missing granularity from one native gap, even with skipped or cross-session gaps', () => {
-    const interval = PERIODS[range][1], duration = intervalMs(interval);
-    const first = fixtureBar(5, 10), afternoon = fixtureBar(5, 14), nextDay = fixtureBar(6, 10);
-    const after = (bar, steps) => ({ ...bar, time: bar.time + steps * duration });
-    const cases = [
-      [first], [first, after(first, 1)], [first, after(first, 2)],
-      [first, after(first, 1), nextDay],
-      [first, after(first, 1), afternoon, after(afternoon, 2)],
-      [first, after(first, 1), { ...after(first, 2), volume: -1 }]
-    ];
-    for (const rows of cases) {
-      assert.throws(() => getService([]).shapeChart(payload('PTT.BK', undefined, rows, undefined),
-        'PTT', 'chart:review:' + interval), /interval cannot be verified/);
-    }
-  });
-
-  test(range + ' can infer missing granularity from repeated native gaps in a short or gapped history', () => {
-    const interval = PERIODS[range][1], duration = intervalMs(interval);
-    const first = fixtureBar(5, 10), afternoon = fixtureBar(5, 14), nextDay = fixtureBar(6, 10);
-    const after = (bar, steps) => ({ ...bar, time: bar.time + steps * duration });
-    const cases = [
-      [first, after(first, 1), after(first, 2)],
-      [first, after(first, 1), afternoon, after(afternoon, 1)],
-      [first, after(first, 1), afternoon, after(afternoon, 2), nextDay, after(nextDay, 1)]
-    ];
-    for (const rows of cases) {
-      const result = getService([]).shapeChart(payload('PTT.BK', undefined, rows, undefined),
-        'PTT', 'chart:review:' + interval);
-      assert.deepEqual(result.history.map(ohlcv), rows);
-      assert.equal(result.provenance.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
-      assert.equal(result.provenance.cadence.nativeGaps, 2);
-      assert.ok(result.history.length < 100);
-    }
-  });
-
-  test(range + ' preserves explicit two-bar history and requires repeated evidence only for missing granularity', async () => {
-    for (const [count, missing, accepted] of [[2, false, true], [2, true, false], [3, true, true]]) {
-      const calls = [], market = await getService(calls, { visibleLimit: count, mutate: (raw, call) => {
-        if (missing && (call.visible || call.warmup)) delete raw.meta.dataGranularity;
-      } }).getMarket(['PTT'], 'PTT', range);
-      assert.equal(market.history.length, accepted ? count : 0);
-      if (accepted) {
-        assert.equal(market.candleTargetMet, false);
-        assert.deepEqual(market.errors, []);
-        assert.equal(calls.filter(call => call.warmup).length, 1);
-        assert.equal(calls.at(-1).interval, PERIODS[range][1]);
-        assert.deepEqual(market.indicatorHistory.slice(-count), market.history);
-      } else {
-        assert.equal(market.dataState, 'unavailable');
-        assert.deepEqual(market.indicatorHistory, []);
-        assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
-        assert.equal(calls.filter(call => call.warmup).length, 0);
-      }
-    }
-  });
-
-  test(range + ' rejects shorter native cadence with or without interval metadata', async () => {
-    for (const actual of range === '1M' ? ['15m'] : ['15m', '30m']) for (const missing of [false, true]) {
-      const calls = [], market = await getService(calls, { mutate: (raw, call) => {
-        if (!call.visible) return;
-        const { rows, periods } = barsBetween(call.start, call.end, actual);
-        Object.assign(raw, payload('PTT.BK', PERIODS[range][1], rows, periods));
-        if (missing) delete raw.meta.dataGranularity;
-      } }).getMarket(['PTT'], 'PTT', range);
-      assert.deepEqual(market.history, []);
-      assert.deepEqual(market.indicatorHistory, []);
-      assert.equal(market.dataState, 'unavailable');
-      assert.match(market.errors.join(' '), /PARSER_MISMATCH/);
-      assert.equal(calls.length, 3);
-    }
-  });
-
-  test(range + ' filters corrupt timestamps and OHLCV before verifying missing metadata', async () => {
-    const calls = [], market = await getService(calls, { mutate: (raw, call) => {
-      if (!call.visible) return;
-      delete raw.meta.dataGranularity;
-      delete raw.meta.exchangeTimezoneName;
-      const quote = raw.indicators.quote[0];
-      raw.timestamp[0] = null;
-      raw.timestamp[1] = 'corrupt';
-      raw.timestamp[2] += 0.0005;
-      raw.timestamp[3] = (call.end + 3600000) / 1000;
-      raw.timestamp[5] = raw.timestamp[4];
-      raw.timestamp[6] = Date.UTC(2026, 10, 5, 6, 15) / 1000;
-      quote.high[7] = quote.low[7] - 1;
-      quote.volume[8] = -1;
-    } }).getMarket(['PTT'], 'PTT', range);
-    const { start, end } = calls.find(call => call.visible);
-    assert.deepEqual(market.history.map(ohlcv), barsBetween(start, end, PERIODS[range][1]).rows.slice(9));
-    assert.equal(market.technicalMeta.history.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
-    for (const reason of ['INVALID_TIMESTAMP', 'FUTURE_TIMESTAMP', 'DUPLICATE_TIMESTAMP',
-      'OUTSIDE_TRADING_SESSION', 'INVALID_OHLC', 'NEGATIVE_VOLUME']) {
-      assert.ok(market.technicalMeta.history.historyReasons.includes(reason), reason);
-    }
-    assert.ok(market.history.every(bar => Number.isSafeInteger(bar.time) && bar.volume >= 0));
-  });
-
   test(range + ' preserves quotes and isolates provider failure without retries or substitution', async () => {
     for (const status of [403, 429, 503, 'no-data']) {
       const calls = [], market = await getService(calls, { mutate: (raw, call) => {
@@ -368,62 +298,6 @@ for (const range of ['1M', '3M']) {
     }
   });
 }
-
-test('invalid rows and cross-session gaps cannot establish an absent interval', () => {
-  const valid = [fixtureBar(5, 12), fixtureBar(5, 14), fixtureBar(6, 10)];
-  for (const interval of ['30m', '60m']) {
-    for (const rows of [valid, [fixtureBar(6, 10), {
-      ...fixtureBar(6, interval === '30m' ? 10 : 11, interval === '30m' ? 30 : 0), volume: -1
-    }]]) {
-      const raw = payload('PTT.BK', undefined, rows, undefined);
-      assert.throws(() => getService([]).shapeChart(raw, 'PTT', 'chart:1mo:' + interval), /interval cannot be verified/);
-    }
-  }
-});
-
-test('null and empty optional metadata use the same evidence requirements as absent fields', () => {
-  const { rows, periods } = barsBetween(received - 86400000, received, '30m');
-  for (const missing of [undefined, null, '']) {
-    const raw = payload('PTT.BK', missing, rows, periods);
-    raw.meta.exchangeTimezoneName = missing;
-    const result = getService([]).shapeChart(raw, 'PTT', 'chart:1mo:30m');
-    assert.deepEqual(result.history.map(ohlcv), rows);
-    assert.equal(result.provenance.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
-  }
-});
-
-test('provider 1h alias is accepted for 60m, while overlapping 30m bars are rejected', () => {
-  const service = getService([]);
-  const { rows, periods } = barsBetween(received - 86400000, received, '60m');
-  const hourly = payload('PTT.BK', '1h', rows, periods);
-  assert.equal(service.shapeChart(hourly, 'PTT', 'chart:3mo:60m').history.length, rows.length);
-  const overlapping = barsBetween(received - 86400000, received, '15m');
-  assert.throws(() => service.shapeChart(payload('PTT.BK', '30m', overlapping.rows, overlapping.periods),
-    'PTT', 'chart:1mo:30m'), /cadence shorter/);
-});
-
-test('range, trading sessions, duplicate timestamps, and invalid OHLCV are validated before counting', async () => {
-  const calls = [], service = getService(calls, { mutate: (raw, call) => {
-    if (!call.visible) return;
-    const quote = raw.indicators.quote[0];
-    raw.timestamp[1] = raw.timestamp[0];
-    raw.timestamp[2] = (call.start - 86400000) / 1000;
-    raw.timestamp[3] = Date.UTC(2026, 10, 5, 6, 15) / 1000;
-    quote.high[4] = quote.low[4] - 1;
-    quote.volume[5] = null;
-    quote.volume[6] = -1;
-    const swap = array => { [array[9], array[10]] = [array[10], array[9]]; };
-    swap(raw.timestamp);
-    Object.values(quote).forEach(swap);
-  } });
-  const market = await service.getMarket(['PTT'], 'PTT', '1M');
-  const { start, end } = calls.find(call => call.visible);
-  assert.deepEqual(market.history.map(ohlcv), barsBetween(start, end, '30m').rows.slice(7));
-  for (const reason of ['DUPLICATE_TIMESTAMP', 'OUTSIDE_CHART_WINDOW', 'OUTSIDE_TRADING_SESSION',
-    'INVALID_OHLC', 'INVALID_NUMERIC', 'NEGATIVE_VOLUME']) {
-    assert.ok(market.technicalMeta.history.historyReasons.includes(reason), reason);
-  }
-});
 
 test('failed warm-up leaves visible data usable and makes no retries or daily requests', async () => {
   const calls = [], market = await getService(calls, { visibleLimit: 40,
@@ -457,97 +331,76 @@ const shape = (rows, periods, interval = '30m', extraMeta = {}) => {
   return getService([]).shapeChart(result, 'PTT', 'chart:1mo:' + interval);
 };
 
-test('missing session metadata preserves valid OHLCV and rejects off-hours, lunch, weekend and known holiday', () => {
-  const holiday = { ...fixtureBar(6, 10), time: Date.UTC(2026, 9, 23, 3) };
-  const valid = [fixtureBar(6, 9, 55), fixtureBar(6, 13, 55)];
-  const invalid = [holiday, fixtureBar(1, 10), fixtureBar(6, 0, 1), fixtureBar(6, 9, 30),
-    fixtureBar(6, 12, 30), fixtureBar(6, 13, 54)];
-  const result = shape([...valid, ...invalid].sort((a,b) => a.time - b.time), undefined);
-  assert.deepEqual(result.history.map(ohlcv), valid);
-  assert.equal(result.rejectedBars, invalid.length);
-  assert.equal(result.provenance.sessionStatus, 'SESSION_UNVERIFIED');
-  assert.ok(result.history.every(row => row.sessionStatus === 'SESSION_UNVERIFIED' && row.sessionEnd === null));
-  assert.ok(result.historyReasons.includes('OUTSIDE_TRADING_SESSION'));
+
+test('all timeframes apply the same standard assessment to valid rows outside special session/range windows', () => {
+  const rows = [
+    { ...fixtureBar(6, 10), time: Date.UTC(2026, 9, 23, 3) },
+    fixtureBar(1, 10), fixtureBar(6, 0, 1), fixtureBar(6, 9, 30),
+    fixtureBar(6, 12, 30), fixtureBar(6, 13, 54), fixtureBar(6, 14)
+  ].sort((a, b) => a.time - b.time);
+  for (const interval of ['1m', '15m', '30m', '60m', '1d']) {
+    const raw = payload('PTT.BK', undefined, rows, undefined);
+    delete raw.meta.exchangeTimezoneName;
+    const standard = createMarketDataGuard({ now: () => received }).assess(raw, 'PTT').value;
+    const shaped = getService([]).shapeChart(raw, 'PTT', 'chart:review:' + interval, undefined,
+      { start: fixtureBar(6, 14).time, end: received });
+    assert.deepEqual(shaped.history.map(ohlcv), rows);
+    assert.deepEqual(shaped.history.map(ohlcv), standard.history);
+    assert.deepEqual(shaped.historyReasons, standard.historyReasons);
+    assert.equal(shaped.rejectedBars, 0);
+    for (const field of ['guardStatus', 'guardReasons', 'historyStatus', 'identityStatus', 'quoteStatus', 'dataState']) {
+      assert.deepEqual(shaped[field], standard[field], field);
+    }
+  }
 });
 
-test('partial metadata verifies individual windows and whole-day or conflicting metadata cannot verify a window', () => {
-  const morning = fixtureBar(6, 12), afternoon = fixtureBar(6, 14);
+test('session metadata only annotates completion and never rejects provider OHLCV', () => {
+  const morning = fixtureBar(6, 12), lunchBar = fixtureBar(6, 13), afternoon = fixtureBar(6, 14);
   const open = fixtureBar(6, 10), lunch = fixtureBar(6, 12, 30), close = fixtureBar(6, 16, 30);
-  const verifiedMorning = period(open, lunch);
-  const partial = shape([morning, afternoon], [[verifiedMorning]], '60m');
-  assert.equal(partial.provenance.sessionStatus, 'SESSION_UNVERIFIED');
+  const partial = shape([morning, afternoon], [[period(open, lunch)]], '60m');
+  assert.deepEqual(partial.history.map(ohlcv), [morning, afternoon]);
   assert.deepEqual(partial.history.map(row => row.sessionStatus), ['SESSION_VERIFIED', 'SESSION_UNVERIFIED']);
   assert.equal(partial.history[0].barCloseTime, lunch.time);
   assert.equal(partial.history[1].barCloseTime, afternoon.time + 3600000);
-
-  const broad = shape([morning, fixtureBar(6, 13), afternoon], [[period(open, close)]], '60m');
-  assert.deepEqual(broad.history.map(ohlcv), [morning, afternoon]);
+  const broad = shape([morning, lunchBar, afternoon], [[period(open, close)]], '60m');
+  assert.deepEqual(broad.history.map(ohlcv), [morning, lunchBar, afternoon]);
   assert.ok(broad.history.every(row => row.sessionStatus === 'SESSION_UNVERIFIED'));
-  const conflict = shape([morning, afternoon], [[verifiedMorning]], '60m', {
+  const conflict = shape([morning, afternoon], [[period(open, lunch)]], '60m', {
     currentTradingPeriod: { regular: period(open, fixtureBar(6, 12, 15)) }
   });
+  assert.deepEqual(conflict.history.map(ohlcv), [morning, afternoon]);
   assert.equal(conflict.history[0].sessionStatus, 'SESSION_UNVERIFIED');
   assert.equal(conflict.history[0].barCloseTime, morning.time + 3600000);
 });
 
-test('provider periods cannot make a weekend or reviewed holiday tradable', () => {
-  const saturday = { ...fixtureBar(6, 10), time: Date.UTC(2026, 9, 24, 3) };
-  const holiday = { ...saturday, time: saturday.time - 86400000 };
-  const periods = [holiday, saturday].map(bar => [period(bar, { time: bar.time + 2 * 3600000 })]);
-  const result = shape([holiday, saturday], periods);
-  assert.equal(result.history.length, 0);
-  assert.equal(result.rejectedBars, 2);
-  assert.equal(result.provenance.sessionStatus, 'SESSION_UNVERIFIED');
-});
-
-test('within-session distribution permits skipped bars and excludes lunch and overnight gaps', () => {
-  const rows = [fixtureBar(5, 10), fixtureBar(5, 10, 30), fixtureBar(5, 11, 30),
-    fixtureBar(5, 14), fixtureBar(5, 15), fixtureBar(6, 10), fixtureBar(6, 10, 30)];
-  const result = shape(rows, undefined);
-  assert.deepEqual(result.history.map(ohlcv), rows);
-  assert.deepEqual(result.provenance.cadence, { status: 'INTERVAL_CADENCE_VERIFIED', samples: 4,
-    nativeGaps: 2, skippedGaps: 2, offGridGaps: 0, doubleGaps: 2, dailyLike: false });
-});
-
-test('systematic hourly cadence in a 30m response preserves source rows and withholds indicator signals', async () => {
-  const rows = [5, 6].flatMap(date => [10, 11, 12, 14, 15, 16].map(hour => fixtureBar(date, hour)));
-  const calls = [], market = await getService(calls, { mutate: (raw, call) => {
-    if (call.visible) Object.assign(raw, payload('PTT.BK', '30m', rows, undefined));
-  } }).getMarket(['PTT'], 'PTT', '1M');
-  assert.deepEqual(market.history.map(ohlcv), rows);
-  assert.equal(market.technicalMeta.history.cadence.status, 'INTERVAL_CADENCE_SUSPECT');
-  assert.equal(market.technicalMeta.history.cadence.doubleGaps, 8);
-  assert.equal(market.technicalMeta.history.cadence.nativeGaps, 0);
-  assert.deepEqual(market.indicatorHistory, []);
-  assert.deepEqual(market.levelsHistory, []);
-  const snapshot = technicalSnapshot(market, '1M');
-  assert.equal(snapshot.summary.actionable, false);
-  assert.ok(snapshot.quality.warnings.includes('INTERVAL_MISMATCH'));
-  assert.equal(calls.length, 3);
-});
-
-test('daily-looking timestamps cannot verify a native intraday cadence', () => {
-  const rows = [2, 3, 4, 5, 6].map(date => fixtureBar(date, 10));
-  const result = shape(rows, undefined);
-  assert.equal(result.provenance.cadence.status, 'INTERVAL_CADENCE_SUSPECT');
-  assert.equal(result.provenance.cadence.dailyLike, true);
-  assert.ok(result.historyReasons.includes('INTERVAL_MISMATCH'));
-});
-
-test('a verified pause inside the trading window ends the bar without a cadence mismatch', () => {
+test('provider session end still confirms a shortened provisional candle at the exact boundary', () => {
   const rows = [fixtureBar(6, 10), fixtureBar(6, 10, 25), fixtureBar(6, 10, 55)];
-  const periods = [[period(rows[0], fixtureBar(6, 10, 20)), period(rows[1], fixtureBar(6, 12, 30))]];
-  const result = shape(rows, periods);
-  assert.equal(result.history[0].barCloseTime, fixtureBar(6, 10, 20).time);
-  assert.equal(result.provenance.sessionStatus, 'SESSION_VERIFIED');
-  assert.equal(result.provenance.cadence.nativeGaps, 1);
-  assert.equal(result.provenance.cadence.samples, 1);
+  const end = fixtureBar(6, 10, 20);
+  const periods = [[period(rows[0], end), period(rows[1], fixtureBar(6, 12, 30))]];
+  for (const interval of ['30m', '60m']) {
+    const raw = payload('PTT.BK', interval, rows.slice(0, 1), periods);
+    const timed = observedAt => getService([], { observedAt }).shapeChart(raw, 'PTT', 'chart:review:' + interval).history;
+    assert.equal(timed(end.time - 1)[0].complete, false);
+    assert.equal(timed(end.time)[0].barCloseTime, end.time);
+    assert.equal(timed(end.time)[0].confirmationBasis, 'provider-session-end');
+    assert.equal(timed(end.time)[0].complete, true);
+    assert.deepEqual(shape(rows, periods, interval).history.map(ohlcv), rows);
+  }
 });
 
-test('invalid OHLCV rows cannot create false cadence evidence', () => {
-  const rows = [fixtureBar(5, 10), { ...fixtureBar(5, 10, 15), volume: -1 }, fixtureBar(5, 10, 30)];
-  const result = shape(rows, undefined);
-  assert.equal(result.rejectedBars, 1);
-  assert.equal(result.provenance.cadence.status, 'INTERVAL_CADENCE_VERIFIED');
-  assert.equal(result.provenance.cadence.nativeGaps, 1);
+test('sparse alternate cadence no longer withholds same-interval indicators or warm-up', async () => {
+  for (const range of ['1M', '3M']) {
+    const rows = [5, 6].flatMap(date => [10, 11, 12, 14, 15, 16].map(hour => fixtureBar(date, hour)));
+    const calls = [], market = await getService(calls, { mutate: (raw, call) => {
+      if (call.visible) Object.assign(raw, payload('PTT.BK', undefined, rows, undefined));
+    } }).getMarket(['PTT'], 'PTT', range);
+    assert.deepEqual(market.history.map(ohlcv), rows);
+    assert.equal(market.technicalMeta.history.cadence, undefined);
+    assert.deepEqual(market.indicatorHistory.slice(-rows.length), market.history);
+    assert.deepEqual(market.levelsHistory, market.indicatorHistory);
+    assert.equal(calls.filter(call => call.warmup).length, 1);
+    const snapshot = technicalSnapshot(market, range);
+    assert.equal(snapshot.availability.ema200.state, 'available');
+    assert.ok(!snapshot.quality.warnings.includes('INTERVAL_MISMATCH'));
+  }
 });
