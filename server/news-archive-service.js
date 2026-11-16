@@ -186,39 +186,48 @@ function createNewsArchiveService({
     // Feed ingestion refreshes metadata only. Omitted analysis columns cannot
     // overwrite a persisted AI summary, even during concurrent conflict updates.
     let ingested = rows.length, conflicts = 0, retained = 0;
-    if (evidenceMode === 'write') {
-      ingested = 0;
-      for (let offset = 0; offset < rows.length; offset += 50) {
-        const batch = rows.slice(offset, offset + 50);
-        const params = new URLSearchParams({ select: 'fingerprint,verification_revision', fingerprint: `in.(${batch.map(row => row.fingerprint).join(',')})` });
-        const current = await (await request(`news_archive?${params}`, { headers: headers() })).json();
-        const revisions = new Map(current.map(row => [row.fingerprint, Number(row.verification_revision)]));
-        const response = await request('rpc/upsert_news_archive_evidence', {
-          method: 'POST', headers: headers({ 'content-type': 'application/json' }),
-          body: JSON.stringify({ p_rows: batch.map(row => ({ ...row, expected_revision: revisions.get(row.fingerprint) ?? -1 })) })
+    let acknowledged = false;
+    try {
+      if (evidenceMode === 'write') {
+        ingested = 0;
+        for (let offset = 0; offset < rows.length; offset += 50) {
+          const batch = rows.slice(offset, offset + 50);
+          const params = new URLSearchParams({ select: 'fingerprint,verification_revision', fingerprint: `in.(${batch.map(row => row.fingerprint).join(',')})` });
+          const current = await (await request(`news_archive?${params}`, { headers: headers() })).json();
+          const revisions = new Map(current.map(row => [row.fingerprint, Number(row.verification_revision)]));
+          const response = await request('rpc/upsert_news_archive_evidence', {
+            method: 'POST', headers: headers({ 'content-type': 'application/json' }),
+            body: JSON.stringify({ p_rows: batch.map(row => ({ ...row, expected_revision: revisions.get(row.fingerprint) ?? -1 })) })
+          });
+          const outcomes = await response.json();
+          if (!Array.isArray(outcomes) || outcomes.length !== batch.length
+            || outcomes.some((outcome, index) => outcome.fingerprint !== batch[index].fingerprint
+              || !['persisted','retained','conflict','not_inserted'].includes(outcome.outcome))) throw Error('News archive invalid write acknowledgement');
+          ingested += outcomes.filter(row => row.outcome === 'persisted').length;
+          conflicts += outcomes.filter(row => row.outcome === 'conflict').length;
+          retained += outcomes.filter(row => row.outcome === 'retained').length;
+        }
+      } else {
+        const params = new URLSearchParams({ on_conflict: 'fingerprint', columns: Object.keys(rows[0]).join(',') });
+        await request(`news_archive?${params}`, {
+          method: 'POST',
+          headers: headers({
+            'content-type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=minimal'
+          }),
+          body: JSON.stringify(rows)
         });
-        const outcomes = await response.json();
-        if (!Array.isArray(outcomes) || outcomes.length !== batch.length
-          || outcomes.some((outcome, index) => outcome.fingerprint !== batch[index].fingerprint
-            || !['persisted','retained','conflict','not_inserted'].includes(outcome.outcome))) throw Error('News archive invalid write acknowledgement');
-        ingested += outcomes.filter(row => row.outcome === 'persisted').length;
-        conflicts += outcomes.filter(row => row.outcome === 'conflict').length;
-        retained += outcomes.filter(row => row.outcome === 'retained').length;
       }
-    } else {
-      const params = new URLSearchParams({ on_conflict: 'fingerprint', columns: Object.keys(rows[0]).join(',') });
-      await request(`news_archive?${params}`, {
-      method: 'POST',
-      headers: headers({
-        'content-type': 'application/json',
-        Prefer: 'resolution=merge-duplicates,return=minimal'
-      }),
-      body: JSON.stringify(rows)
-      });
+      acknowledged = true;
+    } finally {
+      // Only a fully acknowledged all-retained batch leaves stored rows unchanged.
+      // Lost/malformed acknowledgements and partial writes remain uncertain.
+      if (!(acknowledged && evidenceMode === 'write' && ingested === 0 && conflicts === 0 && retained === rows.length)) {
+        queryIndex.invalidateReview();
+        archiveSnapshotVersion += 1;
+        archiveSnapshot = null;
+      }
     }
-    queryIndex.invalidateReview();
-    archiveSnapshotVersion += 1;
-    archiveSnapshot = null;
     let cleanupRan = false, cleanupUnavailable = false;
     try { if (ingested > 0) cleanupRan = await cleanupIfDue(); } catch { cleanupUnavailable = true; }
     let queryIndexUnavailable=false;
