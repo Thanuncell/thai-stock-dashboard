@@ -3,6 +3,24 @@
 const { TFEX_HOME_URL, parseTfexHome } = require('./tfex-home-parser');
 const { explicitAccessDenial } = require('./market-overview-safety');
 const { PROVIDER_POLICIES } = require('./reliability');
+const { bangkokDay, tradingDay } = require('./automation-policy');
+
+const CLOSED_LKG_MS = 168 * 3600000;
+
+function extendedRetentionAllowed(time) {
+  if (!Number.isFinite(time) || !Number.isFinite(new Date(time).getTime())) return false;
+  const day = bangkokDay(time), todayTrading = tradingDay(day);
+  if (todayTrading === null) return false;
+  const local = new Date(time + 7 * 3600000);
+  const minutes = local.getUTCHours() * 60 + local.getUTCMinutes();
+  // Protect the entire Day/Night envelope, including breaks and pre-open.
+  // Calendar dates only govern LKG display; they do not verify the source session.
+  if (minutes < 3 * 60) {
+    const previousDay = new Date(Date.parse(day + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+    if (tradingDay(previousDay) !== false) return false;
+  }
+  return !todayTrading || minutes < 7 * 60 + 50;
+}
 
 function createTfexHomeSource({ enabled = false, fetchImpl = globalThis.fetch, now = Date.now,
   policy = PROVIDER_POLICIES.settrade, maxSourceAgeMs = PROVIDER_POLICIES.settrade.staleIfErrorMs } = {}) {
@@ -31,8 +49,10 @@ function createTfexHomeSource({ enabled = false, fetchImpl = globalThis.fetch, n
       fetchedAt: record?.fetchedAt || null, diagnostics: diagnostics || null };
   }
   function failure(reason) {
-    if (lastGood && now() >= lastGood.savedAt && Date.parse(lastGood.diagnostics.reportedAsOf) <= now()
-      && now() - lastGood.savedAt <= policy.staleIfErrorMs) return result('LKG', lastGood, reason);
+    const time = now();
+    const retentionMs = extendedRetentionAllowed(time) ? CLOSED_LKG_MS : policy.staleIfErrorMs;
+    if (lastGood && time >= lastGood.savedAt && Date.parse(lastGood.diagnostics.reportedAsOf) <= time
+      && time - lastGood.savedAt <= retentionMs) return result('LKG', lastGood, reason);
     return result('UNAVAILABLE', null, reason);
   }
   async function readBody(response) {

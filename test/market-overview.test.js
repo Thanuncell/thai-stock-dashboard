@@ -13,6 +13,8 @@ const { parseHydratedMostActive, selectMostActiveResponse, isRenderableActiveRow
 const { createMarketOverviewSafety: createSafety, explicitAccessDenial } = require('../server/market-overview-safety');
 const { createMarketOverviewService } = require('../server/market-overview-service');
 const { createSettradeService: createService } = require('../server/settrade-service');
+const { createTfexHomeSource } = require('../server/tfex-home-source');
+const { PROVIDER_POLICIES } = require('../server/reliability');
 
 // Both independent source adapters share only this test's mock transport.
 const transports = new WeakMap();
@@ -218,6 +220,276 @@ test('P1 expired TFEX snapshot keeps original clock only as labelled LKG, then r
   assert.equal(lkg.fieldStatus.tfex.asOf, null); assert.equal(lkg.fieldStatus.tfex.freshnessVerified, false);
   h.time('2026-10-20T22:50:01+07:00'); const expired = (await h.service.getOverview()).value;
   assert.equal(expired.fieldStatus.tfex.state, 'UNAVAILABLE'); assert.equal(expired.tfex.totalVolume, null); assert.equal(h.calls(), 5);
+});
+
+function tfexHtmlAt(timestamp) {
+  const local = new Date(Date.parse(timestamp) + 7 * 3600000);
+  const months = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+  const label = `${local.getUTCDate()} ${months[local.getUTCMonth()]} ${local.getUTCFullYear() + 543} ${local.toISOString().slice(11, 19)}`;
+  return fixture('tfex-home.html').replace('20 ต.ค. 2569 22:19:18', label);
+}
+
+function tfexRetentionHarness({ start = '2026-11-13T22:20:00+07:00', reportedAsOf = start, policy, enabled = true } = {}) {
+  let clock = Date.parse(start), calls = 0;
+  let respond = () => htmlResponse(tfexHtmlAt(reportedAsOf));
+  const options = { enabled, now: () => clock, ...(policy ? { policy } : {}),
+    fetchImpl: async () => { calls++; return respond(); } };
+  let source = createTfexHomeSource(options);
+  return { get source() { return source; }, calls: () => calls,
+    time(value) { clock = typeof value === 'string' ? Date.parse(value) : value; },
+    respond(value) { respond = value; }, restart() { source = createTfexHomeSource(options); } };
+}
+
+function assertTfexLkg(actual, original, reason) {
+  assert.deepEqual(actual.value, original.value);
+  assert.equal(actual.status.state, 'LKG'); assert.equal(actual.status.freshness, 'LKG');
+  assert.equal(actual.status.stale, true); assert.equal(actual.status.freshnessVerified, false);
+  for (const key of ['reportedAsOf', 'sourceUpdatedAt', 'fetchedAt', 'openInterestReference']) {
+    assert.deepEqual(actual.status[key], original.status[key]);
+  }
+  for (const key of ['asOf', 'tradingSessionDate', 'volumeEffectiveTime', 'openInterestEffectiveTime']) {
+    assert.equal(actual.status[key], null);
+  }
+  if (reason) assert.equal(actual.status.reason, reason);
+}
+
+for (const [age, state] of [[1_799_999, 'PASS'], [1_800_000, 'PASS'], [1_800_001, 'UNAVAILABLE']]) {
+  test(`TFEX retention: PASS source-age boundary remains unchanged at ${age} ms`, async () => {
+    const h = tfexRetentionHarness({ start: '2026-11-17T10:00:00+07:00',
+      policy: { ...PROVIDER_POLICIES.settrade, ttlMs: 31 * 60000 } });
+    const original = await h.source.getSnapshot();
+    h.time(Date.parse('2026-11-17T10:00:00+07:00') + age);
+    const actual = h.source.peekSnapshot();
+    assert.equal(actual.status.state, state);
+    if (state === 'PASS') assert.equal(actual.status.fetchedAt, original.status.fetchedAt);
+    else assert.equal(actual.status.reason, 'SOURCE_TIME_UNVERIFIED');
+    assert.equal(h.calls(), 1);
+  });
+}
+
+for (const [when, state] of [
+  ['2026-11-13T23:00:00+07:00', 'UNAVAILABLE'],
+  ['2026-11-14T02:59:59+07:00', 'UNAVAILABLE'],
+  ['2026-11-14T03:00:00+07:00', 'LKG'],
+  ['2026-11-15T01:00:00+07:00', 'LKG'],
+  ['2026-11-15T12:00:00+07:00', 'LKG'],
+  ['2026-11-16T01:00:00+07:00', 'LKG'],
+  ['2026-11-16T07:49:59+07:00', 'LKG'],
+  ['2026-11-16T07:50:00+07:00', 'UNAVAILABLE']
+]) {
+  test('TFEX retention: Friday Night through weekend and Monday pre-open: ' + when, async () => {
+    const h = tfexRetentionHarness(), original = await h.source.getSnapshot();
+    h.time(when); const actual = h.source.peekSnapshot();
+    assert.equal(actual.status.state, state);
+    if (state === 'LKG') assertTfexLkg(actual, original, 'SOURCE_TIME_UNVERIFIED');
+    else assert.equal(actual.value.totalVolume, null);
+    assert.equal(h.calls(), 1);
+  });
+}
+
+for (const [when, state] of [
+  ['2026-11-17T01:00:00+07:00', 'UNAVAILABLE'],
+  ['2026-11-17T03:00:00+07:00', 'LKG'],
+  ['2026-11-17T07:49:59+07:00', 'LKG'],
+  ['2026-11-17T07:50:00+07:00', 'UNAVAILABLE'],
+  ['2026-11-17T12:00:00+07:00', 'UNAVAILABLE'],
+  ['2026-11-17T17:20:00+07:00', 'UNAVAILABLE'],
+  ['2026-11-17T18:45:00+07:00', 'UNAVAILABLE']
+]) {
+  test('TFEX retention: weekday closure never extends across Day or Night preparation: ' + when, async () => {
+    const h = tfexRetentionHarness({ start: '2026-11-16T22:20:00+07:00' });
+    const original = await h.source.getSnapshot(); h.time(when);
+    const actual = h.source.peekSnapshot(); assert.equal(actual.status.state, state);
+    if (state === 'LKG') assertTfexLkg(actual, original);
+    assert.equal(h.calls(), 1);
+  });
+}
+
+test('TFEX retention: consecutive calendar holidays retain old values only until the next pre-open', async () => {
+  const h = tfexRetentionHarness({ start: '2026-04-10T22:20:00+07:00' });
+  const original = await h.source.getSnapshot();
+  for (const when of ['2026-04-13T12:00:00+07:00', '2026-04-14T12:00:00+07:00',
+    '2026-04-15T12:00:00+07:00', '2026-04-16T07:49:59+07:00']) {
+    h.time(when); assertTfexLkg(h.source.peekSnapshot(), original);
+  }
+  h.time('2026-04-16T07:50:00+07:00');
+  assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 1);
+});
+
+test('TFEX retention: the night preceding a calendar holiday keeps the ordinary LKG boundary', async () => {
+  const h = tfexRetentionHarness({ start: '2026-10-22T22:20:00+07:00' });
+  const original = await h.source.getSnapshot(); h.time('2026-10-23T02:59:59+07:00');
+  assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE');
+  h.time('2026-10-23T03:00:00+07:00'); assertTfexLkg(h.source.peekSnapshot(), original);
+});
+
+for (const start of ['2028-01-01T04:00:00+07:00', '2025-12-31T23:40:00+07:00']) {
+  test('TFEX retention: uncovered current or previous calendar keeps ordinary expiry: ' + start, async () => {
+    const h = tfexRetentionHarness({ start }); await h.source.getSnapshot();
+    h.time(Date.parse(start) + 1_800_001);
+    assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 1);
+  });
+}
+
+test('TFEX retention: repeated failures and peeks cannot move the 168-hour deadline', async () => {
+  const start = '2026-11-15T04:00:00+07:00', h = tfexRetentionHarness({ start });
+  const original = await h.source.getSnapshot();
+  h.respond(() => htmlResponse('', 500)); h.time('2026-11-15T12:00:00+07:00');
+  assertTfexLkg(await h.source.getSnapshot(), original, 'SOURCE_HTTP_ERROR');
+  assertTfexLkg(await h.source.getSnapshot(), original); assert.equal(h.calls(), 2);
+  h.time('2026-11-15T12:01:00+07:00');
+  assertTfexLkg(await h.source.getSnapshot(), original); assert.equal(h.calls(), 3);
+  const deadline = Date.parse(start) + 168 * 3600000;
+  for (const time of [deadline - 1, deadline]) {
+    h.time(time); assertTfexLkg(h.source.peekSnapshot(), original);
+  }
+  h.time(deadline + 1);
+  const expired = h.source.peekSnapshot(); assert.equal(expired.status.state, 'UNAVAILABLE');
+  assert.equal(expired.value.totalVolume, null); assert.equal(expired.status.fetchedAt, null);
+  assert.equal((await h.source.getSnapshot()).status.state, 'UNAVAILABLE');
+});
+
+for (const status of [401, 403, 429]) {
+  test('TFEX retention: access denial preserves the stop and bounded LKG: ' + status, async () => {
+    const h = tfexRetentionHarness(), original = await h.source.getSnapshot();
+    h.respond(() => htmlResponse('', status)); h.time('2026-11-14T12:00:00+07:00');
+    const reason = status === 429 ? 'SOURCE_RATE_LIMIT_STOP' : 'MANUAL_REVIEW_REQUIRED';
+    assertTfexLkg(await h.source.getSnapshot(), original, reason);
+    assert.equal(h.source.snapshot().stopped, true);
+    h.time('2026-11-15T12:00:00+07:00'); assertTfexLkg(await h.source.getSnapshot(), original, reason);
+    h.time('2026-11-16T07:50:00+07:00');
+    assert.equal((await h.source.getSnapshot()).status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 2);
+  });
+}
+
+for (const [label, respond, reason] of [
+  ['parser mismatch', () => htmlResponse('<title>TFEX</title>'), 'PARSER_MISMATCH'],
+  ['invalid timestamp', () => htmlResponse(fixture('tfex-home.html').replace('20 ต.ค. 2569', '30 ก.พ. 2569')), 'INVALID_DATA'],
+  ['future timestamp', () => htmlResponse(tfexHtmlAt('2026-11-16T12:00:00+07:00')), 'SOURCE_TIME_UNVERIFIED'],
+  ['old unaccepted snapshot', () => htmlResponse(tfexHtmlAt('2026-11-13T22:20:00+07:00')), 'SOURCE_TIME_UNVERIFIED'],
+  ['timeout', () => { throw Object.assign(Error('mock timeout'), { name: 'TimeoutError' }); }, 'ACQUISITION_TIMEOUT']
+]) {
+  test('TFEX retention: an unvalidated record cannot seed LKG: ' + label, async () => {
+    const h = tfexRetentionHarness({ start: '2026-11-15T12:00:00+07:00' }); h.respond(respond);
+    const actual = await h.source.getSnapshot(); assert.equal(actual.status.state, 'UNAVAILABLE');
+    assert.equal(actual.status.reason, reason); assert.equal(actual.value.totalVolume, null);
+    assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 1);
+  });
+}
+
+test('TFEX retention: parser failure preserves only the previously validated record; clock rollback cannot expose it', async () => {
+  const start = '2026-11-15T04:00:00+07:00', h = tfexRetentionHarness({ start });
+  const original = await h.source.getSnapshot(); h.respond(() => htmlResponse('<title>TFEX</title>'));
+  h.time('2026-11-15T12:00:00+07:00');
+  assertTfexLkg(await h.source.getSnapshot(), original, 'PARSER_MISMATCH');
+  h.time(Date.parse(start) - 1); assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE');
+  assert.equal(h.calls(), 2);
+});
+
+test('TFEX retention: restart loses in-memory LKG and cannot reseed it from an aged successful response', async () => {
+  const h = tfexRetentionHarness(), original = await h.source.getSnapshot();
+  h.time('2026-11-15T12:00:00+07:00'); assertTfexLkg(h.source.peekSnapshot(), original);
+  h.restart(); assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE');
+  const actual = await h.source.getSnapshot(); assert.equal(actual.status.state, 'UNAVAILABLE');
+  assert.equal(actual.status.reason, 'SOURCE_TIME_UNVERIFIED'); assert.equal(h.calls(), 2);
+});
+
+for (const [age, state] of [[1_799_999, 'LKG'], [1_800_000, 'LKG'], [1_800_001, 'UNAVAILABLE']]) {
+  test(`TFEX retention: ordinary source-failure LKG boundary remains ${age} ms`, async () => {
+    const start = '2026-11-17T10:00:00+07:00', h = tfexRetentionHarness({ start });
+    const original = await h.source.getSnapshot(); h.respond(() => htmlResponse('', 500));
+    h.time(Date.parse(start) + 6 * 60000); assertTfexLkg(await h.source.getSnapshot(), original);
+    h.time(Date.parse(start) + age); const actual = h.source.peekSnapshot();
+    assert.equal(actual.status.state, state);
+    if (state === 'LKG') assertTfexLkg(actual, original, 'SOURCE_HTTP_ERROR');
+    assert.equal(h.calls(), 2);
+  });
+}
+
+test('TFEX retention: entering pre-open preserves only the remaining ordinary LKG allowance', async () => {
+  const h = tfexRetentionHarness({ start: '2026-11-16T07:40:00+07:00' });
+  const original = await h.source.getSnapshot(); h.time('2026-11-16T07:50:00+07:00');
+  assertTfexLkg(h.source.peekSnapshot(), original);
+  h.time('2026-11-16T08:10:00.001+07:00');
+  assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 1);
+});
+
+test('TFEX retention: only a newly validated fetch replaces LKG with a new PASS receipt', async () => {
+  const h = tfexRetentionHarness(), original = await h.source.getSnapshot();
+  h.time('2026-11-15T12:00:00+07:00'); assertTfexLkg(h.source.peekSnapshot(), original);
+  h.respond(() => htmlResponse(tfexHtmlAt('2026-11-15T12:00:00+07:00')));
+  const recovered = await h.source.getSnapshot(); assert.equal(recovered.status.state, 'PASS');
+  assert.equal(recovered.status.fetchedAt, '2026-11-15T05:00:00.000Z');
+  assert.equal(recovered.status.sourceUpdatedAt, '2026-11-15T12:00:00+07:00');
+  assert.equal(recovered.status.freshnessVerified, false); assert.equal(recovered.status.stale, undefined);
+  assert.equal(h.calls(), 2);
+});
+
+test('TFEX retention: an unassessable clock cannot grant extended LKG or throw from peek', async () => {
+  const h = tfexRetentionHarness(), original = await h.source.getSnapshot();
+  assert.equal(original.status.state, 'PASS');
+  for (const time of [NaN, Infinity, 8.64e15 + 1]) {
+    h.time(time); assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE');
+  }
+  assert.equal(h.calls(), 1);
+});
+
+test('TFEX retention: disabled source remains unavailable with zero fetches', async () => {
+  const h = tfexRetentionHarness({ enabled: false });
+  assert.equal((await h.source.getSnapshot()).status.reason, 'SOURCE_DISABLED');
+  assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 0);
+});
+
+test('Most Active regression: a holiday snapshot stays PASS independently of extended TFEX LKG', async () => {
+  const h = freshnessHarness({ start: '2026-11-13T16:40:00+07:00' });
+  h.bodies.set('https://www.tfex.co.th/th/home', tfexHtmlAt('2026-11-13T16:39:00+07:00'));
+  h.bodies.set('https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value',
+    fixture('settrade-active-value.html').replace('20 ต.ค. 2569 22:19:18', '13 พ.ย. 2569 16:40:00'));
+  const first = (await h.service.getOverview()).value;
+  h.time('2026-11-15T12:00:00+07:00'); const current = (await h.service.getOverview()).value;
+  assert.equal(current.fieldStatus.tfex.state, 'LKG'); assert.equal(current.stale, true);
+  assert.equal(current.fieldStatus.tfex.fetchedAt, first.fieldStatus.tfex.fetchedAt);
+  assert.equal(current.fieldStatus.activeValue.state, 'PASS');
+  assert.equal(current.fieldStatus.activeValue.sessionContext, 'SESSION_SNAPSHOT');
+  assert.equal(current.fieldStatus.activeValue.sourceUpdatedAt, first.fieldStatus.activeValue.sourceUpdatedAt);
+  assert.equal(current.fieldStatus.activeValue.fetchedAt, '2026-11-15T05:00:00.000Z');
+  assert.deepEqual(current.activeValue, first.activeValue);
+  const calls = h.calls(); h.time('2026-11-15T12:01:00+07:00');
+  const cached = (await h.service.getOverview()).value;
+  assert.equal(cached.fieldStatus.activeValue.state, 'PASS');
+  assert.equal(cached.fieldStatus.tfex.freshness, 'LKG'); assert.equal(h.calls(), calls);
+});
+
+test('Most Active regression: holiday failure and cache hits keep the original 30-minute LKG deadline', async () => {
+  const h = freshnessHarness({ start: '2026-11-15T12:00:00+07:00' });
+  const activeUrl = 'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value';
+  h.bodies.set(activeUrl, fixture('settrade-active-value.html').replace('20 ต.ค. 2569 22:19:18', '13 พ.ย. 2569 16:40:00'));
+  h.bodies.set('https://www.tfex.co.th/th/home', tfexHtmlAt('2026-11-15T12:00:00+07:00'));
+  const first = (await h.service.getOverview()).value.fieldStatus.activeValue;
+  h.bodies.set(activeUrl, '<h1>Most Active Value</h1><p>Symbol no data</p>');
+  h.time('2026-11-15T12:06:00+07:00');
+  assert.equal((await h.service.getOverview()).value.fieldStatus.activeValue.state, 'LKG');
+  const calls = h.calls(); h.time('2026-11-15T12:07:00+07:00');
+  assert.equal((await h.service.getOverview()).value.fieldStatus.activeValue.fetchedAt, first.fetchedAt);
+  assert.equal(h.calls(), calls);
+  h.time('2026-11-15T12:29:59+07:00');
+  assert.equal((await h.service.getOverview()).value.fieldStatus.activeValue.state, 'LKG');
+  const beforeExpiryCalls = h.calls(); h.time('2026-11-15T12:30:00+07:00');
+  assert.equal((await h.service.getOverview()).value.fieldStatus.activeValue.state, 'LKG');
+  h.time('2026-11-15T12:30:00.001+07:00'); const expired = (await h.service.getOverview()).value;
+  assert.equal(expired.fieldStatus.activeValue.state, 'UNAVAILABLE'); assert.deepEqual(expired.activeValue, []);
+  assert.equal(h.calls(), beforeExpiryCalls);
+});
+
+test('Most Active regression: a restarted service can reacquire a holiday snapshot, but has no LKG during source failure', async () => {
+  const activeUrl = 'https://www.settrade.com/th/equities/market-summary/top-ranking/most-active-value';
+  const healthy = freshnessHarness({ start: '2026-11-15T12:00:00+07:00' });
+  healthy.bodies.set(activeUrl, fixture('settrade-active-value.html').replace('20 ต.ค. 2569 22:19:18', '13 พ.ย. 2569 16:40:00'));
+  assert.equal((await healthy.service.getOverview()).value.fieldStatus.activeValue.state, 'PASS');
+  const restarted = freshnessHarness({ start: '2026-11-15T12:01:00+07:00' });
+  restarted.bodies.set(activeUrl, '<h1>Most Active Value</h1><p>Symbol no data</p>');
+  const actual = (await restarted.service.getOverview()).value;
+  assert.equal(actual.fieldStatus.activeValue.state, 'UNAVAILABLE'); assert.deepEqual(actual.activeValue, []);
 });
 
 function responseFor(url) {
