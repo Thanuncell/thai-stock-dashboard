@@ -366,7 +366,7 @@ for (const [label, respond, reason] of [
   ['parser mismatch', () => htmlResponse('<title>TFEX</title>'), 'PARSER_MISMATCH'],
   ['invalid timestamp', () => htmlResponse(fixture('tfex-home.html').replace('20 ต.ค. 2569', '30 ก.พ. 2569')), 'INVALID_DATA'],
   ['future timestamp', () => htmlResponse(tfexHtmlAt('2026-11-16T12:00:00+07:00')), 'SOURCE_TIME_UNVERIFIED'],
-  ['old unaccepted snapshot', () => htmlResponse(tfexHtmlAt('2026-11-13T22:20:00+07:00')), 'SOURCE_TIME_UNVERIFIED'],
+  ['snapshot older than the historical limit', () => htmlResponse(tfexHtmlAt('2026-11-07T22:20:00+07:00')), 'SOURCE_TIME_UNVERIFIED'],
   ['timeout', () => { throw Object.assign(Error('mock timeout'), { name: 'TimeoutError' }); }, 'ACQUISITION_TIMEOUT']
 ]) {
   test('TFEX retention: an unvalidated record cannot seed LKG: ' + label, async () => {
@@ -386,12 +386,13 @@ test('TFEX retention: parser failure preserves only the previously validated rec
   assert.equal(h.calls(), 2);
 });
 
-test('TFEX retention: restart loses in-memory LKG and cannot reseed it from an aged successful response', async () => {
+test('TFEX historical: restart loses memory but reacquires an eligible historical response as LKG', async () => {
   const h = tfexRetentionHarness(), original = await h.source.getSnapshot();
   h.time('2026-11-15T12:00:00+07:00'); assertTfexLkg(h.source.peekSnapshot(), original);
   h.restart(); assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE');
-  const actual = await h.source.getSnapshot(); assert.equal(actual.status.state, 'UNAVAILABLE');
-  assert.equal(actual.status.reason, 'SOURCE_TIME_UNVERIFIED'); assert.equal(h.calls(), 2);
+  const actual = await h.source.getSnapshot();
+  assertTfexLkg(actual, { ...original, status: { ...original.status, fetchedAt: '2026-11-15T05:00:00.000Z' } });
+  assert.equal(h.calls(), 2);
 });
 
 for (const [age, state] of [[1_799_999, 'LKG'], [1_800_000, 'LKG'], [1_800_001, 'UNAVAILABLE']]) {
@@ -448,7 +449,8 @@ test('Most Active regression: a holiday snapshot stays PASS independently of ext
   const first = (await h.service.getOverview()).value;
   h.time('2026-11-15T12:00:00+07:00'); const current = (await h.service.getOverview()).value;
   assert.equal(current.fieldStatus.tfex.state, 'LKG'); assert.equal(current.stale, true);
-  assert.equal(current.fieldStatus.tfex.fetchedAt, first.fieldStatus.tfex.fetchedAt);
+  assert.equal(current.fieldStatus.tfex.fetchedAt, '2026-11-15T05:00:00.000Z');
+  assert.equal(current.fieldStatus.tfex.sourceUpdatedAt, first.fieldStatus.tfex.sourceUpdatedAt);
   assert.equal(current.fieldStatus.activeValue.state, 'PASS');
   assert.equal(current.fieldStatus.activeValue.sessionContext, 'SESSION_SNAPSHOT');
   assert.equal(current.fieldStatus.activeValue.sourceUpdatedAt, first.fieldStatus.activeValue.sourceUpdatedAt);
@@ -491,6 +493,159 @@ test('Most Active regression: a restarted service can reacquire a holiday snapsh
   const actual = (await restarted.service.getOverview()).value;
   assert.equal(actual.fieldStatus.activeValue.state, 'UNAVAILABLE'); assert.deepEqual(actual.activeValue, []);
 });
+
+for (const [start, reportedAsOf, state] of [
+  ['2026-11-15T12:00:00+07:00', '2026-11-13T22:20:00+07:00', 'LKG'],
+  ['2026-04-14T12:00:00+07:00', '2026-04-10T22:20:00+07:00', 'LKG'],
+  ['2026-11-17T04:00:00+07:00', '2026-11-16T22:20:00+07:00', 'LKG'],
+  ['2026-11-14T02:59:59+07:00', '2026-11-13T22:20:00+07:00', 'UNAVAILABLE'],
+  ['2026-11-14T03:00:00+07:00', '2026-11-13T22:20:00+07:00', 'LKG'],
+  ['2026-11-16T07:49:59+07:00', '2026-11-13T22:20:00+07:00', 'LKG'],
+  ['2026-11-16T07:50:00+07:00', '2026-11-13T22:20:00+07:00', 'UNAVAILABLE'],
+  ['2026-11-17T17:20:00+07:00', '2026-11-16T22:20:00+07:00', 'UNAVAILABLE'],
+  ['2028-01-01T12:00:00+07:00', '2027-12-31T22:20:00+07:00', 'UNAVAILABLE']
+]) {
+  test('TFEX historical: cold acquisition respects the existing closure window: ' + start, async () => {
+    const h = tfexRetentionHarness({ start, reportedAsOf });
+    const actual = await h.source.getSnapshot(); assert.equal(actual.status.state, state);
+    assert.equal(h.calls(), 1);
+    if (state === 'LKG') {
+      assertTfexLkg(h.source.peekSnapshot(), actual);
+      assert.equal(actual.status.sourceUpdatedAt, reportedAsOf);
+      assert.equal(actual.status.fetchedAt, new Date(start).toISOString());
+      assert.equal(actual.value.totalVolume, 482150); assert.equal(actual.value.openInterest, 3104220);
+    } else assert.equal(actual.value.available, false);
+  });
+}
+
+for (const [age, state] of [[1_800_000, 'PASS'], [1_800_001, 'LKG'],
+  [168 * 3600000 - 1, 'LKG'], [168 * 3600000, 'LKG'], [168 * 3600000 + 1, 'UNAVAILABLE']]) {
+  test(`TFEX historical: acquisition source-age boundary is ${age} ms`, async () => {
+    const reportedAsOf = age < 3600000 ? '2026-11-15T11:30:00+07:00' : '2026-11-08T12:00:00+07:00';
+    const start = new Date(Date.parse(reportedAsOf) + age).toISOString();
+    const h = tfexRetentionHarness({ start, reportedAsOf });
+    const actual = await h.source.getSnapshot(); assert.equal(actual.status.state, state);
+    if (state === 'LKG') assertTfexLkg(h.source.peekSnapshot(), actual);
+    assert.equal(h.calls(), 1);
+  });
+}
+
+test('TFEX historical: duplicate fetches refresh receipt only; cache and source-age expiry remain independent', async () => {
+  const reportedAsOf = '2026-11-08T04:00:00+07:00';
+  const h = tfexRetentionHarness({ start: '2026-11-15T03:50:00+07:00', reportedAsOf });
+  const first = await h.source.getSnapshot(); assert.equal(first.status.state, 'LKG');
+  h.time('2026-11-15T03:54:59+07:00');
+  assertTfexLkg(await h.source.getSnapshot(), first); assertTfexLkg(h.source.peekSnapshot(), first);
+  assert.equal(h.calls(), 1);
+  h.time('2026-11-15T03:55:00+07:00'); const duplicate = await h.source.getSnapshot();
+  assert.equal(duplicate.status.fetchedAt, '2026-11-14T20:55:00.000Z');
+  assert.equal(duplicate.status.sourceUpdatedAt, reportedAsOf); assert.equal(h.calls(), 2);
+  h.time('2026-11-15T04:00:00+07:00');
+  const atLimit = await h.source.getSnapshot(); assert.equal(atLimit.status.state, 'LKG');
+  assert.equal(atLimit.status.sourceTimeAgeMs, 168 * 3600000); assert.equal(h.calls(), 3);
+  h.time('2026-11-15T04:00:00.001+07:00');
+  assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 3);
+  assert.equal((await h.source.getSnapshot()).status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 4);
+});
+
+test('TFEX historical: former-PASS retention is capped by source age even before its receipt deadline', async () => {
+  const h = tfexRetentionHarness({ start: '2026-11-08T04:00:00+07:00', reportedAsOf: '2026-11-08T03:40:00+07:00' });
+  const original = await h.source.getSnapshot(); assert.equal(original.status.state, 'PASS');
+  h.time('2026-11-15T03:40:00+07:00'); assertTfexLkg(h.source.peekSnapshot(), original);
+  h.time('2026-11-15T03:40:00.001+07:00');
+  assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE'); assert.equal(h.calls(), 1);
+});
+
+test('TFEX historical: historical receipt cannot become ordinary LKG at pre-open; former PASS remains separate', async () => {
+  const h = tfexRetentionHarness({ start: '2026-11-16T07:48:00+07:00', reportedAsOf: '2026-11-16T07:19:00+07:00' });
+  const original = await h.source.getSnapshot(); assert.equal(original.status.state, 'PASS');
+  h.time('2026-11-16T07:49:01+07:00'); const historical = await h.source.getSnapshot();
+  assert.equal(historical.status.state, 'LKG'); assert.equal(historical.status.fetchedAt, '2026-11-16T00:49:01.000Z');
+  h.time('2026-11-16T07:50:00+07:00'); assertTfexLkg(h.source.peekSnapshot(), original);
+  h.time('2026-11-16T08:18:00.001+07:00'); assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE');
+  const cold = tfexRetentionHarness({ start: '2026-11-16T07:49:01+07:00', reportedAsOf: '2026-11-16T07:19:00+07:00' });
+  assert.equal((await cold.source.getSnapshot()).status.state, 'LKG'); cold.time('2026-11-16T07:50:00+07:00');
+  assert.equal(cold.source.peekSnapshot().status.state, 'UNAVAILABLE');
+});
+
+for (const [start, newer, older] of [
+  ['2026-11-15T12:00:00+07:00', '2026-11-15T12:00:00+07:00', '2026-11-13T22:20:00+07:00'],
+  ['2026-11-15T12:00:00+07:00', '2026-11-15T11:00:00+07:00', '2026-11-13T22:20:00+07:00'],
+  ['2026-11-17T10:00:00+07:00', '2026-11-17T09:50:00+07:00', '2026-11-17T09:45:00+07:00']
+]) {
+  test('TFEX historical: older response cannot replace a usable snapshot: ' + newer, async () => {
+    const h = tfexRetentionHarness({ start, reportedAsOf: newer }), original = await h.source.getSnapshot();
+    h.respond(() => htmlResponse(tfexHtmlAt(older).replace('482,150', '500,000').replace('450,000', '467,850')));
+    h.time(Date.parse(start) + 6 * 60000); const actual = await h.source.getSnapshot();
+    assertTfexLkg(actual, original); assert.equal(actual.value.totalVolume, 482150); assert.equal(h.calls(), 2);
+  });
+}
+
+test('TFEX historical: newer partial snapshot replaces whole records without borrowing old Volume', async () => {
+  const h = tfexRetentionHarness(), original = await h.source.getSnapshot();
+  h.time('2026-11-15T12:00:00+07:00');
+  h.respond(() => htmlResponse(tfexHtmlAt('2026-11-14T02:00:00+07:00').replace('482,150', '-')));
+  const acquired = await h.source.getSnapshot(); assert.equal(acquired.status.state, 'LKG');
+  assert.equal(acquired.value.totalVolume, null); assert.equal(acquired.value.openInterest, original.value.openInterest);
+  assert.equal(acquired.status.partial, true); assert.equal(acquired.status.sourceUpdatedAt, '2026-11-14T02:00:00+07:00');
+  h.respond(() => htmlResponse('', 500)); h.time('2026-11-15T12:06:00+07:00');
+  assertTfexLkg(await h.source.getSnapshot(), acquired, 'SOURCE_HTTP_ERROR');
+});
+
+test('TFEX historical: recovery to fresh PASS does not inherit the old historical cache-expiry reason', async () => {
+  const h = tfexRetentionHarness({ start: '2026-11-15T12:00:00+07:00', reportedAsOf: '2026-11-13T22:20:00+07:00' });
+  assert.equal((await h.source.getSnapshot()).status.state, 'LKG');
+  h.respond(() => htmlResponse(tfexHtmlAt('2026-11-15T12:06:00+07:00')));
+  h.time('2026-11-15T12:06:00+07:00'); const fresh = await h.source.getSnapshot();
+  assert.equal(fresh.status.state, 'PASS'); assert.equal(fresh.status.reason, null);
+  h.time('2026-11-15T12:11:00+07:00');
+  assertTfexLkg(h.source.peekSnapshot(), fresh, 'CACHE_EXPIRED'); assert.equal(h.calls(), 2);
+});
+
+for (const status of [401, 403, 429]) {
+  test('TFEX historical: denial stops requests while preserving eligible historical fallback: ' + status, async () => {
+    const h = tfexRetentionHarness({ start: '2026-11-15T12:00:00+07:00', reportedAsOf: '2026-11-13T22:20:00+07:00' });
+    const original = await h.source.getSnapshot();
+    h.respond(() => htmlResponse('', status)); h.time('2026-11-15T12:06:00+07:00');
+    const reason = status === 429 ? 'SOURCE_RATE_LIMIT_STOP' : 'MANUAL_REVIEW_REQUIRED';
+    assertTfexLkg(await h.source.getSnapshot(), original, reason);
+    assert.equal(h.source.snapshot().stopped, true);
+    h.time('2026-11-15T13:00:00+07:00'); assertTfexLkg(await h.source.getSnapshot(), original, reason);
+    assert.equal(h.calls(), 2);
+    h.time('2026-11-16T07:50:00+07:00'); assert.equal((await h.source.getSnapshot()).status.state, 'UNAVAILABLE');
+    assert.equal(h.calls(), 2);
+  });
+}
+
+test('TFEX historical: acquisition coalesces, cache reuses LKG, and timeout backoff cannot renew receipts', async () => {
+  const reportedAsOf = '2026-11-13T22:20:00+07:00';
+  const h = tfexRetentionHarness({ start: '2026-11-15T12:00:00+07:00', reportedAsOf });
+  let release; const pending = new Promise(resolve => { release = resolve; });
+  h.respond(async () => { await pending; return htmlResponse(tfexHtmlAt(reportedAsOf)); });
+  const first = h.source.getSnapshot(), second = h.source.getSnapshot();
+  assert.equal(first, second); assert.equal(h.calls(), 1); release();
+  const [original, same] = await Promise.all([first, second]); assertTfexLkg(same, original);
+  h.time('2026-11-15T12:04:00+07:00'); assertTfexLkg(await h.source.getSnapshot(), original); assert.equal(h.calls(), 1);
+  h.respond(() => { throw Object.assign(Error('mock timeout'), { name: 'TimeoutError' }); });
+  h.time('2026-11-15T12:06:00+07:00'); assertTfexLkg(await h.source.getSnapshot(), original, 'ACQUISITION_TIMEOUT');
+  assertTfexLkg(await h.source.getSnapshot(), original, 'ACQUISITION_TIMEOUT');
+  assertTfexLkg(h.source.peekSnapshot(), original, 'ACQUISITION_TIMEOUT'); assert.equal(h.calls(), 2);
+  h.time('2026-11-15T12:07:00+07:00'); assertTfexLkg(await h.source.getSnapshot(), original); assert.equal(h.calls(), 3);
+  h.restart(); assert.equal((await h.source.getSnapshot()).status.state, 'UNAVAILABLE');
+});
+
+for (const [label, respond, reason] of [
+  ['parser', () => htmlResponse('<title>TFEX</title>'), 'PARSER_MISMATCH'],
+  ['invalid', () => htmlResponse(fixture('tfex-home.html').replace('20 ต.ค. 2569', '30 ก.พ. 2569')), 'INVALID_DATA'],
+  ['future', () => htmlResponse(tfexHtmlAt('2026-11-16T12:00:00+07:00')), 'SOURCE_TIME_UNVERIFIED']
+]) {
+  test('TFEX historical: rejected response preserves historical values and original clocks: ' + label, async () => {
+    const h = tfexRetentionHarness({ start: '2026-11-15T12:00:00+07:00', reportedAsOf: '2026-11-13T22:20:00+07:00' });
+    const original = await h.source.getSnapshot(); h.respond(respond); h.time('2026-11-15T12:06:00+07:00');
+    assertTfexLkg(await h.source.getSnapshot(), original, reason);
+    h.time('2026-11-15T11:59:59+07:00'); assert.equal(h.source.peekSnapshot().status.state, 'UNAVAILABLE');
+  });
+}
 
 function responseFor(url) {
   const value = String(url);

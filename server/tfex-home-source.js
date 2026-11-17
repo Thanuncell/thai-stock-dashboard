@@ -24,12 +24,32 @@ function extendedRetentionAllowed(time) {
 
 function createTfexHomeSource({ enabled = false, fetchImpl = globalThis.fetch, now = Date.now,
   policy = PROVIDER_POLICIES.settrade, maxSourceAgeMs = PROVIDER_POLICIES.settrade.staleIfErrorMs } = {}) {
-  let lastGood = null, pending = null, freshUntil = 0, nextAttemptAt = 0, stoppedReason = null, lastFailure = null;
+  let lastGood = null, historical = null, pending = null, freshUntil = 0, nextAttemptAt = 0, stoppedReason = null, lastFailure = null;
   const empty = () => ({ available: false, delayMinutes: 15, totalVolume: null, openInterest: null,
     marketDate: '', investorType: [], topVolume: [] });
   function sourceTimeValid(record) {
     const time = Date.parse(record.diagnostics.reportedAsOf);
     return Number.isFinite(time) && now() >= record.savedAt && time <= now() && now() - time <= maxSourceAgeMs;
+  }
+  function withinSourceRetention(record, time) {
+    // Receipts and cache reuse cannot extend the source timestamp's hard deadline.
+    const sourceTime = Date.parse(record.diagnostics.reportedAsOf);
+    return Number.isFinite(sourceTime) && time >= record.savedAt && sourceTime <= time
+      && time - sourceTime <= CLOSED_LKG_MS;
+  }
+  function historicalTimeValid(record, time) {
+    return extendedRetentionAllowed(time) && withinSourceRetention(record, time)
+      && time - Date.parse(record.diagnostics.reportedAsOf) > maxSourceAgeMs;
+  }
+  function retainedRecord() {
+    const time = now(), retentionMs = extendedRetentionAllowed(time) ? CLOSED_LKG_MS : policy.staleIfErrorMs;
+    const good = lastGood && withinSourceRetention(lastGood, time)
+      && time - lastGood.savedAt <= retentionMs ? lastGood : null;
+    const old = historical && historicalTimeValid(historical, time) ? historical : null;
+    if (!good) return old;
+    if (!old) return good;
+    const difference = Date.parse(old.diagnostics.reportedAsOf) - Date.parse(good.diagnostics.reportedAsOf);
+    return difference > 0 || (difference === 0 && old.savedAt > good.savedAt) ? old : good;
   }
   function result(state, record, reason = null) {
     const diagnostics = record ? structuredClone(record.diagnostics) : null;
@@ -49,11 +69,15 @@ function createTfexHomeSource({ enabled = false, fetchImpl = globalThis.fetch, n
       fetchedAt: record?.fetchedAt || null, diagnostics: diagnostics || null };
   }
   function failure(reason) {
-    const time = now();
-    const retentionMs = extendedRetentionAllowed(time) ? CLOSED_LKG_MS : policy.staleIfErrorMs;
-    if (lastGood && time >= lastGood.savedAt && Date.parse(lastGood.diagnostics.reportedAsOf) <= time
-      && time - lastGood.savedAt <= retentionMs) return result('LKG', lastGood, reason);
-    return result('UNAVAILABLE', null, reason);
+    const record = retainedRecord();
+    return record ? result('LKG', record, reason) : result('UNAVAILABLE', null, reason);
+  }
+  function cachedResult() {
+    const record = retainedRecord();
+    if (!record) return null;
+    if (record === lastGood && now() < freshUntil && sourceTimeValid(record)) return result('PASS', record);
+    if (record === historical && now() < record.cacheUntil) return result('LKG', record, 'SOURCE_TIME_UNVERIFIED');
+    return null;
   }
   async function readBody(response) {
     const limit = 1_000_000;
@@ -91,9 +115,16 @@ function createTfexHomeSource({ enabled = false, fetchImpl = globalThis.fetch, n
       const parsed = parseTfexHome(text), diagnostics = parsed.__diagnostics;
       if (!parsed.available || diagnostics.result !== 'ACCEPT') throw Object.assign(Error(), { code: diagnostics.result });
       const record = { value: parsed, diagnostics, savedAt: now(), fetchedAt: new Date(now()).toISOString() };
-      if (!sourceTimeValid(record)) throw Object.assign(Error(), { code: 'SOURCE_TIME_UNVERIFIED' });
-      lastGood = record; freshUntil = now() + policy.ttlMs; lastFailure = null;
-      return result('PASS', record);
+      const fresh = sourceTimeValid(record), retained = retainedRecord();
+      if ((!fresh && !historicalTimeValid(record, now()))
+        || (retained && Date.parse(diagnostics.reportedAsOf) < Date.parse(retained.diagnostics.reportedAsOf))) {
+        throw Object.assign(Error(), { code: 'SOURCE_TIME_UNVERIFIED' });
+      }
+      if (fresh) { lastGood = record; freshUntil = now() + policy.ttlMs; }
+      // Historical acquisition never renews a former-PASS record's ordinary LKG allowance.
+      else { historical = record; historical.cacheUntil = now() + policy.ttlMs; }
+      lastFailure = null;
+      return result(fresh ? 'PASS' : 'LKG', record, fresh ? null : 'SOURCE_TIME_UNVERIFIED');
     } catch (error) {
       lastFailure = typeof error.code === 'string' ? error.code
         : error.name === 'TimeoutError' ? 'ACQUISITION_TIMEOUT' : 'ACQUISITION_GAP';
@@ -104,7 +135,8 @@ function createTfexHomeSource({ enabled = false, fetchImpl = globalThis.fetch, n
   function getSnapshot() {
     if (!enabled) return Promise.resolve(result('UNAVAILABLE', null, 'SOURCE_DISABLED'));
     if (stoppedReason) return Promise.resolve(failure(stoppedReason));
-    if (lastGood && now() < freshUntil && sourceTimeValid(lastGood)) return Promise.resolve(result('PASS', lastGood));
+    const cached = cachedResult();
+    if (cached) return Promise.resolve(cached);
     if (now() < nextAttemptAt) return Promise.resolve(failure(lastFailure));
     if (pending) return pending;
     pending = load().finally(() => { pending = null; });
@@ -114,8 +146,10 @@ function createTfexHomeSource({ enabled = false, fetchImpl = globalThis.fetch, n
   function peekSnapshot() {
     if (!enabled) return result('UNAVAILABLE', null, 'SOURCE_DISABLED');
     if (stoppedReason) return failure(stoppedReason);
-    if (lastGood && now() < freshUntil && sourceTimeValid(lastGood)) return result('PASS', lastGood);
-    return failure(lastFailure || (lastGood && !sourceTimeValid(lastGood) ? 'SOURCE_TIME_UNVERIFIED' : 'CACHE_EXPIRED'));
+    const cached = cachedResult();
+    if (cached) return cached;
+    const record = retainedRecord() || historical || lastGood;
+    return failure(lastFailure || (record && !sourceTimeValid(record) ? 'SOURCE_TIME_UNVERIFIED' : 'CACHE_EXPIRED'));
   }
   return { getSnapshot, peekSnapshot, snapshot: () => ({ enabled, source: 'TFEX', sourceUrl: TFEX_HOME_URL,
     state: !enabled ? 'DISABLED' : stoppedReason ? 'MANUAL_REVIEW_REQUIRED' : 'ACTIVE',
