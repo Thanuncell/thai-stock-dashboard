@@ -33,7 +33,7 @@ const FEEDS = Object.freeze([
 const OUTLET_SOURCE = Object.freeze([
   [/ทันหุ้น|thunhoon/i, 'thunhoon'],
   [/ข่าวหุ้น|kaohoon/i, 'kaohoon'],
-  [/^(?:SET|SETTRADE)$|ตลาดหลักทรัพย์/i, 'settrade'],
+  [/^\s*(?:SET|SETTRADE(?:\.COM)?)\s*$|ตลาดหลักทรัพย์/i, 'settrade'],
   [/ธนาคารแห่งประเทศไทย|bot\.or\.th/i, 'official'],
   [/Infoquest|อินโฟเควสท์/i, 'infoquest'],
   [/efinance|อีไฟแนนซ์/i, 'efinance']

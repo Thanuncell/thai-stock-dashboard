@@ -181,6 +181,9 @@ jobs:
       - name: Run dedicated Watchlist News browser regression
         timeout-minutes: 3
         run: node test/watchlist-news-reliability.browser.cjs
+      - name: Run news publisher mapping browser regression
+        timeout-minutes: 3
+        run: node test/news-publisher-mapping.browser.cjs
       - name: Run dedicated account isolation browser regression
         timeout-minutes: 3
         run: node test/account-isolation.browser.cjs
