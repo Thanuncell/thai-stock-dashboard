@@ -250,18 +250,19 @@ async function handleNewsAnalysis(req, res, user) {
   }
 }
 
-function serveStatic(url, res) {
+function serveStatic(url, res, newsImpact = null) {
   let pathname;
   try { pathname = decodeURIComponent(url.pathname); }
   catch (_) { return send(res, 400, { error: 'URL ไม่ถูกต้อง' }); }
   if (pathname === '/' || pathname === '/login' || pathname === '/login/' || pathname === '/register' || pathname === '/register/') {
     pathname = '/index.html';
   }
-  if (!PUBLIC_FILES.has(pathname)) {
+  const impactAsset = newsImpact?.assetPath(pathname);
+  if (!PUBLIC_FILES.has(pathname) && !impactAsset) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
     return res.end('Not found');
   }
-  const file = path.resolve(ROOT, `.${pathname}`);
+  const file = impactAsset || path.resolve(ROOT, `.${pathname}`);
   if (!file.startsWith(ROOT + path.sep)) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
     return res.end('Not found');
@@ -276,11 +277,11 @@ function serveStatic(url, res) {
       'cache-control': 'no-cache',
       ...SECURITY_HEADERS
     });
-    res.end(data);
+    res.end(pathname === '/index.html' && newsImpact ? newsImpact.decorateIndex(data) : data);
   });
 }
 
-async function handle(req, res, auth = authService) {
+async function handle(req, res, auth = authService, newsImpact = null) {
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/healthz' || url.pathname.startsWith('/api/')) {
@@ -317,6 +318,8 @@ async function handle(req, res, auth = authService) {
   const identity = url.pathname.startsWith('/api/') ? await auth.authorize(req, res) : null;
   if (url.pathname.startsWith('/api/') && !identity) return;
   const user = identity?.user;
+  // Optional isolated composition only. Normal bootstrap supplies no module.
+  if (newsImpact && url.pathname === '/api/news-impact-phase1') return newsImpact.handle(req, res, identity, send, readJson);
   if (url.pathname === '/api/watchlists') return handleWatchlists(req, res, user, identity.authorization);
   if (url.pathname === '/api/news-analysis') return handleNewsAnalysis(req, res, user);
   if (url.pathname === '/api/watchlist-news') return handleWatchlistNews(req, res, user, url);
@@ -415,7 +418,7 @@ async function handle(req, res, auth = authService) {
       return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable' });
     }
   }
-  return serveStatic(url, res);
+  return serveStatic(url, res, newsImpact);
 }
 
 const server = http.createServer((req, res) => {

@@ -1,0 +1,37 @@
+name: News impact offline
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  news-impact:
+    name: News impact integration (Node 24)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: offline-news-impact/package.json
+      - name: Install existing application dependencies
+        run: npm ci --ignore-scripts
+      - name: Install pinned Reader and test dependencies
+        run: pnpm --dir offline-news-impact install --frozen-lockfile --ignore-scripts
+      - name: Verify vendored Reader build
+        run: |
+          pnpm --dir offline-news-impact exec node build-reader.cjs
+          git diff --exit-code -- offline-news-impact/vendor/jina-html.cjs
+      - name: Verify module and runtime contracts offline
+        run: pnpm --dir offline-news-impact test
+      - name: Install browser for isolated integration tests
+        run: pnpm --dir offline-news-impact exec playwright install --with-deps chromium
+      - name: Verify desktop and mobile integration offline
+        run: pnpm --dir offline-news-impact browser
