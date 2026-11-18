@@ -4,6 +4,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const {chromium}=require('playwright');
+process.env.SETSCOPE_PLAYWRIGHT_MODULE ||= require.resolve('playwright');
 // Reuse original authentication/news browser fixtures; never contact Supabase.
 const {mockRequest,seedPage}=require('../../test/account-isolation.browser.cjs');
 process.env.SUPABASE_URL='https://isolation-test.supabase.co';
