@@ -1,0 +1,27 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict');
+const {EventEmitter}=require('node:events');
+const {createUrlLoader,publicIPv4}=require('../url-loader.cjs');
+const {createReader}=require('../reader.cjs');
+const core=require('../analysis.cjs'),{catalog}=require('../fixtures/coverage.cjs');
+const analyze=(provider,article)=>core.analyze(provider,article,{catalog});
+const fixture=require('../fixtures/news.cjs');
+function transport(replies,trace){return(url,options,callback)=>{
+  trace.push({url:url.href,options});
+  const req=new EventEmitter();req.destroy=()=>{};req.end=()=>queueMicrotask(()=>{
+    const reply=replies.shift();if(!reply)return req.emit('error',Error('unavailable'));
+    const res=new EventEmitter();res.statusCode=reply.status||200;res.headers=reply.headers||{'content-type':'text/html; charset=utf-8'};res.destroy=()=>{};
+    callback(res);if(reply.stall)return;for(const part of reply.chunks||[reply.html||'<html>fixture</html>'])res.emit('data',Buffer.from(part));res.emit('end');
+  });return req;
+};}
+const resolve=async()=>[{address:'8.8.8.8',family:4}];
+test('disabled means zero DNS/HTTP requests',async()=>{let calls=0;await assert.rejects(createUrlLoader({resolve(){calls++;},request(){calls++;}})('https://news.example.org'),{code:'READER_DISABLED'});assert.equal(calls,0);});
+test('blocked special IPv4 ranges; public address accepted',()=>{for(const address of ['0.0.0.1','10.0.0.1','100.64.0.1','127.0.0.1','169.254.169.254','172.16.0.1','192.168.0.1','192.0.2.1','198.18.0.1','224.0.0.1','255.255.255.255','::1'])assert.equal(publicIPv4(address),false);assert.equal(publicIPv4('8.8.8.8'),true);});
+test('DNS private/mixed answers reject before socket, no fallback',async()=>{let sockets=0;for(const addresses of [[{address:'127.0.0.1'}],[{address:'8.8.8.8'},{address:'10.0.0.1'}],[]])await assert.rejects(createUrlLoader({enabled:true,resolve:async()=>addresses,request(){sockets++;}})('https://news.example.org'),{code:'UNSAFE_DNS'});assert.equal(sockets,0);});
+test('socket lookup pinned, GET only, no cookie/token forwarded',async()=>{const trace=[];const response=await createUrlLoader({enabled:true,resolve,request:transport([{html:'<html>verified fixture</html>'}],trace)})('https://news.example.org/article');assert.equal(response.status,200);assert.ok(response.html.includes('verified'));assert.equal(trace[0].options.method,'GET');assert.deepEqual(Object.keys(trace[0].options.headers).sort(),['accept','accept-encoding','user-agent']);let pinned;trace[0].options.lookup('news.example.org',{},(_err,address)=>pinned=address);assert.equal(pinned,'8.8.8.8');});
+test('redirects validate each target and re-resolve public addresses',async()=>{const trace=[],hosts=[];const load=createUrlLoader({enabled:true,resolve:async host=>{hosts.push(host);return resolve();},request:transport([{status:302,headers:{location:'https://other.example.org/article'}},{html:'<html>next</html>'}],trace)});assert.equal((await load('https://news.example.org')).status,200);assert.deepEqual(hosts,['news.example.org','other.example.org']);assert.equal(trace.length,2);});
+test('private redirect, HTTPS downgrade and redirect loop are bounded',async()=>{for(const location of ['http://127.0.0.1/x','http://other.example.org/x']){const trace=[];await assert.rejects(createUrlLoader({enabled:true,resolve,request:transport([{status:302,headers:{location}}],trace)})('https://news.example.org'),{code:'UNSAFE_URL'});assert.equal(trace.length,1);}const trace=[];await assert.rejects(createUrlLoader({enabled:true,resolve,request:transport(Array.from({length:3},()=>({status:302,headers:{location:'/again'}})),trace)})('https://news.example.org'),{code:'READER_REDIRECT_LIMIT'});assert.equal(trace.length,3);});
+test('access denial is returned once; no retry or paywall bypass',async()=>{const trace=[];assert.equal((await createUrlLoader({enabled:true,resolve,request:transport([{status:403}],trace)})('https://news.example.org')).status,403);assert.equal(trace.length,1);});
+test('byte bound and content type reject safely',async()=>{await assert.rejects(createUrlLoader({enabled:true,resolve,maxBytes:10,request:transport([{chunks:['123456','123456']}],[])})('https://news.example.org'),{code:'ARTICLE_TOO_LARGE'});await assert.rejects(createUrlLoader({enabled:true,resolve,request:transport([{headers:{'content-type':'image/png'}}],[])})('https://news.example.org'),{code:'READER_CONTENT_TYPE'});});
+test('DNS/response timeout and socket error are safe and bounded',async()=>{await assert.rejects(createUrlLoader({enabled:true,timeoutMs:5,resolve:()=>new Promise(()=>{})})('https://news.example.org'),{code:'READER_TIMEOUT'});await assert.rejects(createUrlLoader({enabled:true,timeoutMs:5,resolve,request:transport([{stall:true}],[])})('https://news.example.org'),{code:'READER_TIMEOUT'});await assert.rejects(createUrlLoader({enabled:true,resolve,request:transport([],[])})('https://news.example.org'),{code:'READER_UNAVAILABLE'});});
+test('candidate URL transport → Jina OSS → Gemini mock, entirely injected offline',async()=>{const trace=[];const reader=createReader({loadFixture:createUrlLoader({enabled:true,resolve,request:transport([{html:fixture.html}],trace)})});const article=await reader.read('https://news.example.org/article');const result=await analyze(fixture.mockProvider(),article.text);assert.equal(result.positive[0].symbol,'PTT');assert.equal(result.negative[0].symbol,'AOT');assert.equal(trace.length,1);});

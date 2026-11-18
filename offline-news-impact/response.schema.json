@@ -1,0 +1,59 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "stocks"
+  ],
+  "properties": {
+    "summary": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "stocks": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "symbol",
+          "direction",
+          "reason",
+          "evidence"
+        ],
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "positive",
+              "negative"
+            ],
+            "description": "positive หรือ negative จากเหตุการณ์ที่พิสูจน์ได้ในงวดข่าว ต้องสอดคล้องกับ reason และ evidence ไม่ใช่เหตุการณ์เปรียบเทียบปีก่อนเพียงอย่างเดียว"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "หนึ่งประโยคไทย อธิบายผลต่อบริษัทจากเหตุการณ์ในงวดข่าว ไม่ใช้ข้อมูลปีก่อนที่ยกเทียบเป็นผลใหม่หรืออนุมานจากชื่อบริษัท หากหลักฐานไม่พอให้ละหุ้น หากเหตุผลมีเพียงกำไรหรือเหตุการณ์ปีก่อนที่ยกเทียบ ให้ลบทั้งหุ้นออกจาก stocks ไม่ส่ง direction"
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "คัดข้อความตรงจาก article หนึ่งช่วงต่อเนื่อง รวมช่องว่าง ห้ามแต่ง Quote เติมจุดไข่ปลา เชื่อมคนละช่วง หรือถอดความ ต้องรองรับเหตุการณ์และบริษัทตามที่อ้าง ถ้าหาไม่ได้ให้ละหุ้น ข้อความต้องมี Symbol ตรงจาก Catalog หรือชื่อบริษัทภาษาอังกฤษที่ยืนยันแล้วใน Quote เอง พร้อมเหตุการณ์ที่รองรับ จะขยายข้อความต่อเนื่องได้ แต่ห้ามแทรก Symbol เอง"
+          }
+        }
+      },
+      "description": "คืนเฉพาะบริษัทที่มีเหตุการณ์ในงวดข่าว ลบรายการที่มีเพียงข้อมูลปีก่อนยกเทียบออกก่อนส่ง JSON ไม่ส่งเพื่อให้ครบจำนวน"
+    }
+  }
+}

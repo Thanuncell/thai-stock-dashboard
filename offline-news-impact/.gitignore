@@ -1,0 +1,12 @@
+node_modules/
+evidence/
+quota/
+fixtures/catalog.json
+fixtures/coverage-readonly-snapshot.json
+RUN_OFFLINE.md
+SYSTEM_PROMPT_BASELINE.txt
+news-smoke.cjs
+smoke-plan.json
+prepare-catalog.cjs
+verify-review.cjs
+test/preparation.test.cjs

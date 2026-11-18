@@ -1,0 +1,23 @@
+{
+  "name": "setscope-v171-offline-review",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "test": "node --require ./test/offline-network.cjs --test test/auth.test.cjs test/coverage.test.cjs test/gemini.test.cjs test/integration.test.cjs test/runtime.test.cjs test/url-loader.test.cjs test/release-integration.test.cjs",
+    "browser": "node --require ./test/offline-network.cjs --test test/ui.browser.cjs",
+    "start": "node server.cjs"
+  },
+  "dependencies": {
+    "@mozilla/readability": "0.6.0",
+    "linkedom": "0.18.12"
+  },
+  "devDependencies": {
+    "pg": "8.16.3",
+    "playwright": "1.56.1",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.25.0"
+}
