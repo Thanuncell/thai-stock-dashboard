@@ -2,7 +2,8 @@
 const {fail}=require('./reader.cjs');
 const MODEL='gemini-3.5-flash-lite';
 const ENDPOINT=`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
-function createGeminiProvider({enabled=false,env=process.env,fetchImpl=global.fetch,onUsage,onFailure}={}){
+function createGeminiProvider({enabled=false,env=process.env,fetchImpl=global.fetch,onUsage,onFailure,onDiagnostic}={}){
+  const diagnostic=(constraint,details={})=>{try{onDiagnostic?.({stage:'provider',constraint,...details});}catch{}};
   return{async generate({article,prompt,schema,catalog,signal}){
     if(!enabled)throw fail('PROVIDER_DISABLED');
     const key=env.GEMINI_API_KEY;
@@ -20,18 +21,21 @@ function createGeminiProvider({enabled=false,env=process.env,fetchImpl=global.fe
       throw fail(response.status===429?'PROVIDER_RATE_LIMIT':'PROVIDER_FAILURE');
     }
     const chunks=[];let bytes=0;
-    try{for await(const chunk of response.body){bytes+=chunk.length;if(bytes>65_536)throw Error('OVERSIZE');chunks.push(Buffer.from(chunk));}}catch{throw fail('INVALID_PROVIDER_OUTPUT');}
+    try{for await(const chunk of response.body){bytes+=chunk.length;if(bytes>65_536)throw Error('OVERSIZE');chunks.push(Buffer.from(chunk));}}catch{diagnostic('ENVELOPE_READ',{bytes});throw fail('INVALID_PROVIDER_OUTPUT');}
     const body=Buffer.concat(chunks).toString('utf8');
-    let data;try{data=JSON.parse(body);}catch{throw fail('INVALID_PROVIDER_JSON');}
+    let data;try{data=JSON.parse(body);}catch{diagnostic('ENVELOPE_JSON',{bytes});throw fail('INVALID_PROVIDER_JSON');}
     if(typeof onUsage==='function'&&data.usageMetadata){
       const usage={latencyMs:Date.now()-started};
       for(const name of ['promptTokenCount','candidatesTokenCount','thoughtsTokenCount','totalTokenCount','cachedContentTokenCount'])if(Number.isSafeInteger(data.usageMetadata[name])&&data.usageMetadata[name]>=0)usage[name]=data.usageMetadata[name];
       try{onUsage(usage);}catch{}
     }
     if(data.promptFeedback?.blockReason)throw fail('PROVIDER_BLOCKED');
-    if(!Array.isArray(data.candidates)||data.candidates.length!==1||data.candidates[0].finishReason!=='STOP'||!Array.isArray(data.candidates[0].content?.parts))throw fail('INVALID_PROVIDER_OUTPUT');
-    const parts=data.candidates[0].content.parts.filter(p=>!p.thought);
-    if(!parts.length||parts.some(p=>typeof p.text!=='string'))throw fail('INVALID_PROVIDER_OUTPUT');
+    if(!Array.isArray(data.candidates)||data.candidates.length!==1){diagnostic('CANDIDATE_COUNT');throw fail('INVALID_PROVIDER_OUTPUT');}
+    const candidate=data.candidates[0];
+    if(candidate?.finishReason!=='STOP'){diagnostic('FINISH_REASON',{finishReason:['MAX_TOKENS','SAFETY','RECITATION','OTHER','BLOCKLIST','PROHIBITED_CONTENT','SPII','MALFORMED_FUNCTION_CALL','IMAGE_SAFETY','UNEXPECTED_TOOL_CALL','TOO_MANY_TOOL_CALLS'].includes(candidate?.finishReason)?candidate.finishReason:'UNRECOGNIZED'});throw fail('INVALID_PROVIDER_OUTPUT');}
+    if(!Array.isArray(candidate.content?.parts)){diagnostic('CONTENT_PARTS');throw fail('INVALID_PROVIDER_OUTPUT');}
+    const parts=data.candidates[0].content.parts.filter(p=>!p?.thought);
+    if(!parts.length||parts.some(p=>typeof p?.text!=='string')){diagnostic('TEXT_PARTS',{partCount:parts.length});throw fail('INVALID_PROVIDER_OUTPUT');}
     return parts.map(p=>p.text).join('');
   }};
 }

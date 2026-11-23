@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "test": "node --require ./test/offline-network.cjs --test test/auth.test.cjs test/coverage.test.cjs test/gemini.test.cjs test/integration.test.cjs test/runtime.test.cjs test/url-loader.test.cjs test/release-integration.test.cjs test/production.test.cjs",
+    "test": "node --require ./test/offline-network.cjs --test test/auth.test.cjs test/coverage.test.cjs test/gemini.test.cjs test/integration.test.cjs test/runtime.test.cjs test/url-loader.test.cjs test/release-integration.test.cjs test/production.test.cjs test/diagnostics.test.cjs",
     "browser": "node --require ./test/offline-network.cjs --test test/ui.browser.cjs",
     "start": "node server.cjs"
   },

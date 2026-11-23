@@ -450,7 +450,8 @@ async function start() {
     env: process.env, auth: authService, repository: coverageRepository,
     onUsage: usage => console.log(JSON.stringify({event:'news_impact_usage',model:'gemini-3.5-flash-lite',...usage})),
     onFailure: failure => console.log(JSON.stringify({event:'news_impact_provider_failure',...failure})),
-    onReaderRequest: request => console.log(JSON.stringify({event:'news_impact_reader_request',...request}))
+    onReaderRequest: request => console.log(JSON.stringify({event:'news_impact_reader_request',...request})),
+    onDiagnostic: diagnostic => console.log(JSON.stringify({event:'news_impact_diagnostic',...diagnostic}))
   });
   newsImpact = impact.runtime;
   console.log(JSON.stringify({event:'news_impact_configuration',...impact.status}));
