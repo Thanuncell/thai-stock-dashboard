@@ -6,6 +6,7 @@ function createProductionImpact({env=process.env,auth,repository,nodeVersion=pro
   const requested=env.SETSCOPE_NEWS_IMPACT_ENABLED==='true';
   const status={requested,enabled:false,nodeVersion,keyPresent:typeof env.GEMINI_API_KEY==='string'&&Boolean(env.GEMINI_API_KEY.trim()),authConfigured:auth?.configured===true,coverageConfigured:repository?.configured===true};
   if(!requested)return{runtime:null,status:{...status,state:'disabled'}};
+  const publicBeta=env.SETSCOPE_NEWS_IMPACT_PUBLIC_BETA==='true';
   const users=new Set(String(env.SETSCOPE_NEWS_IMPACT_ALLOWED_USER_IDS||'').split(',').map(x=>x.trim()).filter(Boolean));
   const rpm=Number(env.SETSCOPE_NEWS_IMPACT_RPM);
   const redirects=env.SETSCOPE_NEWS_IMPACT_READER_REDIRECTS===undefined?2:Number(env.SETSCOPE_NEWS_IMPACT_READER_REDIRECTS);
@@ -15,7 +16,7 @@ function createProductionImpact({env=process.env,auth,repository,nodeVersion=pro
   if(!status.keyPresent)missing.push('PROVIDER_KEY');
   if(!status.authConfigured||typeof auth?.authorize!=='function')missing.push('AUTH');
   if(!status.coverageConfigured)missing.push('COVERAGE');
-  if(!users.size||[...users].some(x=>x.length>128))missing.push('CONTROLLED_USERS');
+  if(!publicBeta&&(!users.size||[...users].some(x=>x.length>128)))missing.push('CONTROLLED_USERS');
   if(!Number.isInteger(rpm)||rpm<1||rpm>15)missing.push('RATE_CONFIG');
   if(!Number.isInteger(redirects)||redirects<0||redirects>2)missing.push('READER_CONFIG');
   if(missing.length)return{runtime:null,status:{...status,state:'not_ready',missing}};
@@ -27,10 +28,10 @@ function createProductionImpact({env=process.env,auth,repository,nodeVersion=pro
   const {createGeminiProvider}=require('./gemini.cjs');
   const {Lane}=require('./service.cjs');
   const runtime=(runtimeFactory||createImpactRuntime)({repository,
-    entryModule:'production.mjs',canAnalyze:user=>users.has(user?.id),onDiagnostic,
+    entryModule:'production.mjs',canAnalyze:user=>typeof user?.id==='string'&&Boolean(user.id.trim())&&(publicBeta||users.has(user.id)),onDiagnostic,
     reader:createReader({loadHtml:createUrlLoader({...loaderOptions,enabled:true,maxRedirects:redirects,onRequest:onReaderRequest})}),
     provider:createGeminiProvider({enabled:true,env,fetchImpl,onUsage,onFailure,onDiagnostic}),lane:new Lane({rpm})});
-  return{runtime,status:{...status,enabled:true,state:'ready',rpm,controlledUsers:users.size,readerRedirects:redirects}};
+  return{runtime,status:{...status,enabled:true,state:'ready',rpm,publicBeta,controlledUsers:users.size,readerRedirects:redirects}};
   }catch{return{runtime:null,status:{...status,state:'not_ready',missing:['MODULE_INITIALIZATION']}};}
 }
 module.exports={createProductionImpact};

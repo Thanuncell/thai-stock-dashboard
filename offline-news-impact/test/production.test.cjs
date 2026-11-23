@@ -14,10 +14,10 @@ for(const [label,change,nodeVersion,code]of [['key',{GEMINI_API_KEY:''},'24.0.0'
 test('existing authentication and configured Coverage are mandatory',()=>{for(const [auth,repo,code]of [[{configured:false},repository,'AUTH'],[createFixtureAuth(),{...repository,configured:false},'COVERAGE']]){const r=createProductionImpact({env:config,auth,repository:repo});assert.equal(r.runtime,null);assert.ok(r.status.missing.includes(code));}});
 test('module initialization failure degrades only impact, with no raw error leakage',()=>{const r=createProductionImpact({env:config,auth:createFixtureAuth(),repository,runtimeFactory(){throw Error('OFFLINE_SENTINEL private detail');}});assert.equal(r.runtime,null);assert.deepEqual(r.status.missing,['MODULE_INITIALIZATION']);assert.doesNotMatch(JSON.stringify(r.status),/OFFLINE_SENTINEL|private detail/);});
 function htmlTransport(trace,{redirect=false}={}){return(_url,_options,callback)=>{trace.push('GET');const req=new EventEmitter();req.destroy=()=>{};req.end=()=>queueMicrotask(()=>{const res=new EventEmitter();res.destroy=()=>{};res.statusCode=redirect?302:200;res.headers=redirect?{location:'https://other.example.org/article'}:{'content-type':'text/html'};callback(res);if(!redirect){res.emit('data',Buffer.from(f.html));res.emit('end');}});return req;};}
-async function setup(t,{redirect=false,httpStatus=200}={}){
+async function setup(t,{redirect=false,httpStatus=200,env={}}={}){
  const trace=[],usage=[],failures=[],readerEvents=[],diagnostics=[];let calls=0,time=0;
  const auth=createFixtureAuth();
- const r=createProductionImpact({env:config,auth,repository,
+ const r=createProductionImpact({env:{...config,...env},auth,repository,
   loaderOptions:{resolve:async()=>[{address:'8.8.8.8',family:4}],request:htmlTransport(trace,{redirect})},
   onUsage:x=>usage.push(x),onFailure:x=>failures.push(x),onReaderRequest:x=>readerEvents.push(x),onDiagnostic:x=>diagnostics.push(x),
   fetchImpl:async(_url,o)=>{calls++;const body=JSON.parse(o.body);assert.equal(body.generationConfig.responseJsonSchema.properties.stocks.items.properties.symbol.enum,undefined);assert.equal(body.generationConfig.maxOutputTokens,4096);if(httpStatus!==200)return new Response('must not escape',{status:httpStatus});return Response.json({usageMetadata:{promptTokenCount:10,candidatesTokenCount:20,thoughtsTokenCount:5,totalTokenCount:35,unknownSecret:'OFFLINE_SENTINEL'},candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(f.output)}]}}]});},
@@ -26,6 +26,43 @@ async function setup(t,{redirect=false,httpStatus=200}={}){
  const post=(mode,value,token='token-a')=>fetch(base+'/api/news-impact-phase1',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({mode,value,requestKey:mode,user_id:'user-a'})});
  return{base,post,trace,usage,failures,readerEvents,diagnostics,get calls(){return calls;}};
 }
+
+test('public beta explicitly admits authenticated identities without changing controlled defaults',()=>{
+ for(const env of [{},{SETSCOPE_NEWS_IMPACT_PUBLIC_BETA:'false'},{SETSCOPE_NEWS_IMPACT_PUBLIC_BETA:'TRUE'},{SETSCOPE_NEWS_IMPACT_PUBLIC_BETA:'true',SETSCOPE_NEWS_IMPACT_ALLOWED_USER_IDS:''}]){
+  let admission;const r=createProductionImpact({env:{...config,...env},auth:createFixtureAuth(),repository,runtimeFactory:opts=>{admission=opts.canAnalyze;return{};}});
+  const publicBeta=env.SETSCOPE_NEWS_IMPACT_PUBLIC_BETA==='true';
+  assert.equal(r.status.state,'ready');assert.equal(r.status.publicBeta,publicBeta);
+  assert.equal(admission({id:'user-a'}),true);assert.equal(admission({id:'user-b'}),publicBeta);
+  for(const user of [undefined,null,{}, {id:''},{id:' '},{id:123}])assert.equal(admission(user),false);
+ }
+});
+
+test('wildcard allowlist does not enable public access',()=>{
+ let admission;const r=createProductionImpact({env:{...config,SETSCOPE_NEWS_IMPACT_ALLOWED_USER_IDS:'*'},auth:createFixtureAuth(),repository,runtimeFactory:opts=>{admission=opts.canAnalyze;return{};}});
+ assert.equal(r.status.publicBeta,false);assert.equal(admission({id:'user-a'}),false);assert.equal(admission({id:'user-b'}),false);
+});
+
+test('public beta still requires existing server authentication and the feature flag',()=>{
+ let calls=0;for(const enabled of ['true','false']){
+  const r=createProductionImpact({env:{...config,SETSCOPE_NEWS_IMPACT_ENABLED:enabled,SETSCOPE_NEWS_IMPACT_PUBLIC_BETA:'true',SETSCOPE_NEWS_IMPACT_ALLOWED_USER_IDS:''},auth:{configured:false},repository,runtimeFactory(){calls++;},fetchImpl(){calls++;}});
+  assert.equal(r.runtime,null);assert.equal(r.status.state,enabled==='true'?'not_ready':'disabled');
+  if(enabled==='true')assert.ok(r.status.missing.includes('AUTH'));
+ }assert.equal(calls,0);
+});
+
+test('public beta rejects missing/invalid sessions before dispatch; both verified users can analyze',async t=>{
+ const s=await setup(t,{env:{SETSCOPE_NEWS_IMPACT_PUBLIC_BETA:'true',SETSCOPE_NEWS_IMPACT_ALLOWED_USER_IDS:''}});
+ assert.equal(s.calls,0);assert.equal(s.trace.length,0);
+ const endpoint=s.base+'/api/news-impact-phase1';
+ assert.equal((await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'text',value:f.text,requestKey:'missing',user_id:'user-a'})})).status,401);
+ assert.equal((await s.post('url','https://news.example.org/article','invalid')).status,401);
+ assert.equal(s.calls,0);assert.equal(s.trace.length,0);
+ for(const token of ['token-a','token-b']){
+  const response=await s.post('text',f.text,token);assert.equal(response.status,200);
+  const value=await response.json();assert.deepEqual(value.result.positive.map(x=>x.symbol),['PTT']);assert.equal('quota'in value,false);
+ }
+ assert.equal(s.calls,2);assert.equal(s.trace.length,0);
+});
 test('production entry uses real composition; unauthenticated/non-cohort cannot dispatch or spoof payload identity',async t=>{const s=await setup(t);const html=await(await fetch(s.base)).text();assert.match(html,/production.mjs/);assert.doesNotMatch(html,/preview.mjs/);assert.equal((await fetch(s.base+'/offline-news-impact/production.mjs')).status,200);assert.equal(s.calls,0);assert.equal(s.trace.length,0);assert.equal((await s.post('text',f.text,'invalid')).status,401);assert.equal((await s.post('text',f.text,'token-b')).status,403);assert.equal(s.calls,0);assert.equal(s.trace.length,0);});
 test('production text/URL paths preserve validation, no quota, and numeric-only usage telemetry',async t=>{const s=await setup(t);for(const [mode,value]of [['text',f.text],['url','https://news.example.org/article']]){const response=await s.post(mode,value);assert.equal(response.status,200);const r=await response.json();assert.deepEqual(r.result.positive.map(x=>x.symbol),['PTT']);assert.deepEqual(r.result.negative.map(x=>x.symbol),['AOT']);assert.equal('quota'in r,false);}assert.equal(s.calls,2);assert.equal(s.trace.length,1);assert.deepEqual(s.readerEvents,[{attempt:1}]);assert.equal(s.usage.length,2);assert.equal(s.usage[0].totalTokenCount,35);assert.equal(s.usage[0].thoughtsTokenCount,5);assert.doesNotMatch(JSON.stringify(s.usage),/OFFLINE_SENTINEL|unknownSecret/);});
 test('controlled reader smoke can prohibit redirects after its single HTTP attempt',async t=>{const s=await setup(t,{redirect:true});assert.equal((await s.post('url','https://news.example.org/article')).status,400);assert.equal(s.trace.length,1);assert.equal(s.calls,0);});
