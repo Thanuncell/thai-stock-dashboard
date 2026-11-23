@@ -2,7 +2,7 @@
 
 // Optional production composition. Disabled unless explicitly configured.
 function createProductionImpact({env=process.env,auth,repository,nodeVersion=process.versions.node,
-  fetchImpl=global.fetch,loaderOptions={},onUsage=()=>{},onFailure=()=>{},onReaderRequest=()=>{},runtimeFactory}={}) {
+  fetchImpl=global.fetch,loaderOptions={},onUsage=()=>{},onFailure=()=>{},onReaderRequest=()=>{},onDiagnostic,runtimeFactory}={}) {
   const requested=env.SETSCOPE_NEWS_IMPACT_ENABLED==='true';
   const status={requested,enabled:false,nodeVersion,keyPresent:typeof env.GEMINI_API_KEY==='string'&&Boolean(env.GEMINI_API_KEY.trim()),authConfigured:auth?.configured===true,coverageConfigured:repository?.configured===true};
   if(!requested)return{runtime:null,status:{...status,state:'disabled'}};
@@ -27,9 +27,9 @@ function createProductionImpact({env=process.env,auth,repository,nodeVersion=pro
   const {createGeminiProvider}=require('./gemini.cjs');
   const {Lane}=require('./service.cjs');
   const runtime=(runtimeFactory||createImpactRuntime)({repository,
-    entryModule:'production.mjs',canAnalyze:user=>users.has(user?.id),
+    entryModule:'production.mjs',canAnalyze:user=>users.has(user?.id),onDiagnostic,
     reader:createReader({loadHtml:createUrlLoader({...loaderOptions,enabled:true,maxRedirects:redirects,onRequest:onReaderRequest})}),
-    provider:createGeminiProvider({enabled:true,env,fetchImpl,onUsage,onFailure}),lane:new Lane({rpm})});
+    provider:createGeminiProvider({enabled:true,env,fetchImpl,onUsage,onFailure,onDiagnostic}),lane:new Lane({rpm})});
   return{runtime,status:{...status,enabled:true,state:'ready',rpm,controlledUsers:users.size,readerRedirects:redirects}};
   }catch{return{runtime:null,status:{...status,state:'not_ready',missing:['MODULE_INITIALIZATION']}};}
 }

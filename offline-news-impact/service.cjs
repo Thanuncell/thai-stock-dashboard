@@ -20,7 +20,7 @@ class Lane{
     this.tail=job.catch(()=>{});return job.finally(()=>{this.pending--;});
   }
 }
-function createService({authenticate,reader,provider,loadCatalog,lane=new Lane(),timeoutMs}){
+function createService({authenticate,reader,provider,loadCatalog,lane=new Lane(),timeoutMs,onDiagnostic}){
   if(![authenticate,reader?.read,provider?.generate,loadCatalog].every(x=>typeof x==='function'))throw fail('DEPENDENCY_REQUIRED');
   // In-flight only: no completed cache, weekly quota, database or durable replay.
   const active=new Map(),keys=new Map();
@@ -36,8 +36,8 @@ function createService({authenticate,reader,provider,loadCatalog,lane=new Lane()
     keys.set(requestId,hash);
     let job;
     try{job=lane.run(async prepared=>{
-      return{kind:'SUCCESS',result:await analyze(provider,prepared.article,{timeoutMs,catalog:prepared.catalog}),phase:'phase1'};
-    },async()=>{const catalog=await loadCatalog();const article=value.mode==='url'?(await reader.read(value.value)).text:value.value;return{catalog,article};});}catch(error){keys.delete(requestId);throw error;}
+      return{kind:'SUCCESS',result:await analyze(provider,prepared.article,{timeoutMs,catalog:prepared.catalog,onDiagnostic}),phase:'phase1'};
+    },async()=>{const catalog=await loadCatalog();const article=value.mode==='url'?(await reader.read(value.value)).text:value.value;try{onDiagnostic?.({stage:'input',mode:value.mode,articleChars:article.length,articleSha256:createHash('sha256').update(article).digest('hex'),catalogCount:catalog.items.length});}catch{}return{catalog,article};});}catch(error){keys.delete(requestId);throw error;}
     const settled=job.finally(()=>{active.delete(owner);keys.delete(requestId);});active.set(owner,settled);return settled;
   };
 }

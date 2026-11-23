@@ -3,9 +3,9 @@ const fs=require('node:fs'),path=require('node:path'),http=require('node:http');
 const {createService,Lane}=require('./service.cjs');
 const {createCoverageCatalog}=require('./coverage-catalog.cjs');
 const assets=new Set(['ui.mjs','ui.css','preview.mjs','production.mjs','transport.mjs']);
-function createImpactRuntime({repository,loadCatalog,reader,provider,lane=new Lane(),timeoutMs,entryModule='preview.mjs',canAnalyze=()=>true}){
+function createImpactRuntime({repository,loadCatalog,reader,provider,lane=new Lane(),timeoutMs,onDiagnostic,entryModule='preview.mjs',canAnalyze=()=>true}){
   if(!['preview.mjs','production.mjs'].includes(entryModule))throw Error('INVALID_ENTRY_MODULE');
-  const analyze=createService({authenticate:async request=>request.actor,loadCatalog:loadCatalog||createCoverageCatalog(repository),reader,provider,lane,timeoutMs});
+  const analyze=createService({authenticate:async request=>request.actor,loadCatalog:loadCatalog||createCoverageCatalog(repository),reader,provider,lane,timeoutMs,onDiagnostic});
   return{
     assetPath(pathname){const name=pathname.replace('/offline-news-impact/','');return pathname==='/offline-news-impact/'+name&&assets.has(name)?path.join(__dirname,name):null;},
     decorateIndex(data){return Buffer.from(data.toString().replace('</head>','<link rel="stylesheet" href="/offline-news-impact/ui.css"></head>').replace('</body>',`<script type="module" src="/offline-news-impact/${entryModule}"></script></body>`));},
