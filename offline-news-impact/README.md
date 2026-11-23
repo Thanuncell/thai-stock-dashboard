@@ -9,17 +9,23 @@ database cache and durable replay remain deferred. Production activation and
 authenticated live acceptance require a separate release review.
 
 Production activation uses the existing application server and authentication,
-not the offline preview server. The operator must explicitly enable it and supply
-an approved user cohort and reviewed provider rate configuration. Missing
+not the offline preview server. The operator must explicitly enable it, select
+an approved access policy and supply reviewed provider rate configuration. Missing
 prerequisites leave the feature disabled while the existing application continues.
 The enable setting also provides a kill switch for a subsequent redeploy; the
 previous Render deployment remains the application rollback target.
 
 Production environment names (no secret values belong in Git):
 `SETSCOPE_NEWS_IMPACT_ENABLED`, `SETSCOPE_NEWS_IMPACT_ALLOWED_USER_IDS`,
+`SETSCOPE_NEWS_IMPACT_PUBLIC_BETA`,
 `SETSCOPE_NEWS_IMPACT_RPM`, `SETSCOPE_NEWS_IMPACT_READER_REDIRECTS` and
 server-only `GEMINI_API_KEY`. Existing Supabase configuration is reused.
 Rate limiting is process-local; it does not provide a daily billing cap.
+
+Access defaults to the configured user cohort. Only
+`SETSCOPE_NEWS_IMPACT_PUBLIC_BETA=true` admits all users verified by the existing
+server authentication; it does not permit anonymous access. An empty cohort or
+`*` alone does not enable public access. The main enable setting remains required.
 
 ## Offline verification
 
