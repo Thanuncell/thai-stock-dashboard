@@ -19,7 +19,7 @@ const f=require('../fixtures/news.cjs');
 const shots=path.resolve(__dirname,'../evidence/final/screenshots');fs.mkdirSync(shots,{recursive:true});
 for(const [name,viewport]of [['desktop',{width:1440,height:1000}],['mobile',{width:390,height:844}]])test(`${name}: actual legacy news + offline impact UI`,async t=>{
   const auth=createFixtureAuth();let time=0,impactRequests=0,refreshRequests=0,release,holdNext=false;
-  const provider=f.mockProvider();const server=createServer({loadCatalog,auth,reader:createReader({loadHtml:async()=>({status:200,html:f.html})}),lane:new Lane({now:()=>time,wait:async ms=>{time+=ms;}}),provider:{async generate(args){if(holdNext){holdNext=false;await new Promise(r=>release=r);}return provider.generate(args);}}});
+  const provider=f.mockProvider();const server=createServer({entryModule:'production.mjs',loadCatalog,auth,reader:createReader({loadHtml:async()=>({status:200,html:f.html})}),lane:new Lane({now:()=>time,wait:async ms=>{time+=ms;}}),provider:{async generate(args){if(holdNext){holdNext=false;await new Promise(r=>release=r);}return provider.generate(args);}}});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
   const browser=await chromium.launch({headless:true,executablePath:process.env.SETSCOPE_BROWSER_EXECUTABLE||(process.platform==='win32'?'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe':undefined)});
   t.after(async()=>{release?.();await browser.close();await new Promise(r=>server.close(r));});

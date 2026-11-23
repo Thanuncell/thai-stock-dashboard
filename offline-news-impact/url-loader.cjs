@@ -7,7 +7,7 @@ const {safeUrl,fail}=require('./reader.cjs');
 const blocked=new net.BlockList();
 for(const [address,prefix]of [['0.0.0.0',8],['10.0.0.0',8],['100.64.0.0',10],['127.0.0.0',8],['169.254.0.0',16],['172.16.0.0',12],['192.0.0.0',24],['192.0.2.0',24],['192.88.99.0',24],['192.168.0.0',16],['198.18.0.0',15],['198.51.100.0',24],['203.0.113.0',24],['224.0.0.0',4],['240.0.0.0',4]])blocked.addSubnet(address,prefix,'ipv4');
 function publicIPv4(address){return net.isIPv4(address)&&!blocked.check(address,'ipv4');}
-function createUrlLoader({enabled=false,resolve=(host)=>dns.lookup(host,{family:4,all:true,verbatim:true}),request=(url,options,callback)=>(url.protocol==='https:'?https:http).request(url,options,callback),timeoutMs=5000,maxBytes=512_000}={}){
+function createUrlLoader({enabled=false,resolve=(host)=>dns.lookup(host,{family:4,all:true,verbatim:true}),request=(url,options,callback)=>(url.protocol==='https:'?https:http).request(url,options,callback),timeoutMs=5000,maxBytes=512_000,maxRedirects=2,onRequest}={}){
   return async function load(value){
     if(!enabled)throw fail('READER_DISABLED');
     const deadline=Date.now()+timeoutMs;
@@ -26,6 +26,7 @@ function createUrlLoader({enabled=false,resolve=(host)=>dns.lookup(host,{family:
         const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);error?reject(error):accept(value);};
         timer=setTimeout(()=>{finish(fail('READER_TIMEOUT'));req?.destroy();},remaining());
         try{
+          try{onRequest?.({attempt:redirects+1});}catch{}
           req=request(url,{method:'GET',headers:{accept:'text/html','accept-encoding':'identity','user-agent':'SETscope-Offline-Review/1.7.1'},agent:false,lookup(_host,options,callback){if(options?.all)callback(null,[{address,family:4}]);else callback(null,address,4);}},res=>{
             const status=res.statusCode;
             if([301,302,303,307,308].includes(status)){
@@ -43,7 +44,7 @@ function createUrlLoader({enabled=false,resolve=(host)=>dns.lookup(host,{family:
         }catch{finish(fail('READER_UNAVAILABLE'));}
       });
       if(response.location){
-        if(redirects>=2)throw fail('READER_REDIRECT_LIMIT');
+        if(redirects>=maxRedirects)throw fail('READER_REDIRECT_LIMIT');
         let next;try{next=new URL(response.location,url);}catch{throw fail('INVALID_URL');}
         if(url.protocol==='https:'&&next.protocol!=='https:')throw fail('UNSAFE_URL');
         return step(safeUrl(next.href),redirects+1);

@@ -23,6 +23,8 @@ jobs:
           package_json_file: offline-news-impact/package.json
       - name: Install existing application dependencies
         run: npm ci --ignore-scripts
+      - name: Verify production dependency composition before installing test dependencies
+        run: node --require ./offline-news-impact/test/offline-network.cjs --test offline-news-impact/test/production.test.cjs
       - name: Install pinned Reader and test dependencies
         run: pnpm --dir offline-news-impact install --frozen-lockfile --ignore-scripts
       - name: Verify vendored Reader build
