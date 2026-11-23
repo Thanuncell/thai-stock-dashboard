@@ -3,7 +3,7 @@ services:
     name: setscope
     runtime: node
     plan: free
-    buildCommand: npm install --omit=dev
+    buildCommand: npm ci --omit=dev --ignore-scripts
     startCommand: npm start
     healthCheckPath: /healthz
     envVars:

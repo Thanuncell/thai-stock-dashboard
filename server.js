@@ -129,6 +129,7 @@ const providerFetch = observability.observedFetch(globalThis.fetch);
 const newsReliability = require('./server/news-source-reliability').createNewsSourceReliability({pausedSources:String(process.env.SETSCOPE_NEWS_PAUSED_SOURCES||'').split(',').map(x=>x.trim()).filter(Boolean),onEvent:fields=>observability.emit('news_source',fields)});
 const articleFetch = newsReliability.wrap(observability.observedFetch(require('./lib/news-fetch').createNewsTransport()),'extraction');
 let authService = createAuthService({ send, fetchImpl: providerFetch });
+let newsImpact = null;
 const coverageRepository = createCoverageRepository({ fetchImpl: providerFetch });
 const marketService = createMarketService({ fetchImpl: providerFetch });
 const searchRegistry = async () => {
@@ -422,7 +423,7 @@ async function handle(req, res, auth = authService, newsImpact = null) {
 }
 
 const server = http.createServer((req, res) => {
-  handle(req, res).catch(error => {
+  handle(req, res, authService, newsImpact).catch(error => {
     console.error('Request failed: unexpected request handler failure');
     if (res.destroyed) return;
     if (res.headersSent) {
@@ -445,6 +446,14 @@ async function start() {
     });
     authService = runtime.auth;
   }
+  const impact = require('./offline-news-impact/production.cjs').createProductionImpact({
+    env: process.env, auth: authService, repository: coverageRepository,
+    onUsage: usage => console.log(JSON.stringify({event:'news_impact_usage',model:'gemini-3.5-flash-lite',...usage})),
+    onFailure: failure => console.log(JSON.stringify({event:'news_impact_provider_failure',...failure})),
+    onReaderRequest: request => console.log(JSON.stringify({event:'news_impact_reader_request',...request}))
+  });
+  newsImpact = impact.runtime;
+  console.log(JSON.stringify({event:'news_impact_configuration',...impact.status}));
   server.once('close', () => { void runtime?.close(); });
   try {
     await new Promise((resolve, reject) => {
