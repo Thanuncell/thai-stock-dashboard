@@ -48,6 +48,7 @@ import { createTechnicalSnapshot, INDICATOR_PRESETS, RANGE_INTERVAL } from './cl
 import { DrawingWorkspace } from './client/drawings.mjs';
 import { seriesPath, oscillatorPanel, crosshairPoint } from './client/technical-chart.mjs';
 import { marketTimeframe } from './client/chart-timeframe.mjs';
+import { createArchiveCursorSession, cursorScope } from './client/news-archive-cursor.mjs';
 
 // Gate activation is server-owned. Once observed ON, stale OFF responses cannot lower it;
  // an intentional switch back to OFF takes effect after a page reload.
@@ -99,11 +100,19 @@ let newsDataState = 'idle';
 let newsRequestId = 0, newsController = null, newsPending = false, newsPresentationReady = false, pendingNewsSnapshot = null;
 let archiveConfigured = false;
 let archiveLoaded = false;
+let archiveCursorMode = false;
+const archiveCursor = createArchiveCursorSession();
 const PAGE_SIZE = 10;
 const FEATURED_COUNT = 5;
 const SOURCE_TIER = { official: 4, settrade: 3, infoquest: 2, efinance: 2, thunhoon: 2, kaohoon: 2, broker: 1 };
 let newsPage = initialNavigation.route === 'news' ? initialNavigation.newsPage : 1;
 let newsQuery = initialNavigation.route === 'news' ? initialNavigation.query : '';
+// A URL cannot recreate opaque cursor history. Never fetch intervening pages.
+if (newsPage > 1) {
+  newsPage = 1;
+  const firstPageUrl = new URL(location.href); firstPageUrl.searchParams.delete('newsPage');
+  history.replaceState(history.state, '', firstPageUrl);
+}
 let watchNewsPage = initialNavigation.route === 'watchlist' ? initialNavigation.watchPage : 1;
 const newsAnalyses = new Map();
 const pendingNewsAnalysisKeys = new Set();
@@ -250,6 +259,7 @@ function clearPrivateState() {
   newsAnalysisRequestId += 1;
   watchlistNewsMatchInfo = null;
   archiveNewsRequestId += 1;
+  archiveCursor.resetToFirst();archiveCursorMode=false;
   archiveLoaded=false; archiveState='idle'; archiveTotal=0; archiveCountTotal=null;
   syncNavigationControls();
   watchlistNewsRequestId += 1;
@@ -384,7 +394,13 @@ function restoreNavigationFromLocation({ load = true } = {}) {
     currentTimeframe = state.timeframe || 'Auto';
     historicalRange = state.historicalRange || historicalRange;
   }
-  if (state.route === 'news') { newsQuery = state.query; activeSource = state.source; newsPage = state.newsPage; }
+  if (state.route === 'news') {
+    newsQuery = state.query; activeSource = state.source;
+    const scopeChanged = previousNewsSource !== activeSource || previousNewsQuery.trim().toLocaleLowerCase('th') !== newsQuery.trim().toLocaleLowerCase('th');
+    if(scopeChanged){archiveCursor.resetToFirst();archiveNewsRequestId++;}
+    newsPage = scopeChanged ? 1 : archiveCursorMode ? (archiveCursor.canOpen(state.newsPage) ? state.newsPage : 1) : state.newsPage;
+    if (newsPage !== state.newsPage) writeNavigation('replace','news');
+  }
   if (state.route === 'watchlist') {
     if (watchlists.some(list => list.id === state.watchlistId)) activeWatchlistId = state.watchlistId;
     watchlist = currentWatchlist().items;
@@ -1754,14 +1770,15 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
     }
   }
 }
-async function getArchiveNews({ page = newsPage } = {}) {
+async function getArchiveNews({ page = newsPage, refresh = false } = {}) {
   const identity = capturePrivateIdentity();
   if(!isCurrentPrivateIdentity(identity))return;
   const requestId = ++archiveNewsRequestId;
+  const requestedSource=activeSource,requestedQuery=newsQuery;
+  const current=()=>isCurrentPrivateIdentity(identity)&&requestId===archiveNewsRequestId&&requestedSource===activeSource&&requestedQuery===newsQuery;
   const snapshot=pendingNewsSnapshot;
   archiveState='loading';
   for(const selector of ['#news-list','#featured-news'])$(selector)?.setAttribute('aria-busy','true');
-  const counter=$('#news-count');if(counter)counter.textContent='กำลังนับข่าว…';
   const params = new URLSearchParams({
     page: String(page),
     pageSize: String(PAGE_SIZE),
@@ -1777,12 +1794,47 @@ async function getArchiveNews({ page = newsPage } = {}) {
   }).featured.map(item => item.url).filter(url => /^https:\/\//i.test(String(url || '')));
   if (!featuredUrls.length) params.set('featuredCount', String(FEATURED_COUNT));
   featuredUrls.forEach(url => params.append('exclude', url));
+  const scope=cursorScope({source:activeSource,query:newsQuery,excludeUrls:featuredUrls,featuredCount:featuredUrls.length?0:FEATURED_COUNT});
+  if(archiveCursor.setScope(scope)&&archiveCursorMode){page=newsPage=1;params.set('page','1');if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
+  if(archiveCursorMode&&!archiveCursor.open(page)){page=newsPage=1;archiveCursor.open(1);params.set('page','1');if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');}
+  const cursorRequest=archiveCursorMode||page===1?archiveCursor.begin({refresh}):null;
+  if(archiveCursorMode){
+    params.delete('page');params.set('pagination','cursor');
+    if(cursorRequest.cursor)params.set('cursor',cursorRequest.cursor);
+    if(cursorRequest.revision)params.set('revision',cursorRequest.revision);
+    if(cursorRequest.context)params.set('context',cursorRequest.context);
+  }
+  if(cursorRequest?.lookahead){
+    params.set('windowStart',String(cursorRequest.lookahead.startPage));
+    params.set('windowPages',String(cursorRequest.lookahead.pageCount));
+    if(cursorRequest.lookahead.cursor)params.set('windowAfter',cursorRequest.lookahead.cursor);
+  }
+  if(refresh)params.set('refresh','1');
   try {
-    const response = await apiFetch(`/api/news-archive?${params}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'โหลดคลังข่าวไม่สำเร็จ');
-    if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
+    let data;
+    if(archiveCursorMode&&cursorRequest.cached)data=cursorRequest.entry.data;
+    else{
+      const response = await apiFetch(`/api/news-archive?${params}`);
+      data = await response.json();
+      if(!current())return;
+      if (!response.ok) {
+        if(archiveCursorMode&&(page>1||cursorRequest.context)&&['NEWS_ARCHIVE_CURSOR_INDEX_CHANGED','NEWS_ARCHIVE_CURSOR_SCOPE_CHANGED','NEWS_ARCHIVE_CURSOR_INVALID'].includes(data.code)){
+          archiveCursor.resetToFirst();newsPage=1;writeNavigation('replace','news');
+          return getArchiveNews({page:1,refresh:true});
+        }
+        throw new Error(data.error || 'โหลดคลังข่าวไม่สำเร็จ');
+      }
+    }
+    if (!current()) return;
     if(!Array.isArray(data.items)||(data.configured&&data.dataState==='unavailable'&&!data.items.length))throw Error('Invalid Archive response');
+    // Cursor UI is used only after a real cursor contract is supplied. Legacy
+    // responses retain their accepted paging behavior until SQL/RPC is approved.
+    if(data.pagination==='cursor'){
+      if(data.stale||data.dataState!=='fresh'||!cursorRequest)throw Error('Invalid Archive cursor response');
+      if(!cursorRequest.cached&&!archiveCursor.accept(cursorRequest,data))return;
+      archiveCursorMode=true;
+      data=archiveCursor.current.data;
+    }else if(archiveCursorMode)throw Error('Archive cursor contract changed');
     p1NewsDisplayGate ||= data.p1DisplayGate===true;
     const keep=applyNewsWithheldUrls(data.withheldUrls);
     archiveConfigured = Boolean(data.configured);
@@ -1805,14 +1857,18 @@ async function getArchiveNews({ page = newsPage } = {}) {
     archiveCountTotal = data.countExact!==false&&Number.isSafeInteger(data.total)&&data.total>=0 ? data.total : null;
     const totalPages = Math.max(1, Math.ceil(archiveTotal / PAGE_SIZE));
     // An unavailable archive cannot establish that a deep-linked page is out of range.
-    if (archiveConfigured && newsPage > totalPages) {
+    if (!archiveCursorMode && archiveConfigured && newsPage > totalPages) {
       newsPage = totalPages;
       if (document.body.dataset.workspacePage === 'news') writeNavigation('replace', 'news');
       return getArchiveNews({ page: newsPage });
     }
     renderNews();
-  } catch (_) {
-    if (!isCurrentPrivateIdentity(identity) || requestId !== archiveNewsRequestId) return;
+  } catch (error) {
+    if (!current()) return;
+    if(archiveCursorMode&&page>1&&error.message==='ARCHIVE_CURSOR_REVISION_CHANGED'){
+      archiveCursor.resetToFirst();newsPage=1;writeNavigation('replace','news');
+      return getArchiveNews({page:1,refresh:true});
+    }
     // No usable replacement: retain the accepted view on a partial refresh failure.
     if(newsPresentationReady&&!snapshot?.items.length){archiveState='error';archiveCountTotal=null;renderNews();return;}
     if(snapshot){latestNews=snapshot.items;newsDataState=snapshot.state;}
@@ -2083,6 +2139,7 @@ function scrollToPageTop() {
 }
 function applyNewsWithheldUrls(urls = []) {
   const keys=new Set((Array.isArray(urls)?urls:[]).slice(0,200).map(url=>newsKey({url})));
+  if(keys.size)archiveCursor.invalidateCache();
   const keep=item=>!keys.has(newsKey(item));
   latestNews=latestNews.filter(keep);archiveNews=archiveNews.filter(keep);
   archiveFeaturedNews=archiveFeaturedNews.filter(keep);latestWatchlistNews=latestWatchlistNews.filter(keep);
@@ -2136,6 +2193,23 @@ function renderPagerInto(bar, current, total, count, onPick) {
   });
   bar.append(makeButton('ถัดไป', current + 1, { disabled: current === total }));
 }
+function renderArchiveCursorPager(onPick) {
+  const bar=$('#news-pager');if(!bar)return;
+  bar.replaceChildren();bar.hidden=archiveCursor.window.pages.length===0;
+  const button=(label,page,active=false)=>{
+    const node=document.createElement('button');node.type='button';node.textContent=label;
+    node.className=active?'page-btn active':'page-btn';
+    node.disabled=!archiveCursor.canOpen(page);
+    if(active)node.setAttribute('aria-current','page');
+    node.addEventListener('click',()=>onPick(page));return node;
+  };
+  const ellipsis=()=>{const node=document.createElement('span');node.textContent='…';return node;};
+  bar.append(button('ก่อนหน้า',newsPage-1));
+  if(archiveCursor.window.leftEllipsis)bar.append(ellipsis());
+  for(const page of archiveCursor.window.pages)bar.append(button(String(page),page,page===newsPage));
+  if(archiveCursor.window.rightEllipsis)bar.append(ellipsis());
+  bar.append(button('ถัดไป',newsPage+1));
+}
 function renderNews() {
   if(!isCurrentPrivateIdentity())return;
   const loading=newsPending||archiveState==='loading';
@@ -2176,19 +2250,23 @@ function renderNews() {
   }
   const availableCount = archiveLoaded ? archiveTotal : rest.length;
   const total = Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
-  const displayPage = archiveLoaded ? Math.max(1, Math.min(newsPage, total)) : 1;
+  const displayPage = archiveLoaded ? archiveCursorMode?newsPage:Math.max(1, Math.min(newsPage, total)) : 1;
   if (archiveLoaded) newsPage = displayPage;
   const items = archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((displayPage - 1) * PAGE_SIZE, displayPage * PAGE_SIZE);
   const emptyText = query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่มีข่าวในหมวดที่เลือก';
   renderNewsItemsInto($('#news-list'), items, emptyText);
-  renderPagerInto($('#news-pager'), displayPage, total, availableCount, async page => {
+  const pickPage=async page => {
     newsPage = page; writeNavigation('push', 'news');
     if (archiveConfigured) await getArchiveNews({ page }); else renderNews();
     scrollToPageTop();
-  });
+  };
+  if(archiveCursorMode&&archiveLoaded)renderArchiveCursorPager(pickPage);
+  else renderPagerInto($('#news-pager'), displayPage, total, availableCount, pickPage);
   const counter = $('#news-count');
-  if(counter)counter.textContent=archiveState==='loading'?'กำลังนับข่าว…':archiveState==='error'?'คลังข่าวไม่พร้อม'+(all.length?' · '+wholeNumber(all.length)+' ข่าวที่โหลดได้':''):archiveLoaded&&archiveCountTotal===null?'ยังนับข่าวทั้งหมดไม่ได้':
-    !archiveLoaded&&!all.length&&['error','unavailable','idle'].includes(newsDataState)?'ยังนับข่าวไม่ได้':wholeNumber(archiveLoaded?archiveCountTotal+featured.length:all.length)+' ข่าว'+(!archiveLoaded?' · เฉพาะชุดที่โหลดได้':archiveStale?' · ข้อมูลที่โหลดไว้':'');
+  if(counter){
+    counter.textContent=archiveState==='error'||archiveState==='unavailable'?'คลังข่าวไม่พร้อม':archiveStale?'ข้อมูลที่โหลดไว้':'';
+    counter.hidden=!counter.textContent;
+  }
 }
 
 async function initializeAccountSession(event) {
@@ -2374,21 +2452,29 @@ function setupUiEventWiring() {
     clearTimeout(newsSearchTimer);
     const selected=new Set(current==='all'?[]:current.split(','));if(selected.has(source))selected.delete(source);else selected.add(source);
     activeSource=source==='all'?'all':normalizeNewsSources([...selected]);
-    newsPage=1;renderNews();writeNavigation('push','news');
-    if(archiveConfigured)getArchiveNews({page:1});
+    if(activeSource!==current){newsPage=1;archiveCursor.resetToFirst();archiveNewsRequestId++;}
+    renderNews();writeNavigation('push','news');
+    if(archiveConfigured)getArchiveNews({page:newsPage});
     syncNavigationControls();
   }));
   $('#news-search').addEventListener('input', event => {
+    const previousQuery=newsQuery.trim().toLocaleLowerCase('th');
     newsQuery = String(event.target.value).slice(0,80);event.target.value=newsQuery;
-    newsPage = 1;
+    if(previousQuery!==newsQuery.trim().toLocaleLowerCase('th')){newsPage=1;archiveCursor.resetToFirst();archiveNewsRequestId++;}
     renderNews();
     writeNavigation('replace', 'news');
     clearTimeout(newsSearchTimer);
     newsSearchTimer = setTimeout(() => {
-      if (archiveConfigured) getArchiveNews({ page: 1 });
+      if (archiveConfigured) getArchiveNews({ page: newsPage });
     }, 280);
   });
-  $('#refresh-news').addEventListener('click', () => getNews({ reason: 'manual', resetPage: true }));
+  $('#refresh-news').addEventListener('click', async () => {
+    if(!archiveConfigured)return getNews({reason:'manual'});
+    const identity=capturePrivateIdentity();
+    const button=$('#refresh-news');button.disabled=true;
+    try{await getArchiveNews({page:newsPage,refresh:true});}
+    finally{if(isCurrentPrivateIdentity(identity))button.disabled=false;}
+  });
   $('#refresh-watchlist-news').addEventListener('click', () => getWatchlistNews({ reason: 'manual', resetPage: true }));
   $('#refresh-chart').addEventListener('click', getMarket);
   $('#refresh-market-data').addEventListener('click', () => getSettradeOverview(true));

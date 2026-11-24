@@ -3,6 +3,7 @@ const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:
 module.exports=async function startHttp(pool,config){
  const executable=process.env.SETSCOPE_TEST_POSTGREST;if(!executable)throw Error('Isolated PostgREST runtime required');
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'setscope-ws7-http-')),secret=randomBytes(32).toString('hex'),password=randomBytes(24).toString('hex'),role='ws7_http_'+randomBytes(6).toString('hex');
+ if(path.dirname(path.resolve(root))!==path.resolve(os.tmpdir())||!path.basename(root).startsWith('setscope-ws7-http-'))throw Error('Unsafe test cleanup path');
  try{
  const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
  const jwt=(roleName,claims={})=>{const enc=x=>Buffer.from(JSON.stringify(x)).toString('base64url'),v=enc({alg:'HS256',typ:'JWT'})+'.'+enc({role:roleName,exp:Math.floor(Date.now()/1000)+3600});return v+'.'+createHmac('sha256',secret).update(v).digest('base64url');};

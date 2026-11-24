@@ -39,7 +39,7 @@ const TYPES = {
 const PUBLIC_FILES = new Set([
   '/index.html', '/app.js', '/auth.js', '/theme-init.js', '/client/domain.mjs', '/lib/news-content.js',
   '/client/technical.mjs', '/client/technical-chart.mjs', '/client/drawings.mjs', '/lib/market-time.js', '/client/chart-timeframe.mjs',
-  '/client/screener-core.mjs', '/client/screener-view.mjs',
+  '/client/screener-core.mjs', '/client/screener-view.mjs', '/client/news-archive-cursor.mjs',
   '/style.css', '/analysis.css', '/about.html', '/privacy.html', '/terms.html', '/disclaimer.html'
 ]);
 
@@ -404,18 +404,32 @@ async function handle(req, res, auth = authService, newsImpact = null) {
       const query = String(url.searchParams.get('query') || '').trim().slice(0, 80);
       const featuredCount = url.searchParams.get('featuredCount') || '0';
       const excludeUrls = url.searchParams.getAll('exclude').slice(0, 10);
+      const pagination = url.searchParams.get('pagination') || 'legacy';
+      const windowPages=url.searchParams.get('windowPages')||'0';
+      const cursorMode=pagination==='cursor'||newsArchiveService.cursorEnabled&&Number(windowPages)>0;
       const exclusionKey = createHash('sha256').update(JSON.stringify(excludeUrls)).digest('base64url').slice(0, 16);
       const cacheKey = `news-archive:${page}|${pageSize}|${source}|${symbol}|${query}|${featuredCount}|${exclusionKey}|${newsQuarantine.revision}|${newsLinkReview.revision}`;
-      const data = await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({
+      const data = cursorMode ? await newsArchiveService.list({pagination:'cursor',source,symbol,query,excludeUrls,featuredCount,windowPages,
+        cursor:url.searchParams.get('cursor'),context:url.searchParams.get('context'),revision:url.searchParams.get('revision'),
+        windowStart:url.searchParams.get('windowStart')||'1',windowAfter:url.searchParams.get('windowAfter'),refresh:url.searchParams.get('refresh')==='1'
+      }) : await loadCached(res, cacheKey, PROVIDER_POLICIES.newsArchive, () => newsArchiveService.list({
         page, pageSize, source, symbol, query, excludeUrls, featuredCount
-      }));
+      }), {force:url.searchParams.get('refresh')==='1'});
       const safe = newsService.filterForDisplay(data);
       const featuredResult = newsService.filterForDisplay({items:data.featured || []});
       const featured = featuredResult.items;
       const withheldUrls=[...new Set([...(safe.withheldUrls||[]),...(featuredResult.withheldUrls||[])])];
+      if(cursorMode){
+        if(safe.items.length!==data.items.length||featured.length!==(data.featured||[]).length)throw Error('NEWS_ARCHIVE_CURSOR_SCOPE_CHANGED');
+        return send(res,200,{...safe,...(data.featured===undefined?{}:{featured}),...(withheldUrls.length?{withheldUrls}:{}),dataState:'fresh'});
+      }
       const countExact=data.countExact===true&&safe.items.length===data.items.length&&featured.length===(data.featured||[]).length;
       return send(res, 200, { ...safe, countExact, matchingTotal:countExact?data.matchingTotal:null, ...(withheldUrls.length?{withheldUrls}:{}), featured, dataState: data.stale ? 'stale' : safe.dataState || (data.configured ? 'fresh' : 'unavailable') });
     } catch (error) {
+      if (error.message === 'NEWS_ARCHIVE_CURSOR_RPC_REQUIRED') return send(res, 503, { error: 'คลังข่าวแบบเคอร์เซอร์ยังไม่พร้อม', code: error.message, dataState: 'unavailable' });
+      if(['NEWS_ARCHIVE_CURSOR_SCOPE_CHANGED','NEWS_ARCHIVE_CURSOR_INDEX_CHANGED'].includes(error.message))return send(res,409,{error:'บริบทคลังข่าวเปลี่ยนแล้ว',code:error.message,dataState:'unavailable'});
+      if(error.message==='NEWS_ARCHIVE_CURSOR_INVALID')return send(res,400,{error:'เคอร์เซอร์ไม่ถูกต้อง',code:error.message,dataState:'unavailable'});
+      if(['NEWS_QUERY_POLICY_NOT_READY','NEWS_QUERY_INDEX_NOT_READY'].includes(error.message))return send(res,503,{error:'คลังข่าวยังไม่พร้อม',code:error.message,dataState:'unavailable'});
       return send(res, 502, { error: 'โหลดคลังข่าวไม่สำเร็จ', items: [], dataState: 'unavailable' });
     }
   }

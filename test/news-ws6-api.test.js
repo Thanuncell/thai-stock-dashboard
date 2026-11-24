@@ -29,3 +29,12 @@ test('WS6 HTTP: union/count/page coverage is consistent and canonical equivalent
  const denied=await request('source=infoquest','');assert.equal(denied.status,401);
  assert.equal(calls.rss,0);assert.equal(calls.writes,0);
 });
+
+test('cursor HTTP reports the missing RPC explicitly without a legacy read or a fabricated count',async()=>{
+ const before={...calls};
+ const result=await request('pagination=cursor&cursor=opaque-fixture');
+ assert.equal(result.status,503);assert.equal(result.body.code,'NEWS_ARCHIVE_CURSOR_RPC_REQUIRED');
+ assert.equal(result.body.dataState,'unavailable');assert.equal('total' in result.body,false);
+ assert.deepEqual(calls,before);
+ assert.equal((await request('pagination=cursor','')).status,401);
+});

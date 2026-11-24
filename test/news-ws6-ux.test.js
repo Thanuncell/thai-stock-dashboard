@@ -77,15 +77,13 @@ test('WS6: incomplete snapshot preserves page totals and ordered slices without 
  const overflow=await archive.list({page:999,featuredCount:5});assert.equal(overflow.page,999);assert.equal(overflow.items.length,0);assert.equal(reads,1);
 });
 
-test('Original pagination functions match approved pre-WS6 commit 07d78f8 exactly',()=>{
+test('shared Watchlist pager and scroll retain accepted pre-WS6 behavior',()=>{
  const fs=require('node:fs'),path=require('node:path'),{createHash}=require('node:crypto'),source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8').replace(/\r\n/g,'\n');
  const expected={"renderPagerInto":"f83004e1bff5f9e9eaf7aa5f889d68020acef13535e0783d9d6134ac63cff824","scrollToPageTop":"448ecad06fd751420cdd01fa5dfaf4c0f01ce7f2119985fd85a9cfa5129aabcb"};
  for(const [name,hash]of Object.entries(expected)){const body=source.match(new RegExp('function '+name+'\\([\\s\\S]*?\\n\\}'))?.[0];assert.ok(body);assert.equal(createHash('sha256').update(body).digest('hex'),hash,name);}
- // Loading presentation may change; original page math, buttons and scroll remain frozen.
- const mainPagination=source.match(/function renderNews\([\s\S]*?\n\}/)[0].split('  const availableCount')[1].split("  const counter = $('#news-count');")[0];
+ // v1.7.3 explicitly authorizes News Archive cursor pagination. Its behavior is
+ // verified by cursor/browser tests; the shared Watchlist implementation stays frozen.
  const watchPagination=source.match(/function renderWatchlistNews\([\s\S]*?\n\}/)[0].split('  const total =')[1];
  assert.equal(createHash('sha256').update(watchPagination).digest('hex'),'39f72c1ac46f65271d44750377ae85161b23df2341be09e0883c9391752655f6','Original Watchlist pagination logic');
- assert.equal(createHash('sha256').update(mainPagination).digest('hex'),'141c5bdf94c57a91116f0ab1ffaa5c7c681d3ea7f384baa0ca9fe427fefbbac6','Main News pagination body matches 07d78f8');
- assert.match(source,/const displayPage = archiveLoaded \? Math\.max\(1, Math\.min\(newsPage, total\)\) : 1/);
  assert.doesNotMatch(source,/archiveSnapshotTotal|scrollToNewsList|clamp:'1'/);
 });

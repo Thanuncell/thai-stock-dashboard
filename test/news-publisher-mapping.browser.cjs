@@ -32,7 +32,7 @@ const {createNewsLinkReview}=require('../server/news-link-review');
           return {response:new Response(html,{headers:{'content-type':'text/html'}}),target:new URL(row.url)};
         }});
       for(const row of rows.slice(0,4))await review.inspect({title:row.title,url:row.url,source:row.source,sourceName:row.source_name,pubDate:row.published_at});
-      let reads=0,archiveCalls=0;
+      let reads=0,archiveCalls=0,lastArchive;
       const archive=createNewsArchiveService({env:{SUPABASE_URL:'https://fixture.invalid',SUPABASE_SECRET_KEY:'synthetic',SETSCOPE_NEWS_ARCHIVE_QUERY:'off'},
         displayProject:item=>review.project(item),fetchImpl:async(_url,init)=>{
           assert.ok(!init?.method||init.method==='GET');reads++;
@@ -47,21 +47,23 @@ const {createNewsLinkReview}=require('../server/news-link-review');
           if(url.origin===base&&url.pathname==='/api/news')return json({items:[],dataState:'fresh'});
           if(url.origin===base&&url.pathname==='/api/news-archive') {
             archiveCalls++;
-            return json({...await archive.list({source:url.searchParams.get('source')||'all',query:url.searchParams.get('query')||'',
+            lastArchive=await archive.list({source:url.searchParams.get('source')||'all',query:url.searchParams.get('query')||'',
               page:Number(url.searchParams.get('page')||1),pageSize:10,featuredCount:Number(url.searchParams.get('featuredCount')||0),
-              excludeUrls:url.searchParams.getAll('exclude')}),dataState:'fresh'});
+              excludeUrls:url.searchParams.getAll('exclude')});return json({...lastArchive,dataState:'fresh'});
           }
           if(url.origin===base&&url.pathname==='/api/watchlist-news')return json({items:[],dataState:'fresh'});
           if(url.origin===base&&url.pathname==='/api/news-analysis')return json({items:request.postDataJSON().items.map(()=>({mode:'unavailable',summary:''}))});
           return mockRequest(route,base,state);
         });
         const page=await context.newPage();await seedPage(page,'token-a');await page.goto(base+'/#news',{waitUntil:'domcontentloaded'});
-        const counter=page.locator('#news-count');await page.waitForFunction(()=>document.querySelector('#news-count')?.textContent==='19 ข่าว');
+        const counter=page.locator('#news-count');
+        const ready=()=>page.waitForFunction(()=>document.body.classList.contains('authenticated')&&document.querySelector('#news-list')?.getAttribute('aria-busy')==='false'&&!document.querySelector('#refresh-news').disabled);
+        await ready();assert.equal(lastArchive.matchingTotal,19);assert.equal(await counter.isVisible(),false);
         const choose=async source=>{
           const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive');
-          await page.locator('#news-sources [data-source="'+source+'"]').click();await response;
+          await page.locator('#news-sources [data-source="'+source+'"]').click();await response;await ready();
         };
-        await choose('settrade');await page.waitForFunction(()=>document.querySelector('#news-count')?.textContent==='18 ข่าว');
+        await choose('settrade');assert.equal(lastArchive.matchingTotal,18);
         for(let i=0;i<3;i++) {
           const card=page.locator('#featured-news .news-item').filter({has:page.getByRole('link',{name:'PTT รายงานผลประกอบการโครงการ '+i,exact:true})});
           assert.equal(await card.count(),1);assert.equal(await card.locator('.news-relevance').textContent(),'PTT');
@@ -72,12 +74,12 @@ const {createNewsLinkReview}=require('../server/news-link-review');
         const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive');
         await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await response;
         await page.waitForFunction(()=>document.querySelector('#news-pager .active')?.textContent==='2');
-        assert.equal(await page.locator('#news-list .news-title-link').count(),3);assert.equal(await counter.textContent(),'18 ข่าว');
-        await choose('infoquest');await page.waitForFunction(()=>document.querySelector('#news-count')?.textContent==='19 ข่าว');
+        assert.equal(await page.locator('#news-list .news-title-link').count(),3);assert.equal(await counter.isVisible(),false);
+        await choose('infoquest');assert.equal(lastArchive.matchingTotal,19);
         assert.equal(await page.locator('#news-sources [aria-pressed="true"]').count(),2);
         const searched=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/news-archive'&&new URL(r.url()).searchParams.get('query')==='โครงการ 17');
         await page.locator('#news-search').fill('โครงการ 17');await searched;
-        await page.waitForFunction(()=>document.querySelector('#news-count')?.textContent==='1 ข่าว');
+        await ready();assert.equal(lastArchive.matchingTotal,1);assert.equal(await counter.isVisible(),false);
         assert.equal(await page.locator('#news-section .news-title-link').count(),1);
         assert.equal(await page.locator('#news-section .news-title-link').textContent(),'PTT รายงานผลประกอบการโครงการ 17');
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
