@@ -78,9 +78,17 @@ for(const [name,viewport]of [['desktop',{width:1440,height:1000}],['mobile',{wid
   await t.test('responsive layout without horizontal overflow or forbidden impact fields',async()=>{assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));assert.doesNotMatch(await page.locator('#news-impact-view').textContent(),/RSI|Impact Score|% เปลี่ยนแปลง/);const rect=await page.locator('#impact-submit').boundingBox();assert.ok(rect.width>=140);});
   await t.test('legacy source filter/search remain functional across view switches',async()=>{
     await page.click('#news-explore-tab');await page.waitForSelector('#news-list .news-item');
-    await page.click('#news-sources [data-source=infoquest]');await page.waitForFunction(()=>document.querySelector('#news-count').textContent==='1 ข่าว');assert.match(await page.locator('#news-list').textContent(),/AOT/);assert.doesNotMatch(await page.locator('#news-list').textContent(),/PTT/);
-    await page.fill('#news-search','ไม่พบ');await page.waitForFunction(()=>document.querySelector('#news-count').textContent==='0 ข่าว');
-    await page.click('#news-impact-tab');await page.click('#news-explore-tab');assert.equal(await page.locator('#news-search').inputValue(),'ไม่พบ');assert.equal(await page.locator('#news-sources [data-source=infoquest]').getAttribute('aria-pressed'),'true');await shot('legacy-filters');
+    const settled=()=>document.querySelector('#news-list').getAttribute('aria-busy')==='false'&&!document.querySelector('#refresh-news').disabled;
+    await page.waitForFunction(settled);
+    await page.click('#news-sources [data-source=infoquest]');
+    await page.waitForFunction(()=>document.querySelector('#news-list').getAttribute('aria-busy')==='false'&&!document.querySelector('#refresh-news').disabled&&document.querySelectorAll('#news-list .news-title-link').length===1&&document.querySelector('#news-list .news-title-link').textContent.includes('AOT'));
+    assert.match(await page.locator('#news-list').textContent(),/AOT/);assert.doesNotMatch(await page.locator('#news-list').textContent(),/PTT/);
+    assert.equal(await page.locator('#news-count').isVisible(),false);
+    await page.fill('#news-search','ไม่พบ');
+    const empty=()=>document.querySelector('#news-list').getAttribute('aria-busy')==='false'&&!document.querySelector('#refresh-news').disabled&&document.querySelectorAll('#news-list .news-title-link').length===0&&document.querySelector('#news-list [data-empty-message]')?.dataset.emptyMessage==='ไม่พบข่าวที่ตรงกับคำค้นนี้';
+    await page.waitForFunction(empty);assert.equal(await page.locator('#news-count').isVisible(),false);
+    await page.click('#news-impact-tab');await page.click('#news-explore-tab');await page.waitForFunction(empty);
+    assert.equal(await page.locator('#news-search').inputValue(),'ไม่พบ');assert.equal(await page.locator('#news-sources [data-source=infoquest]').getAttribute('aria-pressed'),'true');assert.equal(await page.locator('#news-count').isVisible(),false);await shot('legacy-filters');
   });
   await t.test('session boundary clears input/result/quota; stale response cannot repaint',async()=>{
     await page.click('#news-impact-tab');await page.fill('#impact-input',f.text+' stale-response');holdNext=true;

@@ -132,7 +132,14 @@ function createNewsArchiveService({
 
   async function request(path, init = {}) {
     const response = await fetchImpl(`${baseUrl}/rest/v1/${path}`, { ...init, signal: init.signal || AbortSignal.timeout(12000) });
-    if (!response.ok) throw Error(`News archive ${path.split('?')[0]} HTTP ${response.status}`);
+    if (!response.ok) {
+      const error=Error(`News archive ${path.split('?')[0]} HTTP ${response.status}`);
+      if(path==='rpc/list_news_archive_cursor'){
+        const body=await response.json().catch(()=>({}));error.status=response.status;error.code=body.code;
+        error.archiveCode=String(body.message||'').match(/NEWS_(?:ARCHIVE_CURSOR|QUERY)_[A-Z_]+/)?.[0];
+      }
+      throw error;
+    }
     return response;
   }
 
@@ -359,7 +366,9 @@ function createNewsArchiveService({
     });
   }
 
-  async function list({ page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [], featuredCount = 0 } = {}) {
+  async function list(options = {}) {
+    const { page = 1, pageSize = 10, source = 'all', symbol = '', query = '', excludeUrls = [], featuredCount = 0, pagination = 'legacy' } = options;
+    if (pagination === 'cursor'||queryIndex.enabled&&Number(options.windowPages)>0) return queryIndex.listCursor(options);
     const safePage = Math.max(1, Math.min(100000, Number.parseInt(page, 10) || 1));
     const safePageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, Number.parseInt(pageSize, 10) || 10));
     const safeFeaturedCount = Math.max(0, Math.min(MAX_FEATURED_COUNT, Number.parseInt(featuredCount, 10) || 0));
@@ -407,7 +416,7 @@ function createNewsArchiveService({
     };
   }
 
-  return { configured, refreshQueryIndex:queryIndex.refresh, canQueue: configured && evidenceMode === 'write', ingest, list, prepare, restorePrepared: row => {
+  return { configured, cursorEnabled:queryIndex.enabled, projectQueryRows:queryIndex.projectRows, refreshQueryIndex:queryIndex.refresh, canQueue: configured && evidenceMode === 'write', ingest, list, prepare, restorePrepared: row => {
     if (!require('../lib/news-evidence').validStoredEvidence({...row,verification_revision:1})) throw Error('INVALID_PREPARED_NEWS');
     const item=rowItem(row);
     item.verification=restoreEvidence(item,{...row,verification_revision:1});

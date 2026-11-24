@@ -234,7 +234,7 @@ test('News archive requests carry search and featured exclusions before server-s
   assert.match(archiveLoader, /data\.dataState === 'fresh' && !data\.stale/);
   assert.match(searchHandler, /clearTimeout\(newsSearchTimer\)/);
   assert.match(searchHandler, /newsSearchTimer = setTimeout/);
-  assert.match(searchHandler, /getArchiveNews\(\{ page: 1 \}\)/);
+  assert.match(searchHandler, /archiveNewsRequestId\+\+/, 'changed search invalidates the pending response before debounce');
 });
 
 test('News uses fresh Archive Featured fallback and never leaves archived analysis loading forever', () => {

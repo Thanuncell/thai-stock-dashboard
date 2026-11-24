@@ -259,17 +259,29 @@ async function makeContext(width) {
     await page.goto(`${base}/?s=PTT&source=infoquest&newsPage=3#news`); await page.waitForSelector('body.authenticated');
     await archiveRequested;
     const newsUrl = page.url();
+    check(newsUrl, `${base}/?s=PTT&source=infoquest#news`, 'cold deep link resets to page 1 without losing query/filter');
     await page.locator('#user-avatar').click(); await expectNavigation(`${base}/#profile`, 'profile');
     await page.goBack(); await expectNews(newsUrl);
     releaseArchive(); state.archiveGate = null;
     await newsSettled();
-    await expectNews(newsUrl); // Unavailable is not evidence that page 3 is out of range.
+    await expectNews(newsUrl);
+    check(await page.locator('#news-count').textContent(), 'คลังข่าวไม่พร้อม', 'unavailable remains unavailable after the cursor-history reset');
     await page.goForward(); await expectNavigation(`${base}/#profile`, 'profile');
     await page.goBack(); await expectNews(newsUrl);
     state.archiveMode = 'available';
     await page.reload(); await page.waitForSelector('body.authenticated'); await newsSettled();
-    const expectThirdPage = async () => {
+    const expectFirstPage = async () => {
       await expectNews(newsUrl);
+      await page.waitForFunction(() => document.querySelector('#news-pager .active')?.textContent === '1' && document.querySelector('#news-list')?.getAttribute('aria-busy') === 'false');
+      check(await page.locator('#news-list .news-title-link').allTextContents(), historyRows('PTT').slice(0, 10).map(row => row.title), 'cold/reloaded News page 1 content');
+      check(await page.locator('#news-count').isVisible(), false, 'fresh Archive total stays hidden');
+    };
+    await expectFirstPage();
+    // Retain visited-page history coverage separately from cold URL recovery.
+    await page.locator('#news-pager').getByRole('button', { name: '3', exact: true }).click(); await newsSettled();
+    const thirdPageUrl = page.url();
+    const expectThirdPage = async () => {
+      await expectNews(thirdPageUrl);
       await page.waitForFunction(() => document.querySelector('#news-pager .active')?.textContent === '3' && document.querySelector('#news-list')?.getAttribute('aria-busy') === 'false');
       check(await page.locator('#news-list .news-title-link').allTextContents(), historyRows('PTT').slice(20).map(row => row.title), 'restored News page 3 content');
     };
@@ -278,12 +290,17 @@ async function makeContext(width) {
     await page.goBack(); await expectThirdPage();
     await page.goForward(); await expectNavigation(`${base}/#profile`, 'profile');
     await page.goBack(); await expectThirdPage();
+    await page.goBack(); await expectFirstPage();
     await page.goBack(); await expectNavigation(`${base}/#profile`, 'profile');
+    await page.goForward(); await expectFirstPage();
     await page.goForward(); await expectThirdPage();
-    state.archiveMode = 'empty';
     await page.reload(); await page.waitForSelector('body.authenticated'); await newsSettled();
+    await expectFirstPage();
+    state.archiveMode = 'empty';
+    await page.goto(thirdPageUrl); await page.waitForSelector('body.authenticated'); await newsSettled();
     await expectNews(`${base}/?s=PTT&source=infoquest#news`);
     check(await page.locator('#news-list .news-title-link').count(), 0, 'confirmed empty archive still clamps an out-of-range page');
+    check(await page.locator('#news-count').isVisible(), false, 'confirmed empty results do not restore the total counter');
     state.watchRows = historyRows('CPALL');
     await page.locator('.side-nav [data-workspace-route="watchlist"]').click();
     await page.locator('#watchlist-select-mobile').selectOption('list-2');

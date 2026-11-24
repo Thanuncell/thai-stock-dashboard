@@ -13,11 +13,24 @@ const run = promisify(execFile);
 const root = path.resolve(__dirname, '..');
 const bin = process.env.SETSCOPE_PG_BIN;
 const postgrest = process.env.SETSCOPE_POSTGREST_BIN;
+const cursorSettings = Object.fromEntries(['SETSCOPE_G2B_EVIDENCE','SETSCOPE_PLAYWRIGHT_MODULE','SETSCOPE_BROWSER_EXECUTABLE'].filter(name => process.env[name]).map(name => [name, process.env[name]]));
 const env = { ...process.env };
 for (const name of Object.keys(env)) {
   if (/^(SUPABASE_|PG|DATABASE_URL$|SETSCOPE_)|TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY/i.test(name)) delete env[name];
 }
 const executable = name => path.join(bin, name + (process.platform === 'win32' ? '.exe' : ''));
+// pg_ctl starts a daemon. Inherited output pipes can remain open on Windows
+// after the control process exits; PostgreSQL diagnostics already go to its log.
+async function control(file, args, options) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(file, args, { ...options, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', code => {
+      if (code === 0) resolve();
+      else { const error = new Error('Disposable PostgreSQL control failed'); error.code = code; reject(error); }
+    });
+  });
+}
 async function port() {
   const server = net.createServer();
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -31,11 +44,17 @@ async function main() {
   assert.match((await run(executable('postgres'), ['--version'], { env })).stdout, /PostgreSQL\) 17\./);
   if (postgrest) assert.ok(path.isAbsolute(postgrest));
   const archiveOnly = process.argv.includes('--archive-only');
-  if (archiveOnly) assert.ok(postgrest && path.isAbsolute(postgrest), 'Archive mode requires isolated PostgREST');
+  const cursorOnly = process.argv.includes('--cursor-only');
+  assert.ok(!(archiveOnly && cursorOnly), 'Select one archive verification mode');
+  if (archiveOnly || cursorOnly) assert.ok(postgrest && path.isAbsolute(postgrest), 'Archive mode requires isolated PostgREST');
+  if (archiveOnly || cursorOnly) {
+    for (const value of Object.values(cursorSettings)) assert.ok(path.isAbsolute(value), 'Test tool/evidence paths must be absolute');
+    if (cursorOnly && cursorSettings.SETSCOPE_G2B_EVIDENCE) await fs.mkdir(cursorSettings.SETSCOPE_G2B_EVIDENCE, { recursive: true });
+  }
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'setscope-v165-pg-'));
   let safeToRemove = true;
   try {
-    const files = archiveOnly
+    const files = cursorOnly ? ['test/news-archive-cursor.postgres.cjs'] : archiveOnly
       ? ['test/news-archive-g2.postgres.cjs', 'test/news-archive-query.postgres.cjs', 'test/news-evidence.postgres.cjs']
       : process.argv.includes('--production-only') ? ['test/production-remembered.postgres.cjs']
       : ['test/remembered-session.postgres.cjs', 'test/dev-remembered-role.postgres.cjs', 'test/production-remembered.postgres.cjs'];
@@ -51,13 +70,13 @@ async function main() {
       await fs.appendFile(path.join(dataDir, 'postgresql.conf'), `\nlisten_addresses='127.0.0.1'\nport=${localPort}\nmax_connections=25\nlog_statement='none'\n${process.platform === 'win32' ? '' : `unix_socket_directories='${socket}'\n`}`);
       let started = false;
       try {
-        await run(pgCtl, ['-D', dataDir, '-l', path.join(directory, 'postgres.log'), '-w', 'start'], options);
+        await control(pgCtl, ['-D', dataDir, '-l', path.join(directory, 'postgres.log'), '-w', 'start'], options);
         started = true;
         const testEnv = { ...env, SETSCOPE_V165_LOCAL_PG: JSON.stringify({ port: localPort, dataDir, pgCtl }) };
         if (postgrest) testEnv.SETSCOPE_V165_LOCAL_HTTP = JSON.stringify({ executable: postgrest });
         if (archiveOnly) {
           const config = JSON.stringify({ host: '127.0.0.1', port: localPort, user: 'setscope_test_admin', database: 'postgres' });
-          Object.assign(testEnv, {
+          Object.assign(testEnv, cursorSettings, {
             SETSCOPE_WS7_PG: config,
             SETSCOPE_G1_TEST_PG: config,
             SETSCOPE_WS3_PG_DATA: dataDir,
@@ -66,6 +85,11 @@ async function main() {
             SETSCOPE_WS7_BROWSER: 'on'
           });
         }
+        if (cursorOnly) Object.assign(testEnv, cursorSettings, {
+          SETSCOPE_G2B_NATIVE: JSON.stringify({ host: '127.0.0.1', port: localPort, user: 'setscope_test_admin', database: 'postgres' }),
+          SETSCOPE_TEST_PG_BIN: bin,
+          SETSCOPE_TEST_POSTGREST: postgrest
+        });
         const code = await new Promise((resolve, reject) => {
           const child = spawn(process.execPath, ['--test', file], { cwd: root, env: testEnv, stdio: 'inherit', windowsHide: true });
           child.once('error', reject);
@@ -75,11 +99,11 @@ async function main() {
       } finally {
         // A suite can restart the cluster itself. Check actual state before cleanup.
         let running = false;
-        try { await run(pgCtl, ['-D', dataDir, 'status'], options); running = true; } catch (error) {
+        try { await control(pgCtl, ['-D', dataDir, 'status'], options); running = true; } catch (error) {
           if (error.code !== 3) { safeToRemove = false; throw new Error('Unable to verify disposable database state'); }
         }
         if (started || running) {
-          if (running) try { await run(pgCtl, ['-D', dataDir, '-m', 'fast', '-w', 'stop'], options); }
+          if (running) try { await control(pgCtl, ['-D', dataDir, '-m', 'fast', '-w', 'stop'], options); }
           catch { safeToRemove = false; throw new Error('Disposable database shutdown failed; directory retained'); }
         }
       }
@@ -92,4 +116,8 @@ async function main() {
     if (safeToRemove) await fs.rm(temporary, { recursive: true });
   }
 }
-main().catch(() => { console.error('Offline PostgreSQL verification failed (diagnostics redacted).'); process.exitCode = 1; });
+main().catch(error => {
+  const code = typeof error.code === 'number' || /^[A-Z_]+$/.test(error.code || '') ? error.code : 'UNKNOWN';
+  console.error(`Offline PostgreSQL verification failed (${code}; diagnostics redacted).`);
+  process.exitCode = 1;
+});
