@@ -1814,6 +1814,7 @@ async function getArchiveNews({ page = newsPage, refresh = false } = {}) {
     let data;
     if(archiveCursorMode&&cursorRequest.cached)data=cursorRequest.entry.data;
     else{
+      if(!refresh&&!newsPending)renderNewsSkeleton($('#news-list'),'กำลังโหลดข่าวล่าสุด…');
       const response = await apiFetch(`/api/news-archive?${params}`);
       data = await response.json();
       if(!current())return;
@@ -2254,7 +2255,8 @@ function renderNews() {
   if (archiveLoaded) newsPage = displayPage;
   const items = archiveLoaded ? rest.slice(0, PAGE_SIZE) : rest.slice((displayPage - 1) * PAGE_SIZE, displayPage * PAGE_SIZE);
   const emptyText = query ? 'ไม่พบข่าวที่ตรงกับคำค้นนี้' : 'ยังไม่มีข่าวในหมวดที่เลือก';
-  renderNewsItemsInto($('#news-list'), items, emptyText);
+  const newsList=$('#news-list');
+  if(archiveState!=='loading'||newsList?.dataset.skeleton!=='true')renderNewsItemsInto(newsList, items, emptyText);
   const pickPage=async page => {
     newsPage = page; writeNavigation('push', 'news');
     if (archiveConfigured) await getArchiveNews({ page }); else renderNews();

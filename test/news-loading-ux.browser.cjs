@@ -2,6 +2,7 @@
 const strict=require('node:assert/strict');let checks=0;const assert=new Proxy(strict,{get:(t,k)=>typeof t[k]==='function'?(...a)=>{checks++;return t[k](...a);}:t[k]});
 const fs=require('node:fs/promises'),path=require('node:path'),{spawn,execFileSync}=require('node:child_process'),{chromium}=require(process.env.SETSCOPE_PLAYWRIGHT_MODULE||'playwright');
 const {mockRequest,seedPage,freePort,waitForServer}=require('./account-isolation.browser.cjs');
+const createWindowFixture=require('./fixtures/news-archive-window.cjs');
 const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const promise=new Promise(r=>{release=r;});return{promise,release};};
 (async()=>{
  const root=path.join(__dirname,'..'),port=await freePort(),base='http://127.0.0.1:'+port,d=await import('../client/domain.mjs'),baseline=process.env.SETSCOPE_LOADING_BASELINE==='on';
@@ -12,21 +13,25 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    checks=0;const context=await browser.newContext({viewport,reducedMotion:'reduce'}),state={getOwners:[],putOwners:[],holdNextAPut:false,holdNextLogout:false,holdNextAGet:false,holdNextAMarket:false};
    const make=(kind,n=30)=>Array.from({length:n},(_,i)=>({title:'PTT ข่าวผลประกอบการ '+kind+' '+i,url:'https://news.google.com/rss/articles/loading-'+kind+'-'+i,source:i%2?'other':'infoquest',sourceName:i%2?'กรุงเทพธุรกิจ':'InfoQuest',pubDate:new Date(Date.now()-60000-i*1000).toISOString(),snippet:'บริษัทเปิดเผยข้อมูลผลประกอบการและแผนการลงทุนตามแหล่งข่าวต้นทาง',matchedSymbols:['PTT'],verification:{status:'VERIFIED',basis:'metadata'}}));
    const live=make('live'),archived=make('archive',90),watch=[live[0],...make('watch',14)];let liveRows=live,archiveRows=archived,watchRows=watch;
-   const holds={archive:gate(),analysis:gate()},calls={news:0,archive:0,watch:0,analysis:0};let newsError=false,newsAbort=false,archiveError=false,archiveAbort=false,watchError=false,archiveAvailable=true;const responses=[];
+   const holds={archive:gate(),analysis:gate()},calls={news:0,archive:0,watch:0,analysis:0};let newsError=false,newsAbort=false,archiveError=false,archiveAbort=false,watchError=false,archiveAvailable=true,cursorFixture=null;const responses=[];
    await context.route('**/*',async route=>{
     const req=route.request(),u=new URL(req.url()),json=(body,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)}).catch(()=>{});
     if(u.origin!==base&&u.origin!=='https://isolation-test.supabase.co')return route.abort();
     if(baseline&&u.origin===base&&['/app.js','/style.css'].includes(u.pathname))return route.fulfill({contentType:u.pathname.endsWith('.js')?'application/javascript':'text/css',body:execFileSync('git',['show','e78df615:'+u.pathname.slice(1)],{cwd:root,encoding:'utf8'})});
-    if(u.origin===base&&u.pathname==='/api/news'){calls.news++;if(newsAbort)return route.abort('failed');const rows=liveRows,failed=newsError,hold=req.headers().authorization?.includes('token-b')?null:holds.news;await hold?.promise;return json(failed?{error:'synthetic'}:{items:rows,dataState:'fresh'},failed?503:200);}
+    if(u.origin===base&&u.pathname==='/api/news'){calls.news++;if(newsAbort)return route.abort('failed');const rows=liveRows,failed=newsError,hold=!cursorFixture&&req.headers().authorization?.includes('token-b')?null:holds.news;await hold?.promise;return json(failed?{error:'synthetic'}:{items:rows,dataState:'fresh'},failed?503:200);}
     if(u.origin===base&&u.pathname==='/api/news-archive'){
      calls.archive++;if(archiveAbort)return route.abort();const hold=holds.archive,rows=archiveRows,failed=archiveError,configured=archiveAvailable;await hold?.promise;if(failed)return json({error:'synthetic'},503);
+     if(cursorFixture){
+      const lookahead=u.searchParams.has('windowStart')?{startPage:Number(u.searchParams.get('windowStart')),pageCount:Number(u.searchParams.get('windowPages')),cursor:u.searchParams.get('windowAfter')}:null;
+      return json(cursorFixture.read({source:u.searchParams.get('source')||'all',query:u.searchParams.get('query')||'',cursor:u.searchParams.get('cursor'),revision:u.searchParams.get('revision'),excludeUrls:u.searchParams.getAll('exclude'),featuredCount:Number(u.searchParams.get('featuredCount')||0),lookahead}));
+     }
      const excluded=new Set(u.searchParams.getAll('exclude').map(url=>d.newsKey({url}))),selection=d.selectNewsForDisplay(rows,{source:u.searchParams.get('source'),query:u.searchParams.get('query')||'',featuredCount:0}).filtered.filter(x=>!excluded.has(d.newsKey(x))),fc=Number(u.searchParams.get('featuredCount')||0),featured=selection.slice(0,fc),rest=selection.slice(featured.length),page=Number(u.searchParams.get('page')||1),body={configured,items:configured?rest.slice((page-1)*10,page*10):[],featured:configured?featured:[],total:configured?rest.length:0,page,pageSize:10,countExact:true,dataState:configured?'fresh':'unavailable'};responses.push(body);return json(body);
     }
-    if(u.origin===base&&u.pathname==='/api/watchlist-news'){calls.watch++;const hold=req.headers().authorization?.includes('token-b')?null:holds.watch,rows=req.headers().authorization?.includes('token-b')?make('B-private',5).map(x=>({...x,title:x.title.replace('PTT','CPALL'),matchedSymbols:['CPALL']})):watchRows,failed=watchError;await hold?.promise;return json(failed?{error:'synthetic'}:{items:rows,dataState:'fresh'},failed?503:200);}
+    if(u.origin===base&&u.pathname==='/api/watchlist-news'){calls.watch++;const hold=!cursorFixture&&req.headers().authorization?.includes('token-b')?null:holds.watch,rows=req.headers().authorization?.includes('token-b')?make('B-private',5).map(x=>({...x,title:x.title.replace('PTT','CPALL'),matchedSymbols:['CPALL']})):watchRows,failed=watchError;await hold?.promise;return json(failed?{error:'synthetic'}:{items:rows,dataState:'fresh'},failed?503:200);}
     if(u.origin===base&&u.pathname==='/api/news-analysis'){calls.analysis++;const hold=holds.analysis,items=req.postDataJSON().items;await hold?.promise;return json({items:items.map(()=>({summary:'บทสรุป AI ที่ตอบกลับภายหลังจาก Fixture',mode:'ai',basis:'headline'}))});}
     return mockRequest(route,base,state);
    });
-   const page=await context.newPage();await seedPage(page,'token-a');await page.addInitScript(t=>localStorage.setItem('setscope-theme',t),theme);await page.addInitScript(()=>{window.newsLayoutShift=0;new PerformanceObserver(list=>{for(const e of list.getEntries())if(!e.hadRecentInput&&e.sources?.some(s=>(s.node?.closest||s.node?.parentElement?.closest)?.call(s.node?.closest?s.node:s.node.parentElement,'#news-section,#watchlist-page')))window.newsLayoutShift+=e.value;}).observe({type:'layout-shift',buffered:true});});await page.goto(base+'/#news',{waitUntil:'domcontentloaded'});
+   const page=await context.newPage();await page.clock.install();await seedPage(page,'token-a');await page.addInitScript(t=>localStorage.setItem('setscope-theme',t),theme);await page.addInitScript(()=>{window.newsLayoutShift=0;new PerformanceObserver(list=>{for(const e of list.getEntries())if(!e.hadRecentInput&&e.sources?.some(s=>(s.node?.closest||s.node?.parentElement?.closest)?.call(s.node?.closest?s.node:s.node.parentElement,'#news-section,#watchlist-page')))window.newsLayoutShift+=e.value;}).observe({type:'layout-shift',buffered:true});});await page.goto(base+'/#news',{waitUntil:'domcontentloaded'});
    for(let n=0;n<100&&(!calls.archive||!calls.analysis);n++)await delay(25);assert.ok(calls.archive&&calls.analysis,'both independent requests started');
    const partial=await page.locator('#news-list .news-title-link,#featured-news .news-title-link').count();console.log(JSON.stringify({viewport:label,phase:'archive-pending',links:partial,calls:{...calls},baseline}));
    if(process.env.SETSCOPE_LOADING_EVIDENCE){await fs.mkdir(process.env.SETSCOPE_LOADING_EVIDENCE,{recursive:true});await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+(baseline?'-before':'-loading')+'.png')});}
@@ -74,6 +79,59 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    liveRows=make('B-live',30);archiveRows=make('B-archive',90);holds.archive=gate();await page.locator('#login-form input[name="email"]').fill('b@example.test');await page.locator('#login-form input[name="password"]').fill('fixture-password');await page.locator('#login-form button[type="submit"]').click();await page.waitForSelector('body.authenticated');await page.locator('.nav-item[data-workspace-route="news"]').click();for(let n=0;n<100&&!(await page.locator('#refresh-news').isDisabled());n++)await delay(10);
    oldArchiveHold.release();holds.watch.release();delete holds.watch;await delay(50);assert.equal(await page.locator('#refresh-news').isDisabled(),true);assert.doesNotMatch(await page.locator('#news-section').textContent(),/OLD-A/);holds.archive.release();delete holds.archive;await ready();assert.match(await page.locator('#featured-news').textContent(),/B-live/);assert.doesNotMatch(await page.locator('#watchlist-news-list').textContent(),/PTT|OLD-A/);assert.equal(await page.locator('#watchlist-news-list').getAttribute('aria-busy'),'false');state.releaseLogout?.();
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);if(process.env.SETSCOPE_LOADING_EVIDENCE)await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+'-ready.png')});
+   // Native cursor loading: hold responses, without adding runtime delay or requests.
+   liveRows=make('cursor-live');cursorFixture=await createWindowFixture({rows:make('cursor',90)});holds.analysis=gate();holds.watch=gate();
+   await page.reload({waitUntil:'domcontentloaded'});await ready();holds.watch.release();delete holds.watch;
+   assert.equal(await page.locator('#news-pager [aria-current="page"]').textContent(),'1');
+   const nativeCalls={...calls};
+   await page.evaluate(()=>{window.loadingFeatured=document.querySelector('#featured-news .news-title-link');});
+   holds.archive=gate();let started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');
+   await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await started;
+   assert.ok(await page.locator('#news-list .news-skeleton').count()>0,'cursor cache miss displays the existing skeleton');
+   assert.equal(await page.locator('#news-list .news-title-link').count(),0);
+   assert.equal(await page.locator('#featured-news .news-skeleton').count(),0);
+   assert.equal(await page.evaluate(()=>loadingFeatured===document.querySelector('#featured-news .news-title-link')),true,'pagination retains Featured DOM');
+   if(process.env.SETSCOPE_LOADING_EVIDENCE)await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+'-cursor-miss.png')});
+   holds.analysis.release();delete holds.analysis;
+   await page.waitForFunction(()=>document.querySelector('#featured-news').textContent.includes('บทสรุป AI'));
+   assert.ok(await page.locator('#news-list .news-skeleton').count()>0,'independent analysis rendering must not overwrite the pending skeleton');
+   holds.archive.release();delete holds.archive;await ready();
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),make('cursor',90).slice(10,20).map(x=>x.title));
+   assert.equal(calls.archive,nativeCalls.archive+1);assert.equal(calls.news,nativeCalls.news);assert.equal(calls.watch,nativeCalls.watch);
+   await page.evaluate(()=>{window.loadingSkeletonInsertions=0;new MutationObserver(records=>{for(const r of records)for(const n of r.addedNodes)if(n.nodeType===1&&(n.matches('.news-skeleton')||n.querySelector('.news-skeleton')))window.loadingSkeletonInsertions++;}).observe(document.querySelector('#news-list'),{childList:true,subtree:true});});
+   const beforeHit=calls.archive;await page.goBack();await waitForNewsPage(1);
+   assert.equal(calls.archive,beforeHit,'cursor cache hit makes no request');assert.equal(await page.evaluate(()=>loadingSkeletonInsertions),0,'cache hit never inserts a skeleton');
+   assert.equal(await page.locator('#news-list .news-title-link').count(),10);
+   holds.archive=gate();started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');
+   await page.evaluate(()=>{window.loadingRetained=document.querySelector('#news-list .news-title-link');});
+   await page.locator('#refresh-news').click();await started;
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0);
+   assert.equal(await page.evaluate(()=>loadingRetained===document.querySelector('#news-list .news-title-link')),true,'manual refresh retains the accepted DOM');
+   holds.archive.release();delete holds.archive;await ready();assert.equal(calls.archive,beforeHit+1);
+   for(const action of ['search','publisher']){
+    holds.archive=gate();started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');const before=calls.archive;
+    if(action==='search')await page.locator('#news-search').fill('cursor 2');else await page.locator('#news-sources [data-source="infoquest"]').click();
+    await started;assert.ok(await page.locator('#news-list .news-skeleton').count()>0,action+' displays skeleton while its request is pending');
+    holds.archive.release();delete holds.archive;await ready();assert.equal(calls.archive,before+1);assert.equal(await page.locator('#news-pager [aria-current="page"]').textContent(),'1');
+   }
+   // Advance the existing app poll, rather than introducing a new polling mechanism.
+   holds.news=gate();holds.archive=gate();const beforePoll={...calls};
+   await page.evaluate(()=>{window.loadingRetained=document.querySelector('#news-list .news-title-link');});
+   started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news');await page.clock.fastForward(300001);await started;
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0);assert.equal(await page.evaluate(()=>loadingRetained===document.querySelector('#news-list .news-title-link')),true);
+   started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');holds.news.release();delete holds.news;await started;
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'poll Archive refresh retains articles');
+   assert.equal(await page.evaluate(()=>loadingRetained===document.querySelector('#news-list .news-title-link')),true);
+   holds.archive.release();delete holds.archive;await ready();assert.equal(calls.news,beforePoll.news+1);assert.equal(calls.archive,beforePoll.archive+1);
+   started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');await page.locator('#news-search').fill('cursor');await started;await ready();
+   const beforeError=calls.archive,accepted=await page.locator('#news-list .news-title-link').allTextContents();archiveError=true;holds.archive=gate();
+   started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await started;
+   assert.ok(await page.locator('#news-list .news-skeleton').count()>0);holds.archive.release();delete holds.archive;await ready();
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),accepted,'failed cache miss restores the accepted news');
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0);assert.match(await page.locator('#news-count').textContent(),/ไม่พร้อม/);assert.equal(calls.archive,beforeError+1);
+   archiveError=false;await page.locator('#refresh-news').click();await ready();assert.equal(calls.archive,beforeError+2);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+   if(process.env.SETSCOPE_LOADING_EVIDENCE)await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+'-cursor-ready.png')});
    console.log(JSON.stringify({viewport:label,theme,checks,calls,layoutShift:await page.evaluate(()=>window.newsLayoutShift),atomicPresentation:'PASS',stableAiCards:'PASS',warmRefresh:'PASS',originalPagination:'PASS',backForwardNavigation:'PASS',productionRequests:0}));await context.close();
   }
  }finally{await browser?.close();server.kill();}
