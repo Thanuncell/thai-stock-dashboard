@@ -216,12 +216,36 @@ test('G2-B native PostgreSQL/PostgREST keyset, window, E02 and parity',{skip:!pr
       return result;
      };
      const before=await snapshot(),install=await fs.readFile(path.join(repo,cursorSqlFile),'utf8'),rollback=await fs.readFile(path.join(repo,cursorRollbackFile),'utf8');
-     await pool.query(install);assert.deepEqual(await snapshot(),before);
-     await pool.query(rollback);assert.deepEqual(await snapshot(),before);
-     for(const signature of ['public.list_news_archive_cursor(text,text[],text,text,text[],integer,timestamptz,jsonb,text,text,jsonb,jsonb,integer,integer,text[],boolean)','public.news_archive_cursor_candidates(text[],text,text,text[],timestamptz,jsonb)'])assert.equal((await pool.query('select to_regprocedure($1) fn',[signature])).rows[0].fn,null);
-     await pool.query(rollback);assert.deepEqual(await snapshot(),before);
-     await pool.query(install);assert.deepEqual(await snapshot(),before);
-     assert.equal((await service.list({pagination:'cursor',windowStart:1,windowPages:5})).items.length,10);
+     const rpcSignature='public.list_news_archive_cursor(text,text[],text,text,text[],integer,timestamptz,jsonb,text,text,jsonb,jsonb,integer,integer,text[],boolean)';
+     const waitForCursorRpc=async()=>{
+      const start=performance.now(),deadline=start+5000;let attempts=0,metadataRetries=0;
+      const remaining=()=>{const ms=Math.ceil(deadline-performance.now());assert.ok(ms>0,'G5C_CURSOR_RPC_READINESS_TIMEOUT');return ms;};
+      while(true){
+       const catalog=await pool.query({text:'select to_regprocedure($1) fn',values:[rpcSignature],query_timeout:remaining()});
+       assert.ok(catalog.rows[0].fn,'G5C_CURSOR_RPC_MISSING');
+       const response=await fetch(http.base+'/rpc/list_news_archive_cursor',{method:'POST',headers:{Authorization:'Bearer '+http.token,'content-type':'application/json'},
+        body:JSON.stringify({p_policy:policy,p_window_start:1,p_window_pages:5}),signal:AbortSignal.timeout(remaining())});
+       const body=await response.json();attempts++;
+       if(response.status===200){assert.ok(Array.isArray(body.pageKeys));return{attempts,metadataRetries,elapsedMs:Math.round(performance.now()-start),deadlineMs:5000};}
+       // Only an installed RPC missing from PostgREST metadata can be retried.
+       // Other HTTP/SQL/network errors fail immediately; no response body is logged.
+       assert.ok(response.status===404&&body.code==='PGRST202','G5C_CURSOR_RPC_UNEXPECTED_RESPONSE');
+       metadataRetries++;await new Promise(resolve=>setTimeout(resolve,Math.min(25,remaining())));
+      }
+     };
+     for(let cycle=1;cycle<=(size===4000?3:1);cycle++){
+      await pool.query(install);assert.deepEqual(await snapshot(),before);
+      await pool.query(rollback);assert.deepEqual(await snapshot(),before);
+      for(const signature of [rpcSignature,'public.news_archive_cursor_candidates(text[],text,text,text[],timestamptz,jsonb)'])assert.equal((await pool.query('select to_regprocedure($1) fn',[signature])).rows[0].fn,null);
+      await pool.query(rollback);assert.deepEqual(await snapshot(),before);
+      await assert.rejects(waitForCursorRpc(),/G5C_CURSOR_RPC_MISSING/);
+      await assert.rejects(service.list({pagination:'cursor',windowStart:1,windowPages:5}),/NEWS_ARCHIVE_CURSOR_RPC_REQUIRED/);
+      await pool.query(install);assert.deepEqual(await snapshot(),before);
+      const readiness=await waitForCursorRpc();
+      assert.equal((await service.list({pagination:'cursor',windowStart:1,windowPages:5})).items.length,10);
+      console.log('G5C_RPC_READINESS '+JSON.stringify({size,cycle,...readiness,missingRpcRejected:true}));
+      evidence.push({size,cycle,readiness,missingRpcRejected:true});
+     }
      evidence.push({size,migrationCandidate:cursorSqlFile,rollback:cursorRollbackFile,functions,installReinstallRollback:'PASS',archiveDerivedLegacySecurityUnchanged:true});
     });
     if(size===4000)await t.test('actual Node API and native database browser flow',async()=>{await require('./news-archive-cursor-native.browser.cjs')({http,pool,oracle,evidence});});
