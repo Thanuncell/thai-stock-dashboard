@@ -189,6 +189,27 @@ for (const timeframe of ['D','W','M']) test(`5Y ${timeframe} retains actual cale
   assert.ok(provisional.rows.length>0,'missing receipt time does not erase available real bars');
 });
 
+test('5Y preserves the selected guard reason without conflating quote metadata with historical bars', async () => {
+ const calls=[],standard=responder(calls);
+ const service=createMarketService({env:{},now:()=>received,fetchImpl:async input=>{
+  const url=new URL(input);
+  if(url.searchParams.get('range')!=='5y')return standard(input);
+  const {rows,periods}=barsBetween(received-800*86400000,received,'1d');
+  const raw=payload('TISCO.BK','1d',rows,periods);
+  raw.meta.regularMarketChange=999; // synthetic quote-only mismatch; OHLC untouched
+  return {ok:true,status:200,json:async()=>({chart:{result:[raw]}})};
+ }});
+ const market=await service.getMarket(['TISCO'],'TISCO','1Y',{fiveYearDailyHistory:true});
+ assert.equal(market.dataState,'suspect');
+ assert.deepEqual(market.guardReasons,['PRICE_CHANGE_MISMATCH']);
+ const projected=chart.marketTimeframe(market,'D','5Y');
+ assert.deepEqual(projected.guardReasons,['PRICE_CHANGE_MISMATCH']);
+ const snapshot=technical.createTechnicalSnapshot({...projected,symbol:'TISCO',timeframe:'D',historicalRange:'5Y'});
+ assert.equal(snapshot.summary.status,'ready');
+ assert.ok(snapshot.quality.warnings.includes('PRICE_CHANGE_MISMATCH'));
+ assert.equal(technical.createTechnicalSnapshot({...projected,symbol:'TISCO',timeframe:'D',historicalRange:'1Y'}).summary.status,'data-review');
+});
+
 test('unavailable 5Y history preserves the existing unavailable state and never invents bars', async () => {
   const calls=[], standard=responder(calls);
   const service=createMarketService({env:{},now:()=>received,fetchImpl:async input=>{

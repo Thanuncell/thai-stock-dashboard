@@ -60,6 +60,26 @@ test('no confirmed history is distinguished from insufficient warm-up without in
 for(const extra of [{guardReasons:['HISTORICAL_ANOMALY']},{technicalMeta:metadata({corporateActionCount:1})},{dataState:'stale'},{dataState:'suspect'},{guardReasons:['SYMBOL_MISMATCH']},{technicalMeta:metadata({interval:'15m'})}])test(`critical quality blocks signals: ${JSON.stringify(extra)}`,()=>{
  const s=make(daily(),extra);assert.equal(s.summary.actionable,false);assert.equal(s.summary.overall,'ข้อมูลต้องตรวจสอบ');assert.equal(s.summary.status,'data-review');assert.ok(s.quality.warnings.length);
 });
+test('5Y synthetic TISCO/SCB quote-only metadata warnings do not block validated confirmed OHLC',()=>{
+ const meta=metadata({provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc'});
+ for(const symbol of ['TISCO','SCB']){
+  const base={symbol,timeframe:'D',historicalRange:'5Y',dataState:'suspect',guardReasons:['PRICE_CHANGE_MISMATCH'],technicalMeta:meta};
+  const result=make(daily(),base);
+  assert.equal(result.summary.status,'ready');
+  assert.equal(result.summary.actionable,true);
+  assert.ok(result.quality.warnings.includes('PRICE_CHANGE_MISMATCH'));
+  assert.ok(result.quality.warnings.includes('SOURCE_SUSPECT'));
+  assert.equal(make(daily(),{...base,historicalRange:'1Y'}).summary.status,'data-review','1Y unchanged');
+  assert.equal(make(daily(),{...base,guardReasons:['PRICE_CHANGE_MISMATCH','DATA_ANOMALY']}).summary.status,'data-review');
+  assert.equal(make(daily(),{...base,guardReasons:['HISTORICAL_ANOMALY']}).summary.status,'data-review');
+  assert.equal(make(daily(),{...base,guardReasons:['LAST_CLOSE_MISMATCH']}).summary.status,'data-review');
+  assert.equal(make(daily(),{...base,dataState:'stale'}).summary.status,'data-review');
+  assert.equal(make(daily(),{...base,technicalMeta:metadata({provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',historyReasons:['INVALID_OHLC']})}).summary.status,'data-review');
+  assert.equal(make(daily(),{...base,technicalMeta:metadata({provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',corporateActionCount:1})}).summary.status,'data-review');
+  assert.equal(make(daily(),{...base,technicalMeta:metadata()}).summary.status,'data-review','unverified provenance stays blocked');
+ }
+});
+
 test('rejected historical bars remain excluded and INVALID_NUMERIC remains visible without fabricating values',()=>{
  const rows=daily(50),raw={meta:{symbol:'PTT.BK',currency:'THB',exchangeName:'SET',exchangeTimezoneName:'Asia/Bangkok',regularMarketPrice:rows.at(-1).close,regularMarketTime:end/1000,previousClose:rows.at(-2).close,currentTradingPeriod:{regular:{start:lastOpen/1000,end:end/1000}}},timestamp:rows.map(r=>r.time/1000),indicators:{quote:[Object.fromEntries(['open','high','low','close','volume'].map(k=>[k,rows.map(r=>r[k])]))]}};
  raw.indicators.quote[0].close[10]=null;const before=JSON.stringify(raw),service=createMarketService({env:{},now:()=>end+60000,fetchImpl:()=>{throw Error('No live requests');}}),shaped=service.shapeChart(raw,'PTT','chart:3mo:1d');

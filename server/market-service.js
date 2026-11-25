@@ -411,6 +411,8 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       stale: dataState === 'stale',
       partial,
       dataState,
+      // Preserve the selected history request's exact quality reasons for technical decisions.
+      guardReasons: selected?.guardReasons || [],
       errors
     };
   }

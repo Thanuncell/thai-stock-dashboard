@@ -94,7 +94,7 @@ export function priceStructure(rows,last,{asOf=Infinity,candleTime=Infinity,inte
  return {supports:supportDetails.map(z=>z.value),resistances:resistanceDetails.map(z=>z.value),supportDetails,resistanceDetails,zones,swings,width,referenceInterval:interval};
 }
 
-export function createTechnicalSnapshot({history=[],indicatorHistory=history,levelsHistory=history,symbol='',timeframe='1M',fetchedAt=null,technicalMeta={},parameters={},dataState='unknown',guardReasons=[]}={}){
+export function createTechnicalSnapshot({history=[],indicatorHistory=history,levelsHistory=history,symbol='',timeframe='1M',fetchedAt=null,technicalMeta={},parameters={},dataState='unknown',guardReasons=[],historicalRange=null}={}){
  const p=normalizeTechnicalParameters(parameters),interval=RANGE_INTERVAL[timeframe]||'1d';
  const meta=technicalMeta.indicator||technicalMeta.history||{};
  let invalidTimeZone=false;
@@ -137,7 +137,14 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
  const recentBreak=levels.zones.flatMap(z=>z.events).filter(e=>['breakout-confirmed','retest-confirmed'].includes(e.kind)&&e.confirmedAt===latest?.availableAt).at(-1);
  const structure=recentBreak?.direction||0;
  const score=trend+momentum+structure;
- const critical=warnings.some(w=>['HISTORICAL_ANOMALY','CORPORATE_ACTION_REVIEW','INTERVAL_MISMATCH','EXCHANGE_TIMEZONE_INVALID','SYMBOL_MISMATCH','MARKET_MISMATCH','SYMBOL_UNVERIFIED','INVALID_TIMESTAMP','FUTURE_TIMESTAMP','DATA_ANOMALY','INVALID_OHLC'].includes(w)||w.startsWith('SOURCE_'));
+ // A 5Y quote-change metadata mismatch alone does not alter validated OHLC bars.
+ // Remain fail-closed for historical warnings, splits and all other suspect sources.
+ const quoteMetadataOnly5Y=historicalRange==='5Y'&&['D','W','M'].includes(timeframe)&&dataState==='suspect'
+  &&guardReasons.length===1&&guardReasons[0]==='PRICE_CHANGE_MISMATCH'
+  &&meta.provider==='Yahoo Finance'&&meta.priceBasis==='provider-quote-ohlc'
+  &&!(meta.historyReasons||[]).length&&!meta.corporateActionCount;
+ const critical=warnings.some(w=>['HISTORICAL_ANOMALY','CORPORATE_ACTION_REVIEW','INTERVAL_MISMATCH','EXCHANGE_TIMEZONE_INVALID','SYMBOL_MISMATCH','MARKET_MISMATCH','SYMBOL_UNVERIFIED','INVALID_TIMESTAMP','FUTURE_TIMESTAMP','DATA_ANOMALY','INVALID_OHLC'].includes(w)
+  ||(w.startsWith('SOURCE_')&&!(quoteMetadataOnly5Y&&w==='SOURCE_SUSPECT')));
  const requiredBars=Math.max(30,p.sma,p.rsi+1,p.macdSlow+p.macdSignal-1);
  const status=critical?'data-review':signalRows.length>=requiredBars&&analysis?'ready':rows.length<requiredBars||signalRows.length>0?'insufficient':'waiting-close';
  const actionable=status==='ready';
