@@ -3,7 +3,7 @@ import * as timeModule from '../lib/market-time.js';
 const {temporalBars}=timeModule.default||globalThis.SETscopeMarketTime;
 export const TECHNICAL_VERSION='setscope-ta-2';
 export const RANGE_INTERVAL=Object.freeze({'1D':'1m','1W':'15m','1M':'30m','3M':'60m','1Y':'1d',D:'1d',W:'1wk',M:'1mo'});
-export const INDICATOR_PRESETS=Object.freeze({basic:['sma20','ema20','ema50','macd'],trend:['sma20','ema20','ema50','ema100','ema200'],momentum:['macd','rsi'],volatility:['bb','atr']});
+export const INDICATOR_PRESETS=Object.freeze({basic:['sma20','ema20','ema50','macd'],trend:['sma20','ema10','ema20','ema50','ema100','ema200'],momentum:['macd','rsi'],volatility:['bb','atr']});
 const STRUCTURE_EVENT_LABELS = Object.freeze({
  'breakout-confirmed': 'ยืนยันการทะลุระดับราคา',
  'retest-confirmed': 'ยืนยันการกลับมาทดสอบระดับราคา'
@@ -117,7 +117,7 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
  const signalReference=latest?{barOpenTime:latest.barOpenTime,barCloseTime:latest.barCloseTime,availableAt:latest.availableAt,confirmationBasis:latest.confirmationBasis,
   selection:latest.time===latestCandle.time?'latest-confirmed':'previous-confirmed'}:null;
  const completedLevels=timedLevels.filter(row=>row.complete&&row.availableAt<=asOf&&row.time<=candleTime);
- const analysis=analyseTechnicals(signalRows,completedLevels,p),signalSeries=analysis?.series||computeTechnicalSeries(signalRows,p);
+ const analysis=analyseTechnicals(signalRows,completedLevels,p,{includeEma10:true}),signalSeries=analysis?.series||computeTechnicalSeries(signalRows,p);
  const series=signalRows.length===rows.length?signalSeries:computeTechnicalSeries(rows,p);
  const last=latest?.close??null,atr=signalSeries.atr.at(-1)??null;
  const levels=last===null?{supports:[],resistances:[],supportDetails:[],resistanceDetails:[],zones:[],swings:{confirmed:[],pending:[]}}:priceStructure(timedLevels,last,{asOf,candleTime,interval:levelInterval,atr});
@@ -125,11 +125,11 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
  const confirmation=latest?.complete?'confirmed':'provisional';
  const quality={state:mismatch?'unavailable':rows.length?'usable-with-warnings':'insufficient',warnings};
  if(rows.length&&!warnings.length)quality.state='usable';
- const required={sma20:p.sma,ema20:p.ema20,ema50:p.ema50,ema100:p.ema100,ema200:p.ema200,rsi:p.rsi+1,macd:p.macdSlow+p.macdSignal-1,bb:p.bb,atr:p.atr+1};
+ const required={sma20:p.sma,ema10:p.ema10,ema20:p.ema20,ema50:p.ema50,ema100:p.ema100,ema200:p.ema200,rsi:p.rsi+1,macd:p.macdSlow+p.macdSignal-1,bb:p.bb,atr:p.atr+1};
  const latestValue=key=>key==='bb'?signalSeries.bb.middle.at(-1):key==='macd'?signalSeries.signal.at(-1):signalSeries[key]?.at(-1);
  const availability=Object.fromEntries(Object.entries(required).map(([key,bars])=>[key,{state:finite(latestValue(key))?'available':'insufficient',bars:signalRows.length,required:bars,confirmation}]));
  const common={version:TECHNICAL_VERSION,symbol,timeframe,candleTime,confirmation,dataQuality:quality.state};
- const trendValues=['sma20','ema20','ema50','ema100','ema200'].map(key=>signalSeries[key].at(-1)).filter(finite);
+ const trendValues=['sma20','ema10','ema20','ema50','ema100','ema200'].map(key=>signalSeries[key].at(-1)).filter(finite);
  const trend=sign(trendValues.reduce((sum,value)=>sum+sign(last-value),0));
  const rsi=signalSeries.rsi.at(-1)??null,macd=signalSeries.macd.at(-1)??null,signal=signalSeries.signal.at(-1)??null;
  const rsiVote=rsi===null?0:rsi<30?1:rsi>70?-1:0,macdVote=macd===null||signal===null?0:sign(macd-signal);

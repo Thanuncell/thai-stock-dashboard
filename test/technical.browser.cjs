@@ -303,12 +303,23 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     page.off('request',recordApi);
    }
    const id=await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),count=marketCalls.length;
-   phase=`${width}-${theme}-indicators`;await page.locator('.indicator-workspace summary').click();
+   phase=`${width}-${theme}-indicators`;
+   check(await page.locator('#ema10-signal').count(),1,'EMA10 individual row exists');
+   check(await page.locator('#chart-indicators [data-indicator="ema10"]').getAttribute('aria-pressed'),'false','EMA10 hidden by default');
+   await page.locator('#chart-indicators [data-indicator="ema10"]').click();await pause(page);
+   check(await page.locator('.ema10-chart-line').count(),1,'EMA10 toggles on');
+   check(await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),id,'EMA10 display cannot change snapshot');
+   await page.locator('#chart-indicators [data-indicator="ema10"]').click();await pause(page);
+   check(marketCalls.length,count,'EMA10 toggling makes no extra provider requests');
+   await page.locator('.indicator-workspace summary').click();
    for(const key of ['rsi','atr','bb'])await page.locator(`[data-indicator="${key}"]`).click();
    await page.waitForSelector('.rsi-panel');await page.waitForSelector('.atr-panel');check(await page.locator('.bb-chart-line').count(),3);
    const panelBounds=await page.locator('.atr-panel').boundingBox(),wrapBounds=await page.locator('.own-chart-wrap').boundingBox();check(panelBounds.y+panelBounds.height<=wrapBounds.y+wrapBounds.height+1,true,'optional panels remain inside the responsive canvas');
    check(await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),id,'display toggles cannot change analysis');check(marketCalls.length,count,'local controls make no provider requests');await parity();
    const rsiPath=await page.locator('.rsi-chart-line').getAttribute('d');check(Boolean(rsiPath)&&!rsiPath.includes('NaN'),true);
+   await page.locator('#indicator-settings input[name=ema10]').fill('15');await page.locator('#indicator-settings button[type=submit]').click();await parity();
+   check(await page.locator('#chart-indicators [data-indicator="ema10"] span').textContent(),'EMA 15','EMA10 legend reflects custom period');
+   check(await page.locator('#ema10-signal').evaluate(node=>node.previousElementSibling.textContent.includes('(15)')),true,'EMA10 signal reflects period');
    await page.locator('#indicator-settings input[name=rsi]').fill('7');await page.locator('#indicator-settings button[type=submit]').click();await parity();
    check((await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'))!==id,true,'parameters genuinely recompute snapshot');
    check(await page.locator('[data-indicator=rsi] span').textContent(),'RSI 7');

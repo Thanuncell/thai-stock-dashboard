@@ -50,7 +50,7 @@ for(const timeframe of ['D','W','M']){
  });
  test(`G3 ${timeframe} warm-up boundaries and insufficient states match independent reference`,async()=>{
   const entry=fixture.cases.find(item=>item.name==='volatile');
-  const required={sma20:20,ema20:20,ema50:50,ema100:100,ema200:200,rsi:15,macd:34,bb:20,atr:15};
+  const required={sma20:20,ema10:10,ema20:20,ema50:50,ema100:100,ema200:200,rsi:15,macd:34,bb:20,atr:15};
   for(const count of [0,1,14,15,19,20,33,34,49,50,99,100,199,200]){
    const {snapshot}=await g3Snapshot(entry,timeframe,count);
    const expected=Object.fromEntries(Object.entries(entry.expected).map(([key,value])=>[key,Array.isArray(value)?value.slice(0,count)
