@@ -143,3 +143,18 @@ test('price levels reject missing last price instead of fabricating zero', () =>
     supports: [], resistances: [], supportDetails: [], resistanceDetails: []
   });
 });
+
+test('EMA10 warm-up, gap reset and Chart 8 versus Watchlist Legacy 7', () => {
+  const prices=Array.from({length:12},(_,i)=>i+1),ema=computeEma(prices,10);
+  assert.deepEqual(ema.slice(0,9),Array(9).fill(null));
+  assert.equal(ema[9],5.5);
+  assert.ok(Math.abs(ema[10]-(11*2/11+5.5*9/11))<1e-12);
+  assert.deepEqual(computeEma([1,2,3,null,...prices],10).slice(0,4),[null,null,null,null]);
+  const bars=Array.from({length:260},(_,i)=>({close:50+i*.1}));
+  const legacy=analyseTechnicals(bars),chart=analyseTechnicals(bars,bars,{}, {includeEma10:true});
+  assert.equal(legacy.total,7);assert.equal(legacy.emas.ema10,undefined);assert.equal(legacy.signals.ema10,undefined);
+  assert.equal(chart.total,8);assert.equal(chart.available,8);assert.ok(Number.isFinite(chart.emas.ema10));
+  assert.equal(chart.signals.ema10,'ซื้อ');
+  assert.ok(chart.reasons.some(item=>item.key==='EMA (10)'&&item.signal==='ซื้อ'));
+  assert.deepEqual(Object.keys(legacy.signals),Object.keys(chart.signals).filter(key=>key!=='ema10'));
+});
