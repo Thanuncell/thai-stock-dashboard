@@ -87,14 +87,15 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    await page.evaluate(()=>{window.loadingFeatured=document.querySelector('#featured-news .news-title-link');});
    holds.archive=gate();let started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');
    await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await started;
-   assert.ok(await page.locator('#news-list .news-skeleton').count()>0,'cursor cache miss displays the existing skeleton');
-   assert.equal(await page.locator('#news-list .news-title-link').count(),0);
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'cursor cache miss must retain the previous articles, without skeleton');
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),make('cursor',90).slice(0,10).map(x=>x.title));
    assert.equal(await page.locator('#featured-news .news-skeleton').count(),0);
    assert.equal(await page.evaluate(()=>loadingFeatured===document.querySelector('#featured-news .news-title-link')),true,'pagination retains Featured DOM');
    if(process.env.SETSCOPE_LOADING_EVIDENCE)await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+'-cursor-miss.png')});
    holds.analysis.release();delete holds.analysis;
    await page.waitForFunction(()=>document.querySelector('#featured-news').textContent.includes('บทสรุป AI'));
-   assert.ok(await page.locator('#news-list .news-skeleton').count()>0,'independent analysis rendering must not overwrite the pending skeleton');
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'independent analysis must not start a pagination skeleton');
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),make('cursor',90).slice(0,10).map(x=>x.title));
    holds.archive.release();delete holds.archive;await ready();
    assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),make('cursor',90).slice(10,20).map(x=>x.title));
    assert.equal(calls.archive,nativeCalls.archive+1);assert.equal(calls.news,nativeCalls.news);assert.equal(calls.watch,nativeCalls.watch);
@@ -108,11 +109,19 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    assert.equal(await page.locator('#news-list .news-skeleton').count(),0);
    assert.equal(await page.evaluate(()=>loadingRetained===document.querySelector('#news-list .news-title-link')),true,'manual refresh retains the accepted DOM');
    holds.archive.release();delete holds.archive;await ready();assert.equal(calls.archive,beforeHit+1);
+   const sameFilterCalls=calls.archive;
+   await page.locator('#news-sources [data-source="all"]').click();
+   assert.equal(calls.archive,sameFilterCalls,'reselecting the active filter makes no new Archive request');
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'reselecting the active filter makes no skeleton');
    for(const action of ['search','publisher']){
     holds.archive=gate();started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');const before=calls.archive;
     if(action==='search')await page.locator('#news-search').fill('cursor 2');else await page.locator('#news-sources [data-source="infoquest"]').click();
     await started;assert.ok(await page.locator('#news-list .news-skeleton').count()>0,action+' displays skeleton while its request is pending');
-    holds.archive.release();delete holds.archive;await ready();assert.equal(calls.archive,before+1);assert.equal(await page.locator('#news-pager [aria-current="page"]').textContent(),'1');
+    const visibleSince=await page.evaluate(()=>performance.now());
+    holds.archive.release();delete holds.archive;
+    await delay(80);assert.ok(await page.locator('#news-list .news-skeleton').count()>0,action+' keeps the skeleton visible on a fast response');
+    await ready();assert.ok((await page.evaluate(()=>performance.now()))-visibleSince>=190,action+' observes the 300ms skeleton minimum from start');
+    assert.equal(calls.archive,before+1);assert.equal(await page.locator('#news-pager [aria-current="page"]').textContent(),'1');
    }
    // Advance the existing app poll, rather than introducing a new polling mechanism.
    holds.news=gate();holds.archive=gate();const beforePoll={...calls};
@@ -126,7 +135,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');await page.locator('#news-search').fill('cursor');await started;await ready();
    const beforeError=calls.archive,accepted=await page.locator('#news-list .news-title-link').allTextContents();archiveError=true;holds.archive=gate();
    started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await started;
-   assert.ok(await page.locator('#news-list .news-skeleton').count()>0);holds.archive.release();delete holds.archive;await ready();
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'failed pagination must not start skeleton');holds.archive.release();delete holds.archive;await ready();
    assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),accepted,'failed cache miss restores the accepted news');
    assert.equal(await page.locator('#news-list .news-skeleton').count(),0);assert.match(await page.locator('#news-count').textContent(),/ไม่พร้อม/);assert.equal(calls.archive,beforeError+1);
    archiveError=false;await page.locator('#refresh-news').click();await ready();assert.equal(calls.archive,beforeError+2);
