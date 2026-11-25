@@ -611,7 +611,7 @@ export function computeEma(values, period) {
   });
 }
 
-export const TECHNICAL_DEFAULTS = Object.freeze({ sma:20, ema20:20, ema50:50, ema100:100, ema200:200,
+export const TECHNICAL_DEFAULTS = Object.freeze({ sma:20, ema10:10, ema20:20, ema50:50, ema100:100, ema200:200,
   rsi:14, macdFast:12, macdSlow:26, macdSignal:9, bb:20, bbDeviation:2, atr:14 });
 export function normalizeTechnicalParameters(value = {}) {
   const result = { ...TECHNICAL_DEFAULTS };
@@ -672,7 +672,7 @@ export function computeTechnicalSeries(bars, parameters = {}) {
   const fast=computeEma(values,p.macdFast),slow=computeEma(values,p.macdSlow);
   const macd=values.map((_,i)=>fast[i]!==null&&slow[i]!==null?fast[i]-slow[i]:null);
   const signal=computeEma(macd,p.macdSignal),histogram=macd.map((v,i)=>v!==null&&signal[i]!==null?v-signal[i]:null);
-  return { values,sma20:computeSmaSeries(values,p.sma),...Object.fromEntries(['ema20','ema50','ema100','ema200'].map(key=>[key,computeEma(values,p[key])])),
+  return { values,sma20:computeSmaSeries(values,p.sma),...Object.fromEntries(['ema10','ema20','ema50','ema100','ema200'].map(key=>[key,computeEma(values,p[key])])),
     rsi:computeRsiSeries(values,p.rsi),macd,signal,histogram,bb:computeBollingerSeries(values,p.bb,p.bbDeviation),atr:computeAtrSeries(bars,p.atr),parameters:p };
 }
 
@@ -752,14 +752,15 @@ export function trustedMarketBars(bars = []) {
   return [...byTime.values()].sort((left, right) => left.time - right.time);
 }
 
-export function analyseTechnicals(bars, levelBars = bars, parameters = {}) {
+export function analyseTechnicals(bars, levelBars = bars, parameters = {}, { includeEma10 = false } = {}) {
   const usable = trustedMarketBars(bars);
   const usableLevels = trustedMarketBars(levelBars || usable);
   const values = usable.map(bar => Number(bar.close));
   if (values.length < 30) return null;
   const series = computeTechnicalSeries(usable,parameters);
   const rsi=series.rsi.at(-1),sma20=series.sma20.at(-1);
-  const emas=Object.fromEntries(['ema20','ema50','ema100','ema200'].map(key=>[key,series[key].at(-1)]));
+  const emaKeys=includeEma10?['ema10','ema20','ema50','ema100','ema200']:['ema20','ema50','ema100','ema200'];
+  const emas=Object.fromEntries(emaKeys.map(key=>[key,series[key].at(-1)]));
   const macd=series.macd,signalLine=series.signal,histogram=series.histogram;
   const last = values.at(-1);
   const macdLast = macd.at(-1), macdSignalLast = signalLine.at(-1);
@@ -773,6 +774,7 @@ export function analyseTechnicals(bars, levelBars = bars, parameters = {}) {
   const reasons = [
     { key: `RSI (${series.parameters.rsi})`, signal: signals.rsi, value: `RSI ${rsi===null?'—':rsi.toFixed(1)}`, detail: rsi===null?'ข้อมูลไม่ครบ warm-up':rsi < 30 ? 'ต่ำกว่า 30: แรงขายมาก อาจเกิดแรงรีบาวด์ แต่ยังไม่ยืนยันว่าราคากลับตัว' : rsi > 70 ? 'สูงกว่า 70: ภาวะซื้อมาก ราคาอาจย่อตัวได้ แต่ในขาขึ้น RSI อาจสูงต่อเนื่อง' : 'อยู่ระหว่าง 30–70: ยังไม่เข้าขอบเขตซื้อมาก/ขายมากตามเกณฑ์ทั่วไป' },
     { key: `SMA (${series.parameters.sma})`, signal: signals.sma, value: `ราคา ${formatNumber(last)} · SMA ${formatNumber(sma20)}`, detail: sma20===null?'ข้อมูลไม่ครบ warm-up':`ราคาปิด${last>=sma20?'อยู่เหนือ':'ต่ำกว่า'}ค่าเฉลี่ย ${series.parameters.sma} แท่ง` },
+    ...(includeEma10 ? [{ key: `EMA (${series.parameters.ema10})`, signal: signals.ema10, value: `ราคา ${formatNumber(last)} · EMA ${formatNumber(emas.ema10)}`, detail: emas.ema10===null?'ข้อมูลไม่ครบ warm-up':`ราคา${last > emas.ema10 ? 'อยู่เหนือ' : last < emas.ema10 ? 'อยู่ใต้' : 'เท่ากับ'}ค่าเฉลี่ย ${series.parameters.ema10} แท่ง ใช้ดูแนวโน้มระยะสั้น` }] : []),
     { key: `EMA (${series.parameters.ema20})`, signal: signals.ema20, value: `ราคา ${formatNumber(last)} · EMA ${formatNumber(emas.ema20)}`, detail: emas.ema20===null?'ข้อมูลไม่ครบ warm-up':`ราคา${last >= emas.ema20 ? 'อยู่เหนือ' : 'อยู่ใต้'}ค่าเฉลี่ย ${series.parameters.ema20} แท่ง ใช้ดูโมเมนตัมระยะสั้น` }
   ];
   if (signals.macd) reasons.splice(1, 0, { key: `MACD (${series.parameters.macdFast}, ${series.parameters.macdSlow}, ${series.parameters.macdSignal})`, signal: signals.macd, value: `MACD ${macdLast.toFixed(3)} · Signal ${macdSignalLast.toFixed(3)}`, detail: macdDiff > 0 ? 'เส้น MACD อยู่เหนือเส้น Signal โมเมนตัมระยะสั้นเป็นบวก' : macdDiff < 0 ? 'เส้น MACD อยู่ใต้เส้น Signal โมเมนตัมระยะสั้นเป็นลบ' : 'เส้น MACD และ Signal อยู่ระดับเดียวกัน โมเมนตัมยังไม่ชี้ทิศทาง' });
@@ -785,5 +787,5 @@ export function analyseTechnicals(bars, levelBars = bars, parameters = {}) {
   const overall = buy > sell + 1 ? 'ซื้อ' : sell > buy + 1 ? 'ขาย' : 'เป็นกลาง';
   const cutoff=toFiniteNumber(usable.at(-1)?.time);
   const levels = findPriceLevels(usableLevels.filter(row=>!cutoff||!toFiniteNumber(row.time)||row.time<=cutoff), last);
-  return { values, rsi, sma20, emas, macd: macdLast, macdSignal: macdSignalLast, macdSeries: macd, signalSeries: signalLine, macdHistogram: histogram, last, signals, reasons, buy, sell, overall, levels, series, available: Object.keys(signals).length, total: 7 };
+  return { values, rsi, sma20, emas, macd: macdLast, macdSignal: macdSignalLast, macdSeries: macd, signalSeries: signalLine, macdHistogram: histogram, last, signals, reasons, buy, sell, overall, levels, series, available: Object.keys(signals).length, total: includeEma10 ? 8 : 7 };
 }
