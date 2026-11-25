@@ -137,6 +137,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await started;
    assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'failed pagination must not start skeleton');holds.archive.release();delete holds.archive;await ready();
    assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),accepted,'failed cache miss restores the accepted news');
+   assert.equal(await page.locator('#news-pager [aria-current="page"]').textContent(),'1','failed pagination restores the accepted page selection');
    assert.equal(await page.locator('#news-list .news-skeleton').count(),0);assert.match(await page.locator('#news-count').textContent(),/ไม่พร้อม/);assert.equal(calls.archive,beforeError+1);
    archiveError=false;await page.locator('#refresh-news').click();await ready();assert.equal(calls.archive,beforeError+2);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
