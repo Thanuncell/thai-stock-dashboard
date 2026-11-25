@@ -132,6 +132,7 @@ let archiveNewsRequestId = 0;
 let searchTimer;
 let newsSearchTimer;
 let newsScopeLoading = null;
+let newsDisplayedPage = 1;
 let searchSequence = 0;
 let searchQuery = '';
 let searchItems = [];
@@ -249,7 +250,7 @@ function clearPrivateState() {
   alertHistory = [];
   unreadAlerts = 0;
   latestWatchlistNews = [];
-  clearTimeout(newsSearchTimer);newsSearchTimer=null;newsScopeLoading=null;
+  clearTimeout(newsSearchTimer);newsSearchTimer=null;newsScopeLoading=null;newsDisplayedPage=1;
   newsRequestId++;newsController?.abort();newsController=null;newsPending=false;newsPresentationReady=false;pendingNewsSnapshot=null;
   latestNews=[];archiveNews=[];archiveFeaturedNews=[];newsDataState='idle';
   newsAnalyses.clear();
@@ -1890,6 +1891,7 @@ async function getArchiveNews({ page = newsPage, refresh = false, reason = 'page
       if (document.body.dataset.workspacePage === 'news') writeNavigation('replace', 'news');
       return getArchiveNews({ page: newsPage });
     }
+    newsDisplayedPage=newsPage;
     renderNews();
   } catch (error) {
     if(!await finishNewsScopeLoading(current))return;
@@ -1898,7 +1900,13 @@ async function getArchiveNews({ page = newsPage, refresh = false, reason = 'page
       return getArchiveNews({page:1,refresh:true});
     }
     // No usable replacement: retain the accepted view on a partial refresh failure.
-    if(newsPresentationReady&&!snapshot?.items.length){archiveState='error';archiveCountTotal=null;renderNews();return;}
+    if(newsPresentationReady&&!snapshot?.items.length){
+      if(reason==='page'&&newsPage!==newsDisplayedPage){
+        newsPage=newsDisplayedPage;
+        if(document.body.dataset.workspacePage==='news')writeNavigation('replace','news');
+      }
+      archiveState='error';archiveCountTotal=null;renderNews();return;
+    }
     if(snapshot){latestNews=snapshot.items;newsDataState=snapshot.state;}
     if(!newsPending||snapshot)newsPresentationReady=true;
     archiveLoaded = false;
