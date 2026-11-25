@@ -563,7 +563,7 @@ function initializeUserScopedState() {
   userStorageScope = identity.ownerId;
   technicalParameters=normalizeTechnicalParameters(readScopedLocal('setscope-indicator-parameters',{}));
   const savedIndicators=readScopedLocal('setscope-indicator-display',INDICATOR_PRESETS.basic);
-  chartIndicators.clear();(Array.isArray(savedIndicators)?savedIndicators:INDICATOR_PRESETS.basic).filter(key=>['sma20','ema20','ema50','ema100','ema200','macd','rsi','bb','atr'].includes(key)).forEach(key=>chartIndicators.add(key));
+  chartIndicators.clear();(Array.isArray(savedIndicators)?savedIndicators:INDICATOR_PRESETS.basic).filter(key=>['sma20','ema10','ema20','ema50','ema100','ema200','macd','rsi','bb','atr'].includes(key)).forEach(key=>chartIndicators.add(key));
   syncIndicatorWorkspace();
   requestedWatchlistId = history.state?.setscopeWatchlist?.ownerId === identity.ownerId
     ? history.state.setscopeWatchlist.watchlistId : (initialNavigation.route === 'watchlist' ? initialNavigation.watchlistId : '');
@@ -975,7 +975,7 @@ function renderPriceChart(bars = [], receivedAt = '', levelBars = bars, indicato
   const smaValues = alignToVisibleChart(snapshot.series.sma20);
   const indicatorSeries = [
     ['sma20', smaValues, 'sma20-chart-line'],
-    ...['ema20','ema50','ema100','ema200'].map(key=>[key,alignToVisibleChart(snapshot.series[key]),`${key}-chart-line`]),
+    ...['ema10','ema20','ema50','ema100','ema200'].map(key=>[key,alignToVisibleChart(snapshot.series[key]),`${key}-chart-line`]),
     ...['upper','middle','lower'].map(key=>['bb',alignToVisibleChart(snapshot.series.bb[key]),'bb-chart-line'])
   ];
   const chartLevels = snapshot.levels;
@@ -1437,7 +1437,7 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     setText('#analysis-note', technicalReferenceNote(snapshot));
     reasonsRoot.innerHTML = evidenceUnavailable;
     setText('#technical-plan', blockedPlan);
-    ['rsi-signal', 'macd-signal', 'sma-signal', 'ema20-signal', 'ema50-signal', 'ema100-signal', 'ema200-signal'].forEach(id => {
+    ['rsi-signal', 'macd-signal', 'sma-signal', 'ema10-signal', 'ema20-signal', 'ema50-signal', 'ema100-signal', 'ema200-signal'].forEach(id => {
       const el = document.getElementById(id);
       if (el) { el.textContent = snapshot.summary.overall; el.className = 'pill neutral-pill'; }
     });
@@ -1449,7 +1449,7 @@ function drawSignals(bars, levelBars = bars, displayBars = bars) {
     return null;
   }
   setTechnicalPanelState('ready');
-  const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema20: 'ema20-signal', ema50: 'ema50-signal', ema100: 'ema100-signal', ema200: 'ema200-signal' };
+  const ids = { rsi: 'rsi-signal', macd: 'macd-signal', sma: 'sma-signal', ema10: 'ema10-signal', ema20: 'ema20-signal', ema50: 'ema50-signal', ema100: 'ema100-signal', ema200: 'ema200-signal' };
   Object.entries(ids).forEach(([key, id]) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -1501,7 +1501,7 @@ function indicatorLabel(key){
 function syncIndicatorWorkspace(){
   document.querySelectorAll('[data-indicator]').forEach(button=>{button.classList.toggle('active',chartIndicators.has(button.dataset.indicator));button.setAttribute('aria-pressed',String(chartIndicators.has(button.dataset.indicator)));const label=button.querySelector('span');if(label)label.textContent=indicatorLabel(button.dataset.indicator);});
   const form=$('#indicator-settings');if(form)for(const [key,value]of Object.entries(technicalParameters))if(form.elements[key])form.elements[key].value=value;
-  const labels={rsi:'RSI',macd:'MACD',sma:'SMA',ema20:'EMA',ema50:'EMA',ema100:'EMA',ema200:'EMA'};
+  const labels={rsi:'RSI',macd:'MACD',sma:'SMA',ema10:'EMA',ema20:'EMA',ema50:'EMA',ema100:'EMA',ema200:'EMA'};
   for(const [key,name]of Object.entries(labels)){const el=$(`#${key}-signal`)?.previousElementSibling;if(el)el.lastChild.textContent=` ${key==='macd'?indicatorLabel('macd'):name+' ('+technicalParameters[key==='sma'?'sma':key]+')'}`;}
 }
 function saveIndicatorWorkspace(){
