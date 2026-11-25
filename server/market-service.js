@@ -313,7 +313,11 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
           rejectedBars: historyResult.rejectedBars,
           historyReasons: historyResult.historyReasons,
           historyStatus: historyResult.historyStatus,
-          provenance: historyResult.provenance,
+          provenance: {
+            ...historyResult.provenance,
+            ...(fiveYearDailyHistory ? { quoteMetadataOnly: historyResult.guardStatus === 'suspect'
+              && historyResult.guardReasons.length === 1 && historyResult.guardReasons[0] === 'PRICE_CHANGE_MISMATCH' } : {})
+          },
           identityStatus: historyResult.identityStatus,
           quoteStatus: historyResult.quoteStatus,
           guardStatus: historyResult.guardStatus,
@@ -411,8 +415,6 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       stale: dataState === 'stale',
       partial,
       dataState,
-      // Preserve the selected history request's exact quality reasons for technical decisions.
-      guardReasons: selected?.guardReasons || [],
       errors
     };
   }

@@ -121,7 +121,7 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
  const series=signalRows.length===rows.length?signalSeries:computeTechnicalSeries(rows,p);
  const last=latest?.close??null,atr=signalSeries.atr.at(-1)??null;
  const levels=last===null?{supports:[],resistances:[],supportDetails:[],resistanceDetails:[],zones:[],swings:{confirmed:[],pending:[]}}:priceStructure(timedLevels,last,{asOf,candleTime,interval:levelInterval,atr});
- const warnings=[...new Set([...guardReasons,...(meta.historyReasons||[]),...(mismatch?['INTERVAL_MISMATCH']:[]),...(invalidTimeZone?['EXCHANGE_TIMEZONE_INVALID']:[]),...(meta.corporateActionCount?['CORPORATE_ACTION_REVIEW']:[]),...(['stale','suspect','quarantined','unavailable'].includes(dataState)?['SOURCE_'+dataState.toUpperCase()]:[])])];
+ const warnings=[...new Set([...guardReasons,...(meta.historyReasons||[]),...(mismatch?['INTERVAL_MISMATCH']:[]),...(invalidTimeZone?['EXCHANGE_TIMEZONE_INVALID']:[]),...(meta.corporateActionCount?['CORPORATE_ACTION_REVIEW']:[]),...(meta.quoteMetadataOnly===true?['PRICE_CHANGE_MISMATCH']:[]),...(['stale','suspect','quarantined','unavailable'].includes(dataState)?['SOURCE_'+dataState.toUpperCase()]:[])])];
  const confirmation=latest?.complete?'confirmed':'provisional';
  const quality={state:mismatch?'unavailable':rows.length?'usable-with-warnings':'insufficient',warnings};
  if(rows.length&&!warnings.length)quality.state='usable';
@@ -140,7 +140,7 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
  // A 5Y quote-change metadata mismatch alone does not alter validated OHLC bars.
  // Remain fail-closed for historical warnings, splits and all other suspect sources.
  const quoteMetadataOnly5Y=historicalRange==='5Y'&&['D','W','M'].includes(timeframe)&&dataState==='suspect'
-  &&guardReasons.length===1&&guardReasons[0]==='PRICE_CHANGE_MISMATCH'
+  &&guardReasons.length===0&&meta.quoteMetadataOnly===true
   &&meta.provider==='Yahoo Finance'&&meta.priceBasis==='provider-quote-ohlc'
   &&!(meta.historyReasons||[]).length&&!meta.corporateActionCount;
  const critical=warnings.some(w=>['HISTORICAL_ANOMALY','CORPORATE_ACTION_REVIEW','INTERVAL_MISMATCH','EXCHANGE_TIMEZONE_INVALID','SYMBOL_MISMATCH','MARKET_MISMATCH','SYMBOL_UNVERIFIED','INVALID_TIMESTAMP','FUTURE_TIMESTAMP','DATA_ANOMALY','INVALID_OHLC'].includes(w)

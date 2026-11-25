@@ -152,7 +152,7 @@ function technicalSnapshot() {
   const owner=userStorageScope,market=latestMarket,parameterKey=JSON.stringify(technicalParameters);
   if(technicalCache?.market===market&&technicalCache.owner===owner&&technicalCache.parameterKey===parameterKey&&technicalCache.symbol===activeSymbol&&technicalCache.range===chartSelectionKey())return technicalCache.value;
   const usable=market&&latestMarketSymbol===activeSymbol&&latestMarketRange===chartSelectionKey()?market:{};
-  const value=createTechnicalSnapshot({...usable,symbol:activeSymbol,timeframe:chartTimeframe(),parameters:technicalParameters,dataState:usable.dataState||usable.guard?.state,historicalRange:currentTimeframe==='Auto'?null:historicalRange,guardReasons:usable.guardReasons||usable.guard?.reasons||[]});
+  const value=createTechnicalSnapshot({...usable,symbol:activeSymbol,timeframe:chartTimeframe(),parameters:technicalParameters,dataState:usable.dataState||usable.guard?.state,historicalRange:currentTimeframe==='Auto'?null:historicalRange,guardReasons:usable.guard?.reasons||[]});
   technicalCache={market,owner,parameterKey,symbol:activeSymbol,range:chartSelectionKey(),value};return value;
 }
 let chartLoadState = 'loading';

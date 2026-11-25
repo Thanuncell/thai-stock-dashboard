@@ -189,7 +189,7 @@ for (const timeframe of ['D','W','M']) test(`5Y ${timeframe} retains actual cale
   assert.ok(provisional.rows.length>0,'missing receipt time does not erase available real bars');
 });
 
-test('5Y preserves the selected guard reason without conflating quote metadata with historical bars', async () => {
+test('5Y passes a safe classified quote-warning flag without leaking raw guard reasons', async () => {
  const calls=[],standard=responder(calls);
  const service=createMarketService({env:{},now:()=>received,fetchImpl:async input=>{
   const url=new URL(input);
@@ -201,9 +201,10 @@ test('5Y preserves the selected guard reason without conflating quote metadata w
  }});
  const market=await service.getMarket(['TISCO'],'TISCO','1Y',{fiveYearDailyHistory:true});
  assert.equal(market.dataState,'suspect');
- assert.deepEqual(market.guardReasons,['PRICE_CHANGE_MISMATCH']);
+ assert.equal(Object.hasOwn(market,'guardReasons'),false,'top-level API contract unchanged');
+ assert.equal(market.technicalMeta.indicator.quoteMetadataOnly,true);
  const projected=chart.marketTimeframe(market,'D','5Y');
- assert.deepEqual(projected.guardReasons,['PRICE_CHANGE_MISMATCH']);
+ assert.equal(projected.technicalMeta.indicator.quoteMetadataOnly,true);
  const snapshot=technical.createTechnicalSnapshot({...projected,symbol:'TISCO',timeframe:'D',historicalRange:'5Y'});
  assert.equal(snapshot.summary.status,'ready');
  assert.ok(snapshot.quality.warnings.includes('PRICE_CHANGE_MISMATCH'));

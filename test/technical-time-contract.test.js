@@ -61,9 +61,9 @@ for(const extra of [{guardReasons:['HISTORICAL_ANOMALY']},{technicalMeta:metadat
  const s=make(daily(),extra);assert.equal(s.summary.actionable,false);assert.equal(s.summary.overall,'ข้อมูลต้องตรวจสอบ');assert.equal(s.summary.status,'data-review');assert.ok(s.quality.warnings.length);
 });
 test('5Y synthetic TISCO/SCB quote-only metadata warnings do not block validated confirmed OHLC',()=>{
- const meta=metadata({provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc'});
+ const meta=metadata({provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',quoteMetadataOnly:true});
  for(const symbol of ['TISCO','SCB']){
-  const base={symbol,timeframe:'D',historicalRange:'5Y',dataState:'suspect',guardReasons:['PRICE_CHANGE_MISMATCH'],technicalMeta:meta};
+  const base={symbol,timeframe:'D',historicalRange:'5Y',dataState:'suspect',guardReasons:[],technicalMeta:meta};
   const result=make(daily(),base);
   assert.equal(result.summary.status,'ready');
   assert.equal(result.summary.actionable,true);
@@ -73,6 +73,7 @@ test('5Y synthetic TISCO/SCB quote-only metadata warnings do not block validated
   assert.equal(make(daily(),{...base,guardReasons:['PRICE_CHANGE_MISMATCH','DATA_ANOMALY']}).summary.status,'data-review');
   assert.equal(make(daily(),{...base,guardReasons:['HISTORICAL_ANOMALY']}).summary.status,'data-review');
   assert.equal(make(daily(),{...base,guardReasons:['LAST_CLOSE_MISMATCH']}).summary.status,'data-review');
+  assert.equal(make(daily(),{...base,technicalMeta:metadata({provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc'})}).summary.status,'data-review','unclassified sources remain blocked');
   assert.equal(make(daily(),{...base,dataState:'stale'}).summary.status,'data-review');
   assert.equal(make(daily(),{...base,technicalMeta:metadata({provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',historyReasons:['INVALID_OHLC']})}).summary.status,'data-review');
   assert.equal(make(daily(),{...base,technicalMeta:metadata({provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',corporateActionCount:1})}).summary.status,'data-review');
