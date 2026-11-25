@@ -117,6 +117,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
     holds.archive=gate();started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');const before=calls.archive;
     if(action==='search')await page.locator('#news-search').fill('cursor 2');else await page.locator('#news-sources [data-source="infoquest"]').click();
     await started;assert.ok(await page.locator('#news-list .news-skeleton').count()>0,action+' displays skeleton while its request is pending');
+    assert.ok(await page.locator('#featured-news .news-skeleton').count()>0,action+' updates affected Featured stories with its own skeleton');
     const visibleSince=await page.evaluate(()=>performance.now());
     holds.archive.release();delete holds.archive;
     await delay(80);assert.ok(await page.locator('#news-list .news-skeleton').count()>0,action+' keeps the skeleton visible on a fast response');
