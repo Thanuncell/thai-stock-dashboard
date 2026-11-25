@@ -93,3 +93,15 @@ test('drawing projection preserves time/price across viewport shifts and rejects
  assert.equal(full.x,100);assert.equal(shifted.x,-50);assert.equal(full.y,shifted.y);
  const m=measurement(drawing);assert.equal(m.change,10);assert.ok(Math.abs(m.percent-10)<1e-10);assert.equal(m.elapsed,600000);
 });
+
+test('EMA10 uses existing three-group Trend and readiness contract',()=>{
+ const rows=bars(),s=snapshot(rows),changed=snapshot(rows,{parameters:{ema10:15}});
+ assert.equal(s.parameters.ema10,10);assert.ok(s.series.ema10.slice(0,9).every(v=>v===null));
+ assert.equal(s.availability.ema10.required,10);assert.equal(s.availability.ema10.state,'available');
+ assert.equal(s.analysis.total,8);assert.equal(s.analysis.available,8);assert.equal(s.analysis.signals.ema10,'ซื้อ');
+ assert.equal(s.summary.reasons.length,3);assert.ok(Math.abs(s.summary.groups.trend)<=1);
+ assert.equal(s.summary.score,Object.values(s.summary.groups).reduce((a,b)=>a+b,0));
+ assert.equal(changed.parameters.ema10,15);assert.equal(changed.availability.ema10.required,15);
+ assert.notEqual(changed.id,s.id);assert.ok(changed.series.ema10.slice(0,14).every(v=>v===null));
+ assert.equal(snapshot(rows.slice(0,20)).summary.actionable,false,'EMA10 cannot shorten overall readiness');
+});
