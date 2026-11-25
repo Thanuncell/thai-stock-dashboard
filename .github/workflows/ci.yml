@@ -6,7 +6,6 @@ on:
     branches:
       - main
       - codex/phase-b-stage1-review
-      - codex/v1.7.5-historical-5y-quality
 
 permissions:
   contents: read
