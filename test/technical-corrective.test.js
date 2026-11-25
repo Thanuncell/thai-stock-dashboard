@@ -86,7 +86,7 @@ test('signal evidence renders three readable reason groups and indicator details
  for(const reason of snapshot.summary.reasons)assert.ok(html.includes(reason.text),'all three computed reasons remain readable');
  assert.equal(snapshot.summary.reasons.length,3);
  assert.match(html,/<details class="technical-evidence"><summary>ดูหลักฐานประกอบสัญญาณ<\/summary>/);
- assert.equal(Object.keys(snapshot.availability).length,9,'all availability data remain in the snapshot');
+ assert.equal(Object.keys(snapshot.availability).length,10,'all availability data, including EMA10, remain in the snapshot');
  assert.doesNotMatch(html,/evidence-status|evidence-label/);
  for(const reason of snapshot.analysis.reasons)assert.ok(html.includes(reason.key+' · '+reason.value),'individual indicator values remain');
 });
