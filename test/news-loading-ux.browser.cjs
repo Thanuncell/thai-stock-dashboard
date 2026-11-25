@@ -39,7 +39,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    assert.equal(partial,0,'News and Featured must not publish a partial live-only set while Archive is pending');
    assert.equal(await page.locator('#news-list').getAttribute('aria-busy'),'true');assert.ok(await page.locator('#news-list .news-skeleton').count()>0);assert.equal(await page.locator('.news-skeleton-bar').first().evaluate(e=>getComputedStyle(e).animationName),'none');await page.emulateMedia({reducedMotion:'no-preference'});assert.equal(await page.locator('.news-skeleton-bar').first().evaluate(e=>getComputedStyle(e).animationName),'news-loading-pulse');await page.emulateMedia({reducedMotion:'reduce'});
    holds.archive.release();delete holds.archive;
-   const ready=()=>page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled&&document.querySelector('#news-list .news-title-link'));
+   const ready=()=>page.waitForFunction(()=>!document.querySelector('#refresh-news').disabled&&document.querySelector('#news-list')?.getAttribute('aria-busy')==='false'&&document.querySelector('#news-list .news-title-link'));
    await ready();assert.equal(await page.locator('#featured-news .news-title-link').count(),5);assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),archived.slice(0,10).map(x=>x.title));assert.deepEqual([calls.news,calls.archive,calls.watch],[1,1,1]);
    await page.evaluate(()=>{window.retainedNewsTitle=document.querySelector('#featured-news .news-title-link');window.retainedArchiveTitle=document.querySelector('#news-list .news-title-link');});
    holds.analysis.release();delete holds.analysis;await page.waitForFunction(()=>document.querySelector('#watchlist-news-list').textContent.includes('บทสรุป AI')&&document.querySelector('#featured-news').textContent.includes('บทสรุป AI'));
@@ -87,14 +87,15 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    await page.evaluate(()=>{window.loadingFeatured=document.querySelector('#featured-news .news-title-link');});
    holds.archive=gate();let started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');
    await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await started;
-   assert.ok(await page.locator('#news-list .news-skeleton').count()>0,'cursor cache miss displays the existing skeleton');
-   assert.equal(await page.locator('#news-list .news-title-link').count(),0);
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'cursor cache miss must retain the previous articles, without skeleton');
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),make('cursor',90).slice(0,10).map(x=>x.title));
    assert.equal(await page.locator('#featured-news .news-skeleton').count(),0);
    assert.equal(await page.evaluate(()=>loadingFeatured===document.querySelector('#featured-news .news-title-link')),true,'pagination retains Featured DOM');
    if(process.env.SETSCOPE_LOADING_EVIDENCE)await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+'-cursor-miss.png')});
    holds.analysis.release();delete holds.analysis;
    await page.waitForFunction(()=>document.querySelector('#featured-news').textContent.includes('บทสรุป AI'));
-   assert.ok(await page.locator('#news-list .news-skeleton').count()>0,'independent analysis rendering must not overwrite the pending skeleton');
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'independent analysis must not start a pagination skeleton');
+   assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),make('cursor',90).slice(0,10).map(x=>x.title));
    holds.archive.release();delete holds.archive;await ready();
    assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),make('cursor',90).slice(10,20).map(x=>x.title));
    assert.equal(calls.archive,nativeCalls.archive+1);assert.equal(calls.news,nativeCalls.news);assert.equal(calls.watch,nativeCalls.watch);
@@ -108,11 +109,20 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    assert.equal(await page.locator('#news-list .news-skeleton').count(),0);
    assert.equal(await page.evaluate(()=>loadingRetained===document.querySelector('#news-list .news-title-link')),true,'manual refresh retains the accepted DOM');
    holds.archive.release();delete holds.archive;await ready();assert.equal(calls.archive,beforeHit+1);
+   const sameFilterCalls=calls.archive;
+   await page.locator('#news-sources [data-source="all"]').click();
+   assert.equal(calls.archive,sameFilterCalls,'reselecting the active filter makes no new Archive request');
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'reselecting the active filter makes no skeleton');
    for(const action of ['search','publisher']){
     holds.archive=gate();started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');const before=calls.archive;
     if(action==='search')await page.locator('#news-search').fill('cursor 2');else await page.locator('#news-sources [data-source="infoquest"]').click();
     await started;assert.ok(await page.locator('#news-list .news-skeleton').count()>0,action+' displays skeleton while its request is pending');
-    holds.archive.release();delete holds.archive;await ready();assert.equal(calls.archive,before+1);assert.equal(await page.locator('#news-pager [aria-current="page"]').textContent(),'1');
+    assert.ok(await page.locator('#featured-news .news-skeleton').count()>0,action+' updates affected Featured stories with its own skeleton');
+    const visibleSince=await page.evaluate(()=>performance.now());
+    holds.archive.release();delete holds.archive;
+    await delay(80);assert.ok(await page.locator('#news-list .news-skeleton').count()>0,action+' keeps the skeleton visible on a fast response');
+    await ready();assert.ok((await page.evaluate(()=>performance.now()))-visibleSince>=190,action+' observes the 300ms skeleton minimum from start');
+    assert.equal(calls.archive,before+1);assert.equal(await page.locator('#news-pager [aria-current="page"]').textContent(),'1');
    }
    // Advance the existing app poll, rather than introducing a new polling mechanism.
    holds.news=gate();holds.archive=gate();const beforePoll={...calls};
@@ -126,13 +136,32 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');await page.locator('#news-search').fill('cursor');await started;await ready();
    const beforeError=calls.archive,accepted=await page.locator('#news-list .news-title-link').allTextContents();archiveError=true;holds.archive=gate();
    started=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');await page.locator('#news-pager').getByRole('button',{name:'2',exact:true}).click();await started;
-   assert.ok(await page.locator('#news-list .news-skeleton').count()>0);holds.archive.release();delete holds.archive;await ready();
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'failed pagination must not start skeleton');holds.archive.release();delete holds.archive;await ready();
    assert.deepEqual(await page.locator('#news-list .news-title-link').allTextContents(),accepted,'failed cache miss restores the accepted news');
+   assert.equal(await page.locator('#news-pager [aria-current="page"]').textContent(),'1','failed pagination restores the accepted page selection');
    assert.equal(await page.locator('#news-list .news-skeleton').count(),0);assert.match(await page.locator('#news-count').textContent(),/ไม่พร้อม/);assert.equal(calls.archive,beforeError+1);
    archiveError=false;await page.locator('#refresh-news').click();await ready();assert.equal(calls.archive,beforeError+2);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
    if(process.env.SETSCOPE_LOADING_EVIDENCE)await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+'-cursor-ready.png')});
-   console.log(JSON.stringify({viewport:label,theme,checks,calls,layoutShift:await page.evaluate(()=>window.newsLayoutShift),atomicPresentation:'PASS',stableAiCards:'PASS',warmRefresh:'PASS',originalPagination:'PASS',backForwardNavigation:'PASS',productionRequests:0}));await context.close();
+   // Initial Load: Search followed by Filter must supersede the pending Archive, not strand Skeleton.
+   cursorFixture=null;archiveRows=make('initial-race',90);holds.archive=gate();
+   const beforeInitialRace=calls.archive;
+   const initialStarted=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');
+   await page.goto(base+'/?initialRace='+label+'#news',{waitUntil:'domcontentloaded'});await initialStarted;
+   assert.ok(await page.locator('#news-list .news-skeleton').count()>0,'initial Archive pending displays the original skeleton');
+   assert.equal(await page.locator('#news-list .news-title-link').count(),0);
+   const searchStarted=page.waitForRequest(r=>{const u=new URL(r.url());return u.pathname==='/api/news-archive'&&u.searchParams.get('query')==='PTT';});
+   await page.locator('#news-search').fill('PTT');await searchStarted;
+   const filterStarted=page.waitForRequest(r=>{const u=new URL(r.url());return u.pathname==='/api/news-archive'&&u.searchParams.get('query')==='PTT'&&u.searchParams.get('source')==='infoquest';});
+   await page.locator('#news-sources [data-source="infoquest"]').click();await filterStarted;
+   assert.equal(calls.archive,beforeInitialRace+3,'initial, Search and Filter each start one Archive request');
+   holds.archive.release();delete holds.archive;
+   await page.waitForFunction(()=>document.querySelector('#news-list')?.getAttribute('aria-busy')==='false'&&document.querySelector('#news-list .news-title-link')?.textContent.includes('initial-race'),null,{timeout:10000});
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'initial-load scope race must not leave a skeleton');
+   assert.equal(await page.locator('#featured-news .news-skeleton').count(),0,'initial-load scope race clears Featured skeleton');
+   assert.equal(await page.locator('#news-search').inputValue(),'PTT');
+   assert.ok((await page.locator('#news-list .news-title-link').allTextContents()).every(title=>title.includes('initial-race')),'latest Archive results win the race');
+   console.log(JSON.stringify({viewport:label,theme,checks,calls,layoutShift:await page.evaluate(()=>window.newsLayoutShift),atomicPresentation:'PASS',stableAiCards:'PASS',warmRefresh:'PASS',originalPagination:'PASS',backForwardNavigation:'PASS',initialLoadScopeRace:'PASS',productionRequests:0}));await context.close();
   }
  }finally{await browser?.close();server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

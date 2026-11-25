@@ -218,7 +218,7 @@ test('News archive page restoration survives startup rendering and browser histo
   assert.match(restoreNavigation, /previousNewsPage = newsPage/);
   assert.match(restoreNavigation, /previousNewsSource = activeSource/);
   assert.match(restoreNavigation, /previousNewsQuery = newsQuery/);
-  assert.match(restoreNavigation, /state\.route === 'news'[\s\S]*?previousNewsQuery !== newsQuery[\s\S]*?getArchiveNews\(\{ page: newsPage, reason: 'restore' \}\)/);
+  assert.match(restoreNavigation, /state\.route === 'news'[\s\S]*?previousNewsQuery !== newsQuery[\s\S]*?getArchiveNews\(\{ page: newsPage, reason: scopeChanged \? 'scope' : 'page' \}\)/);
   assert.match(renderNews, /const displayPage = archiveLoaded/);
   assert.match(renderNews, /if \(archiveLoaded\) newsPage = displayPage/);
   assert.doesNotMatch(renderNews, /newsPage = Math\.max\(1, Math\.min\(newsPage, total\)\)/);
