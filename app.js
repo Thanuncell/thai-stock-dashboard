@@ -1801,8 +1801,8 @@ async function getArchiveNews({ page = newsPage, refresh = false, reason = 'page
   const identity = capturePrivateIdentity();
   if(!isCurrentPrivateIdentity(identity))return;
   const requestId = ++archiveNewsRequestId;
-  const requestedSource=activeSource,requestedQuery=newsQuery;
-  const current=()=>isCurrentPrivateIdentity(identity)&&requestId===archiveNewsRequestId&&requestedSource===activeSource&&requestedQuery===newsQuery;
+  const requestedSource=activeSource,requestedQuery=newsQuery.trim().toLocaleLowerCase('th');
+  const current=()=>isCurrentPrivateIdentity(identity)&&requestId===archiveNewsRequestId&&requestedSource===activeSource&&requestedQuery===newsQuery.trim().toLocaleLowerCase('th');
   const snapshot=pendingNewsSnapshot;
   archiveState='loading';
   if(['search','filter','scope'].includes(reason))beginNewsScopeLoading();
