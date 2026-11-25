@@ -2498,7 +2498,7 @@ function setupUiEventWiring() {
     clearTimeout(newsSearchTimer);newsSearchTimer=null;
     activeSource=next;newsPage=1;archiveCursor.resetToFirst();archiveNewsRequestId++;
     writeNavigation('push','news');
-    if(archiveConfigured)getArchiveNews({page:newsPage,reason:'filter'});
+    if(archiveConfigured||archiveState==='loading')getArchiveNews({page:newsPage,reason:'filter'});
     else renderLocalNewsScope();
     syncNavigationControls();
   }));
@@ -2511,7 +2511,7 @@ function setupUiEventWiring() {
     clearTimeout(newsSearchTimer);
     newsSearchTimer = setTimeout(() => {
       newsSearchTimer=null;
-      if (archiveConfigured) getArchiveNews({ page: newsPage, reason:'search' });
+      if (archiveConfigured||archiveState==='loading') getArchiveNews({ page: newsPage, reason:'search' });
       else renderLocalNewsScope();
     }, 280);
   });

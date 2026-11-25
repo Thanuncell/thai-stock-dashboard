@@ -143,7 +143,25 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms)),gate=()=>{let release;const pro
    archiveError=false;await page.locator('#refresh-news').click();await ready();assert.equal(calls.archive,beforeError+2);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
    if(process.env.SETSCOPE_LOADING_EVIDENCE)await page.screenshot({path:path.join(process.env.SETSCOPE_LOADING_EVIDENCE,label+'-cursor-ready.png')});
-   console.log(JSON.stringify({viewport:label,theme,checks,calls,layoutShift:await page.evaluate(()=>window.newsLayoutShift),atomicPresentation:'PASS',stableAiCards:'PASS',warmRefresh:'PASS',originalPagination:'PASS',backForwardNavigation:'PASS',productionRequests:0}));await context.close();
+   // Initial Load: Search followed by Filter must supersede the pending Archive, not strand Skeleton.
+   cursorFixture=null;archiveRows=make('initial-race',90);holds.archive=gate();
+   const beforeInitialRace=calls.archive;
+   const initialStarted=page.waitForRequest(r=>new URL(r.url()).pathname==='/api/news-archive');
+   await page.goto(base+'/?initialRace='+label+'#news',{waitUntil:'domcontentloaded'});await initialStarted;
+   assert.ok(await page.locator('#news-list .news-skeleton').count()>0,'initial Archive pending displays the original skeleton');
+   assert.equal(await page.locator('#news-list .news-title-link').count(),0);
+   const searchStarted=page.waitForRequest(r=>{const u=new URL(r.url());return u.pathname==='/api/news-archive'&&u.searchParams.get('query')==='PTT';});
+   await page.locator('#news-search').fill('PTT');await searchStarted;
+   const filterStarted=page.waitForRequest(r=>{const u=new URL(r.url());return u.pathname==='/api/news-archive'&&u.searchParams.get('query')==='PTT'&&u.searchParams.get('source')==='infoquest';});
+   await page.locator('#news-sources [data-source="infoquest"]').click();await filterStarted;
+   assert.equal(calls.archive,beforeInitialRace+3,'initial, Search and Filter each start one Archive request');
+   holds.archive.release();delete holds.archive;
+   await page.waitForFunction(()=>document.querySelector('#news-list')?.getAttribute('aria-busy')==='false'&&document.querySelector('#news-list .news-title-link')?.textContent.includes('initial-race'),null,{timeout:10000});
+   assert.equal(await page.locator('#news-list .news-skeleton').count(),0,'initial-load scope race must not leave a skeleton');
+   assert.equal(await page.locator('#featured-news .news-skeleton').count(),0,'initial-load scope race clears Featured skeleton');
+   assert.equal(await page.locator('#news-search').inputValue(),'PTT');
+   assert.ok((await page.locator('#news-list .news-title-link').allTextContents()).every(title=>title.includes('initial-race')),'latest Archive results win the race');
+   console.log(JSON.stringify({viewport:label,theme,checks,calls,layoutShift:await page.evaluate(()=>window.newsLayoutShift),atomicPresentation:'PASS',stableAiCards:'PASS',warmRefresh:'PASS',originalPagination:'PASS',backForwardNavigation:'PASS',initialLoadScopeRace:'PASS',productionRequests:0}));await context.close();
   }
  }finally{await browser?.close();server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
