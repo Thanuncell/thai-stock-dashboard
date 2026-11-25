@@ -94,7 +94,7 @@ export function priceStructure(rows,last,{asOf=Infinity,candleTime=Infinity,inte
  return {supports:supportDetails.map(z=>z.value),resistances:resistanceDetails.map(z=>z.value),supportDetails,resistanceDetails,zones,swings,width,referenceInterval:interval};
 }
 
-export function createTechnicalSnapshot({history=[],indicatorHistory=history,levelsHistory=history,symbol='',timeframe='1M',fetchedAt=null,technicalMeta={},parameters={},dataState='unknown',guardReasons=[]}={}){
+export function createTechnicalSnapshot({history=[],indicatorHistory=history,levelsHistory=history,symbol='',timeframe='1M',fetchedAt=null,technicalMeta={},parameters={},dataState='unknown',guardReasons=[],historicalRange=null}={}){
  const p=normalizeTechnicalParameters(parameters),interval=RANGE_INTERVAL[timeframe]||'1d';
  const meta=technicalMeta.indicator||technicalMeta.history||{};
  let invalidTimeZone=false;
@@ -121,7 +121,7 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
  const series=signalRows.length===rows.length?signalSeries:computeTechnicalSeries(rows,p);
  const last=latest?.close??null,atr=signalSeries.atr.at(-1)??null;
  const levels=last===null?{supports:[],resistances:[],supportDetails:[],resistanceDetails:[],zones:[],swings:{confirmed:[],pending:[]}}:priceStructure(timedLevels,last,{asOf,candleTime,interval:levelInterval,atr});
- const warnings=[...new Set([...guardReasons,...(meta.historyReasons||[]),...(mismatch?['INTERVAL_MISMATCH']:[]),...(invalidTimeZone?['EXCHANGE_TIMEZONE_INVALID']:[]),...(meta.corporateActionCount?['CORPORATE_ACTION_REVIEW']:[]),...(['stale','suspect','quarantined','unavailable'].includes(dataState)?['SOURCE_'+dataState.toUpperCase()]:[])])];
+ const warnings=[...new Set([...guardReasons,...(meta.historyReasons||[]),...(mismatch?['INTERVAL_MISMATCH']:[]),...(invalidTimeZone?['EXCHANGE_TIMEZONE_INVALID']:[]),...(meta.corporateActionCount?['CORPORATE_ACTION_REVIEW']:[]),...(meta.quoteMetadataOnly===true?['PRICE_CHANGE_MISMATCH']:[]),...(['stale','suspect','quarantined','unavailable'].includes(dataState)?['SOURCE_'+dataState.toUpperCase()]:[])])];
  const confirmation=latest?.complete?'confirmed':'provisional';
  const quality={state:mismatch?'unavailable':rows.length?'usable-with-warnings':'insufficient',warnings};
  if(rows.length&&!warnings.length)quality.state='usable';
@@ -137,7 +137,14 @@ export function createTechnicalSnapshot({history=[],indicatorHistory=history,lev
  const recentBreak=levels.zones.flatMap(z=>z.events).filter(e=>['breakout-confirmed','retest-confirmed'].includes(e.kind)&&e.confirmedAt===latest?.availableAt).at(-1);
  const structure=recentBreak?.direction||0;
  const score=trend+momentum+structure;
- const critical=warnings.some(w=>['HISTORICAL_ANOMALY','CORPORATE_ACTION_REVIEW','INTERVAL_MISMATCH','EXCHANGE_TIMEZONE_INVALID','SYMBOL_MISMATCH','MARKET_MISMATCH','SYMBOL_UNVERIFIED','INVALID_TIMESTAMP','FUTURE_TIMESTAMP','DATA_ANOMALY','INVALID_OHLC'].includes(w)||w.startsWith('SOURCE_'));
+ // A 5Y quote-change metadata mismatch alone does not alter validated OHLC bars.
+ // Remain fail-closed for historical warnings, splits and all other suspect sources.
+ const quoteMetadataOnly5Y=historicalRange==='5Y'&&['D','W','M'].includes(timeframe)&&dataState==='suspect'
+  &&guardReasons.length===0&&meta.quoteMetadataOnly===true
+  &&meta.provider==='Yahoo Finance'&&meta.priceBasis==='provider-quote-ohlc'
+  &&!(meta.historyReasons||[]).length&&!meta.corporateActionCount;
+ const critical=warnings.some(w=>['HISTORICAL_ANOMALY','CORPORATE_ACTION_REVIEW','INTERVAL_MISMATCH','EXCHANGE_TIMEZONE_INVALID','SYMBOL_MISMATCH','MARKET_MISMATCH','SYMBOL_UNVERIFIED','INVALID_TIMESTAMP','FUTURE_TIMESTAMP','DATA_ANOMALY','INVALID_OHLC'].includes(w)
+  ||(w.startsWith('SOURCE_')&&!(quoteMetadataOnly5Y&&w==='SOURCE_SUSPECT')));
  const requiredBars=Math.max(30,p.sma,p.rsi+1,p.macdSlow+p.macdSignal-1);
  const status=critical?'data-review':signalRows.length>=requiredBars&&analysis?'ready':rows.length<requiredBars||signalRows.length>0?'insufficient':'waiting-close';
  const actionable=status==='ready';
