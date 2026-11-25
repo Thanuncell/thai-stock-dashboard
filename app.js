@@ -2256,7 +2256,7 @@ function renderNews() {
     const pager=$('#news-pager');if(pager)pager.hidden=true;setText('#news-count','กำลังโหลดข่าว…');return;
   }
   if(newsScopeLoading){renderNewsSkeleton($('#news-list'),'กำลังโหลดข่าวล่าสุด…');return;}
-  if(newsPresentationReady&&archiveState==='loading')return;
+  const retainNewsPage=newsPresentationReady&&archiveState==='loading';
   const query = newsQuery.trim().toLocaleLowerCase('th');
   const prepared = latestNews.map(item => ({ ...item, analysisSummary: newsDisplayAnalysis(item,newsAnalyses.get(newsKey(item)))?.summary || '' }));
   const { filtered: all, featured: liveFeatured, latest: liveLatest } = selectNewsForDisplay(prepared, {
@@ -2286,6 +2286,7 @@ function renderNews() {
     const section = featuredBox.closest('.featured-news');
     if (section) section.hidden = !featured.length;
   }
+  if(retainNewsPage)return;
   const availableCount = archiveLoaded ? archiveTotal : rest.length;
   const total = Math.max(1, Math.ceil(availableCount / PAGE_SIZE));
   const displayPage = archiveLoaded ? archiveCursorMode?newsPage:Math.max(1, Math.min(newsPage, total)) : 1;
