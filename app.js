@@ -1777,7 +1777,10 @@ async function getNews({ reason = 'refresh', resetPage = false } = {}) {
 
 function beginNewsScopeLoading() {
   newsScopeLoading={startedAt:performance.now()};
-  if(newsPresentationReady)renderNewsSkeleton($('#news-list'),'กำลังโหลดข่าวล่าสุด…');
+  if(newsPresentationReady){
+    renderNewsSkeleton($('#news-list'),'กำลังโหลดข่าวล่าสุด…');
+    renderNewsSkeleton($('#featured-news'),'กำลังโหลดข่าวเด่น…');
+  }
 }
 async function finishNewsScopeLoading(current) {
   if(newsScopeLoading) {
