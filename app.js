@@ -169,6 +169,7 @@ let alertPrefs = {};
 let alertStates = {};
 let alertHistory = [];
 let unreadAlerts = 0;
+let selectedAlertSymbol = '';
 let watchlistCloudReady = false;
 let watchlistSyncTimer = null;
 let watchlistSyncChain = Promise.resolve();
@@ -203,11 +204,14 @@ function clearPrivateDom() {
   ['#watchlist', '#watchlist-mobile', '#watchlist-news-list', '#watchlist-news-pager', '#mover-list', '#alerts-settings', '#alerts-history'].forEach(selector => {
     const node = $(selector); if (node) node.replaceChildren();
   });
-  ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => {
+  ['#watchlist-select', '#watchlist-select-mobile', '#alert-symbol-select'].forEach(selector => {
     const node = $(selector); if (node) node.replaceChildren();
   });
   const newsPager = $('#watchlist-news-pager'); if (newsPager) newsPager.hidden = true;
   const alertsPanel = $('#alerts-panel'); if (alertsPanel) alertsPanel.hidden = true;
+  const settingsOverlay = $('#alert-settings-overlay'); if (settingsOverlay) settingsOverlay.hidden = true;
+  selectedAlertSymbol = '';
+  setText('#alerts-scope', '');
   const alertsToggle = $('#alerts-toggle'); if (alertsToggle) alertsToggle.setAttribute('aria-expanded', 'false');
   const alertBadge = $('#alert-badge'); if (alertBadge) { alertBadge.hidden = true; alertBadge.textContent = '0'; }
   const addButton = $('#watchlist-add-active'); if (addButton) { addButton.disabled = true; addButton.textContent = '＋ เพิ่มเข้า Watchlist'; }
@@ -1515,25 +1519,98 @@ function saveIndicatorWorkspace(){
   syncIndicatorWorkspace();updateTradingViewChart();drawSignals(latestMarket?.indicatorHistory||latestMarket?.history||[],latestMarket?.levelsHistory||[],latestMarket?.history||[]);
 }
 function getAlertPref(symbol) { return { above: '', below: '', percentAbove: '', percentBelow: '', ...alertPrefs[symbol] }; }
+function getAlertFields() { return ['above', 'below', 'percentAbove', 'percentBelow']; }
 function renderAlertSettings() {
   if (!isCurrentPrivateIdentity()) return;
-  const root = $('#alerts-settings');
+  const root = $('#alerts-settings'), selector = $('#alert-symbol-select');
   setText('#alerts-scope', `${currentWatchlist().name} · แจ้งเตือนเฉพาะหุ้นในรายการนี้ · ทำงานเมื่อเปิดเว็บไว้`);
-  if (!watchlist.length) { root.innerHTML = `<p class="alert-empty">${escapeHtml(currentWatchlist().name)} ยังไม่มีหุ้น · เพิ่มหุ้นก่อนตั้งการเตือน</p>`; return; }
-  root.innerHTML = watchlist.map(item => {
-    const pref = getAlertPref(item.symbol);
-    return `<article class="alert-stock-setting" data-alert-symbol="${escapeHtml(item.symbol)}"><header><b>${escapeHtml(item.symbol)}</b><span>${escapeHtml(item.name || item.symbol)}</span></header><div class="alert-price-fields">${[
-      ['percentAbove', 'Percent ↑ (%)'], ['percentBelow', 'Percent ↓ (%)'], ['above', 'Price ↑ (บาท)'], ['below', 'Price ↓ (บาท)']
-    ].map(([field, label]) => `<label>${label}<input type="number" min="0" step="0.01" data-field="${field}" aria-label="${escapeHtml(item.symbol)} ${label}" value="${escapeHtml(pref[field])}" placeholder="ไม่ตั้งค่า"></label>`).join('')}</div></article>`;
-  }).join('');
+  const stocks = watchlist;
+  if (!stocks.length) {
+    selectedAlertSymbol = '';
+    selector.replaceChildren(); selector.disabled = true;
+    root.innerHTML = `<p class="alert-empty">${escapeHtml(currentWatchlist().name)} ยังไม่มีหุ้น · เพิ่มหุ้นใน Watchlist ก่อนตั้งค่า</p>`;
+    $('#alert-settings-save').disabled = true;
+    $('#alert-settings-error').hidden = true;
+    return;
+  }
+  if (!stocks.some(item => item.symbol === selectedAlertSymbol)) selectedAlertSymbol = stocks[0].symbol;
+  selector.disabled = false;
+  selector.innerHTML = stocks.map(item => `<option value="${escapeHtml(item.symbol)}">${escapeHtml(item.symbol)}${item.name && item.name !== item.symbol ? ` · ${escapeHtml(item.name)}` : ''}</option>`).join('');
+  selector.value = selectedAlertSymbol;
+  const pref = getAlertPref(selectedAlertSymbol);
+  const items = [
+    ['above', 'ราคา ≥', 'บาท', 'กรอกราคา'],
+    ['below', 'ราคา ≤', 'บาท', 'กรอกราคา'],
+    ['percentAbove', 'เพิ่มขึ้น ≥', '%', 'กรอก %'],
+    ['percentBelow', 'ลดลง ≤', '%', 'กรอก %']
+  ];
+  root.innerHTML = `<h3>เงื่อนไขสำหรับ ${escapeHtml(selectedAlertSymbol)}</h3><p class="alert-settings-hint">เลือกเงื่อนไข กรอกค่าบวก และกดบันทึกก่อนเปลี่ยนหุ้น · Percent Down 5 หมายถึง −5%</p><div class="alert-condition-list">${items.map(([field, label, unit, placeholder]) => {
+    const enabled = watchlistThresholds(pref)[field] !== null;
+    return `<div class="alert-condition"><label class="alert-condition-toggle"><input type="checkbox" data-enable="${field}" ${enabled ? 'checked' : ''}><span>${label}</span></label><input type="number" min="0" step="0.01" data-field="${field}" aria-label="${escapeHtml(selectedAlertSymbol)} ${label}" value="${escapeHtml(pref[field])}" placeholder="${placeholder}" ${enabled ? '' : 'disabled'}><span class="alert-unit">${unit}</span></div>`;
+  }).join('')}</div>`;
+  $('#alert-settings-save').disabled = false;
+  $('#alert-settings-error').hidden = true;
 }
 function renderAlertHistory() {
   if (!isCurrentPrivateIdentity()) return;
   const root = $('#alerts-history');
-  root.innerHTML = alertHistory.length ? alertHistory.slice(0, 8).map(item => `<div class="alert-history-item"><b>${escapeHtml(item.symbol)} · ${escapeHtml(item.title)}</b><span>${escapeHtml(item.body)}</span><time>${escapeHtml(stamp(item.time))}</time></div>`).join('') : '<p class="alert-empty">ยังไม่มีรายการแจ้งเตือน</p>';
+  root.innerHTML = alertHistory.length ? alertHistory.slice(0, 30).map((item, index) => `<div class="alert-history-item"><div class="alert-history-content"><b>${escapeHtml(item.symbol)} · ${escapeHtml(item.title)}</b><span>${escapeHtml(item.body)}</span><time>${escapeHtml(stamp(item.time))}</time></div><button class="watch-remove" type="button" data-alert-delete="${index}" aria-label="ลบการแจ้งเตือนรายการที่ ${index + 1}">×</button></div>`).join('') : '<p class="alert-empty">ยังไม่มีรายการแจ้งเตือน</p>';
+  $('#alerts-clear-all').disabled = alertHistory.length === 0;
   const badge = $('#alert-badge');
   badge.hidden = unreadAlerts === 0;
   badge.textContent = String(unreadAlerts);
+}
+function deleteAlertHistory(index) {
+  if (!isCurrentPrivateIdentity() || !Number.isInteger(index) || index < 0 || index >= alertHistory.length) return;
+  alertHistory.splice(index, 1);
+  writeScopedLocal('setscope-alert-history', alertHistory);
+  renderAlertHistory();
+}
+function openAlertSettings() {
+  if (!isCurrentPrivateIdentity()) return;
+  const panel = $('#alerts-panel');
+  panel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false');
+  selectedAlertSymbol = '';
+  renderAlertSettings(); updateNotificationStatus();
+  $('#alert-settings-overlay').hidden = false;
+  ($('#alert-symbol-select').disabled ? $('#alert-settings-close') : $('#alert-symbol-select')).focus();
+}
+function closeAlertSettings() {
+  const overlay = $('#alert-settings-overlay');
+  if (overlay.hidden) return;
+  overlay.hidden = true;
+  $('#alert-settings-error').hidden = true;
+  selectedAlertSymbol = '';
+  $('#profile-alerts-button').focus();
+}
+function saveAlertSettings() {
+  if (!isCurrentPrivateIdentity() || !watchlist.some(item => item.symbol === selectedAlertSymbol)) return;
+  const symbol = selectedAlertSymbol, current = getAlertPref(symbol), next = { ...current };
+  for (const field of getAlertFields()) {
+    const enabled = $(`#alerts-settings [data-enable="${field}"]`).checked;
+    const input = $(`#alerts-settings [data-field="${field}"]`);
+    const value = input.value.trim();
+    if (enabled && !(Number.isFinite(Number(value)) && Number(value) > 0)) {
+      const error = $('#alert-settings-error');
+      error.textContent = 'กรุณากรอกค่าที่มากกว่า 0 สำหรับเงื่อนไขที่เลือก';
+      error.hidden = false; input.focus(); return;
+    }
+    next[field] = enabled ? value : '';
+  }
+  let changed = false;
+  for (const field of getAlertFields()) {
+    if (String(current[field]) !== String(next[field])) {
+      changed = true;
+      if (alertStates[symbol]) delete alertStates[symbol][field];
+    }
+  }
+  if (changed) {
+    alertPrefs[symbol] = next;
+    writeScopedLocal('setscope-alert-prefs', alertPrefs);
+    writeScopedLocal('setscope-alert-states', alertStates);
+    if (!watchlistCheck?.pending) clearWatchlistCheck();
+  }
+  closeAlertSettings();
 }
 function updateNotificationStatus() {
   const permission = 'Notification' in window ? Notification.permission : 'unsupported';
@@ -2369,43 +2446,54 @@ function setupUiEventWiring() {
   $('#watchlist').addEventListener('click', handleWatchlistClick);
   $('#watchlist-mobile').addEventListener('click', handleWatchlistClick);
   const alertsPanel = $('#alerts-panel');
-  let profileAlertsOpened = false;
+  const settingsOverlay = $('#alert-settings-overlay');
   $('#alerts-toggle').addEventListener('click', () => {
+    if (!settingsOverlay.hidden) closeAlertSettings();
     alertsPanel.hidden = !alertsPanel.hidden;
     $('#alerts-toggle').setAttribute('aria-expanded', String(!alertsPanel.hidden));
-    if (!alertsPanel.hidden) { unreadAlerts = 0; renderAlertHistory(); renderAlertSettings(); }
+    if (!alertsPanel.hidden) { unreadAlerts = 0; renderAlertHistory(); }
   });
   $('#alerts-close').addEventListener('click', () => {
     alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false');
-    if (profileAlertsOpened) $('#profile-alerts-button').focus();
-    profileAlertsOpened = false;
+    $('#alerts-toggle').focus();
   });
-  $('#profile-alerts-button').addEventListener('click', () => {
-    profileAlertsOpened = true;
-    if (alertsPanel.hidden) $('#alerts-toggle').click();
-    $('#alerts-close').focus();
+  $('#profile-alerts-button').addEventListener('click', openAlertSettings);
+  $('#alert-settings-close').addEventListener('click', closeAlertSettings);
+  $('#alert-settings-cancel').addEventListener('click', closeAlertSettings);
+  $('#alert-settings-save').addEventListener('click', saveAlertSettings);
+  settingsOverlay.addEventListener('click', event => { if (event.target === settingsOverlay) closeAlertSettings(); });
+  $('#alert-symbol-select').addEventListener('change', event => {
+    selectedAlertSymbol = event.target.value;
+    renderAlertSettings();
+  });
+  $('#alerts-settings').addEventListener('change', event => {
+    const field = event.target.dataset.enable;
+    if (!getAlertFields().includes(field)) return;
+    const input = $(`#alerts-settings [data-field="${field}"]`);
+    input.disabled = !event.target.checked;
+    if (event.target.checked) input.focus();
+    $('#alert-settings-error').hidden = true;
+  });
+  $('#alerts-settings').addEventListener('input', () => { $('#alert-settings-error').hidden = true; });
+  $('#alerts-history').addEventListener('click', event => {
+    const button = event.target.closest('[data-alert-delete]');
+    if (button) { event.stopPropagation(); deleteAlertHistory(Number(button.dataset.alertDelete)); }
+  });
+  $('#alerts-clear-all').addEventListener('click', () => {
+    if (!isCurrentPrivateIdentity() || !alertHistory.length || !window.confirm('ลบประวัติการแจ้งเตือนทั้งหมดในเบราว์เซอร์นี้?')) return;
+    alertHistory = [];
+    writeScopedLocal('setscope-alert-history', alertHistory);
+    renderAlertHistory();
   });
   $('#notification-permission').addEventListener('click', async () => {
     if (!('Notification' in window)) { updateNotificationStatus(); return; }
     try { await Notification.requestPermission(); } catch (_) {}
     updateNotificationStatus();
   });
-  const updateAlertSetting = event => {
-    const field = event.target.dataset.field, stock = event.target.closest('[data-alert-symbol]');
-    if (!['above', 'below', 'percentAbove', 'percentBelow'].includes(field) || !stock) return;
-    const symbol = stock.dataset.alertSymbol, pref = getAlertPref(symbol);
-    if (pref[field] !== event.target.value) {
-      if (alertStates[symbol]) delete alertStates[symbol][field];
-      writeScopedLocal('setscope-alert-states', alertStates);
-    }
-    pref[field] = event.target.value;
-    alertPrefs[symbol] = pref; writeScopedLocal('setscope-alert-prefs', alertPrefs);
-    if (!watchlistCheck?.pending) clearWatchlistCheck();
-  };
-  $('#alerts-settings').addEventListener('change', updateAlertSetting);
-  $('#alerts-settings').addEventListener('input', updateAlertSetting);
   document.addEventListener('click', event => {
-    if (!event.target.closest('.alerts-menu, #profile-alerts-button') && !alertsPanel.hidden) { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); }
+    if (!event.target.closest('.alerts-menu') && !alertsPanel.hidden) {
+      alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false');
+    }
   });
   $('#watchlist-add-active').addEventListener('click', addActiveToWatchlist);
   ['#watchlist-select', '#watchlist-select-mobile'].forEach(selector => $(selector)?.addEventListener('change', event => switchWatchlist(event.target.value)));
@@ -2486,7 +2574,17 @@ function setupUiEventWiring() {
     if (event.target.closest('[data-chart-retry]')) getMarket();
   });
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && !alertsPanel.hidden) $('#alerts-close').click();
+    if (event.key === 'Escape') {
+      if (!settingsOverlay.hidden) { event.preventDefault(); closeAlertSettings(); }
+      else if (!alertsPanel.hidden) $('#alerts-close').click();
+    }
+    if (event.key === 'Tab' && !settingsOverlay.hidden) {
+      const focusables = [...settingsOverlay.querySelectorAll('button:not(:disabled), select:not(:disabled), input:not(:disabled)')];
+      if (!focusables.length) return;
+      const first = focusables[0], last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
   });
   if (typeof ResizeObserver === 'function') {
     new ResizeObserver(scheduleChartRedraw).observe($('#stock-price-chart'));

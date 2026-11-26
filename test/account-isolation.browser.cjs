@@ -271,6 +271,8 @@ if(require.main===module)(async () => {
     await racePage.waitForFunction(() => JSON.parse(sessionStorage.getItem('setscope-auth-session-v1') || 'null')?.access_token === 'token-a');
     const pendingAText = await racePage.locator('#app-shell').textContent();
     assert.equal(pendingAText.includes('B Private Stock'), false, 'B private DOM must clear before A can be shown');
+    assert.equal(await racePage.locator('#alert-symbol-select option').count(), 0, 'previous owner alert dropdown must clear while A ownership is pending');
+    assert.equal(await racePage.locator('#alerts-scope').textContent(), '', 'previous owner alert scope must clear while A ownership is pending');
     assert.equal((await racePage.locator('#mover-list').textContent()).includes('B Private Stock'), false, 'B mover DOM must clear while A watchlist ownership is pending');
     assert.equal(await racePage.locator('#stock-search').inputValue(), 'PTT', 'B owner-selected chart symbol must reset before A can be shown');
     assert.equal(await racePage.locator('#app-shell').getAttribute('aria-hidden'), 'true', 'new owner shell must stay hidden until owner-specific initialization completes');

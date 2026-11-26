@@ -346,3 +346,83 @@ test('Watchlist and alert browser state is scoped to the authenticated account',
   assert.doesNotMatch(appSource, /localStorage\.getItem\('setscope-(?:watchlists-v2|active-watchlist|alert-(?:prefs|states|history))'/);
   assert.doesNotMatch(appSource, /localStorage\.setItem\('setscope-(?:watchlists-v2|watchlist|active-watchlist|alert-(?:prefs|states|history))'/);
 });
+
+test('v1.7.7 separates Profile settings dialog from history-only Bell without a new route', () => {
+  assert.match(indexSource, /id="profile-alerts-button"[^>]*aria-controls="alert-settings-overlay"/);
+  assert.match(indexSource, /id="alert-settings-overlay"[^>]*hidden/);
+  assert.match(indexSource, /class="alert-settings-dialog" role="dialog" aria-modal="true"/);
+  assert.match(indexSource, /id="alert-symbol-select"/);
+  assert.match(indexSource, /id="alert-settings-save"/);
+  assert.match(indexSource, /id="alert-settings-cancel"/);
+  const bellPanel = indexSource.match(/<section class="alerts-panel" id="alerts-panel"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(bellPanel, /id="alerts-history"/);
+  assert.match(bellPanel, /id="alerts-clear-all"/);
+  assert.doesNotMatch(bellPanel, /id="alerts-settings"|id="notification-permission"|id="watchlist-check"/);
+  const overlay = indexSource.match(/<div class="alert-settings-overlay"[\s\S]*?<\/section>\s*<\/div>/)?.[0] || '';
+  assert.match(overlay, /id="alerts-settings"/);
+  assert.match(overlay, /id="notification-permission"/);
+  assert.match(overlay, /id="watchlist-check"/);
+  assert.doesNotMatch(domainSource, /'alert-settings'|"alert-settings"/);
+  assert.match(appSource, /renderAlertHistory\(\)[\s\S]*?alertHistory\.slice\(0, 30\)/);
+});
+
+test('v1.7.7 Save changes one symbol and resets only changed crossing fields', () => {
+  const source = appSource.match(/function saveAlertSettings\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.ok(source);
+  const values = { above: '108', below: '95', percentAbove: '', percentBelow: '' };
+  const checked = { above: true, below: true, percentAbove: false, percentBelow: false };
+  const elements = {
+    '#alert-settings-error': { hidden: true, textContent: '' },
+    ...Object.fromEntries(Object.keys(values).flatMap(field => [
+      [`#alerts-settings [data-enable="${field}"]`, { checked: checked[field] }],
+      [`#alerts-settings [data-field="${field}"]`, { value: values[field], focus() {} }]
+    ]))
+  };
+  const writes = [];
+  const state = { PTT: { above: { value: 100 }, below: { value: 99 }, percentAbove: { value: 2 } } };
+  const pref = { PTT: { above: '103', below: '95', technical: true }, CPALL: { above: '45' } };
+  const ctx = vm.createContext({
+    isCurrentPrivateIdentity: () => true,
+    selectedAlertSymbol: 'PTT', watchlist: [{ symbol: 'PTT' }, { symbol: 'CPALL' }],
+    alertPrefs: pref, alertStates: state, watchlistCheck: null,
+    getAlertPref: symbol => ({ above: '', below: '', percentAbove: '', percentBelow: '', ...pref[symbol] }),
+    getAlertFields: () => ['above', 'below', 'percentAbove', 'percentBelow'],
+    $: selector => elements[selector],
+    writeScopedLocal: (key, value) => writes.push([key, JSON.stringify(value)]),
+    clearWatchlistCheck: () => {}, closeAlertSettings: () => {},
+    Number, String
+  });
+  vm.runInContext(`${source}\nsaveAlertSettings();`, ctx);
+  assert.equal(pref.PTT.above, '108');
+  assert.equal(pref.PTT.below, '95');
+  assert.equal(pref.PTT.technical, true, 'legacy flag is retained but ignored by alert engine');
+  assert.equal(pref.CPALL.above, '45', 'another symbol is unchanged');
+  assert.equal(state.PTT.above, undefined, 'edited price resets only its own crossing');
+  assert.deepEqual(state.PTT.below, { value: 99 });
+  assert.deepEqual(state.PTT.percentAbove, { value: 2 });
+  assert.deepEqual(writes.map(item => item[0]), ['setscope-alert-prefs', 'setscope-alert-states']);
+  writes.length = 0;
+  vm.runInContext('saveAlertSettings();', ctx);
+  assert.equal(writes.length, 0, 're-saving unchanged conditions must not reset state');
+});
+
+test('v1.7.7 History deletion removes by position without modifying preferences or alert states', () => {
+  const source = appSource.match(/function deleteAlertHistory\(index\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.ok(source);
+  const records = [
+    { symbol: 'PTT', title: 'repeat', body: 'same', time: 'one' },
+    { symbol: 'PTT', title: 'repeat', body: 'same', time: 'two' },
+    { symbol: 'PTT', title: 'repeat', body: 'same', time: 'three' }
+  ];
+  const pref = { PTT: { above: '103' } }, state = { PTT: { above: { value: 100 } } };
+  const writes = [];
+  const ctx = vm.createContext({ isCurrentPrivateIdentity: () => true,
+    alertHistory: records, alertPrefs: pref, alertStates: state,
+    writeScopedLocal: (key, value) => writes.push([key, JSON.stringify(value)]),
+    renderAlertHistory: () => {} });
+  vm.runInContext(`${source}\ndeleteAlertHistory(1);`, ctx);
+  assert.deepEqual(records.map(item => item.time), ['one', 'three']);
+  assert.deepEqual(writes.map(item => item[0]), ['setscope-alert-history']);
+  assert.equal(pref.PTT.above, '103');
+  assert.equal(state.PTT.above.value, 100);
+});
