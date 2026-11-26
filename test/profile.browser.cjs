@@ -190,9 +190,9 @@ async function makeContext(width) {
       await page.locator('#profile-theme-toggle').click();
       check(await page.locator('html').getAttribute('data-theme'), 'light');
       await page.locator('#profile-alerts-button').click();
-      check(await page.locator('#alerts-panel').isVisible(), true);
+      check(await page.locator('#alert-settings-overlay').isVisible(), true);
       await page.keyboard.press('Escape');
-      check(await page.locator('#alerts-panel').isVisible(), false);
+      check(await page.locator('#alert-settings-overlay').isVisible(), false);
       check(await page.locator('#profile-alerts-button').evaluate(node => node === document.activeElement), true);
       check(await page.locator('.profile-legal a').evaluateAll(nodes => nodes.map(node => node.getAttribute('href'))), ['/privacy.html', '/terms.html']);
       await page.locator('.side-nav [data-workspace-route="overview"]').click();

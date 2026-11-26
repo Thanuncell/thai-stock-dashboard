@@ -64,10 +64,17 @@ async function verifyAlertAcceptance(browser, base) {
     },{theme,legacyHistory});
     await page.goto(base+'/?symbol=PTT&range=1D#watchlist');
     await page.waitForSelector('#watchlist-mobile [data-sym=PTT]');
-    const panel=page.locator('#alerts-panel');
-    const open=async()=>{if(!await panel.isVisible())await page.locator('#alerts-toggle').click();};
-    const fields=symbol=>panel.locator(`[data-alert-symbol=${symbol}] input`);
-    const set=async(field,value,symbol='PTT')=>{await open();await panel.locator(`[data-alert-symbol=${symbol}] [data-field=${field}]`).fill(value);};
+    const panel=page.locator('#alert-settings-overlay');
+    const open=async()=>{if(!await panel.isVisible())await page.evaluate(()=>document.querySelector('#profile-alerts-button').click());};
+    const pick=async symbol=>{await open();await page.locator('#alert-symbol-select').selectOption(symbol);};
+    const fields=()=>panel.locator('[data-field]');
+    const set=async(field,value,symbol='PTT')=>{
+      await pick(symbol);
+      const checkbox=panel.locator(`[data-enable=${field}]`);
+      if(value) {await checkbox.check();await panel.locator(`[data-field=${field}]`).fill(value);}
+      else await checkbox.uncheck();
+      await panel.locator('#alert-settings-save').click();
+    };
     const history=async owner=>page.evaluate(owner=>JSON.parse(localStorage.getItem('setscope-alert-history:user-'+owner)||'[]'),owner);
     let total=1;
     const unchanged=async()=>assert.equal((await history('a')).length,Math.min(total,30));
@@ -79,18 +86,20 @@ async function verifyAlertAcceptance(browser, base) {
       assert.equal(requests.length,before+1,'Manual Check reuses exactly one market request');
     };
     const switchList=async id=>{
+      if(await panel.isVisible())await panel.locator('#alert-settings-close').click();
       await page.locator('.side-nav [data-workspace-route=watchlist]').click();
       const done=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/market');
       await page.locator(width<790?'#watchlist-select-mobile':'#watchlist-select').selectOption(id);await done;
       await page.waitForFunction(()=>!document.querySelector('#watchlist-check').disabled);
     };
     await open();
-    assert.equal(await fields('PTT').count(),4);assert.equal(await panel.locator('[data-field=technical]').count(),0);
-    assert.deepEqual(await fields('PTT').evaluateAll(nodes=>nodes.map(node=>node.value)),['','','103','95'],'AC-13 legacy price retained; Percent starts empty');
+    assert.equal(await fields().count(),4);assert.equal(await panel.locator('[data-field=technical]').count(),0);
+    assert.deepEqual(await fields().evaluateAll(nodes=>nodes.map(node=>node.value)),['103','95','',''],'AC-13 legacy price retained; Percent starts empty');
     await unchanged();assert.deepEqual((await history('a'))[0],legacyHistory,'legacy technical history is not deleted');
     assert.equal(await page.evaluate(()=>window.fixtureNotifications.length),0,'first observation creates no browser notification');
     const beforeEdit=requests.length;
     for(const field of ['above','below','percentAbove','percentBelow'])await set(field,'');
+    await open();
     await panel.locator('#watchlist-check').click();
     assert.equal(requests.length,beforeEdit,'empty conditions and editing do not fetch data');await unchanged();
     for(const[field,value]of Object.entries({above:'103',below:'95',percentAbove:'3',percentBelow:'5'}))await set(field,value);
@@ -125,47 +134,50 @@ async function verifyAlertAcceptance(browser, base) {
     await page.evaluate(()=>window.fixturePermission='denied');
     last=102;await refresh();last=104;await refresh();await added(2);
     assert.equal(await page.evaluate(()=>window.fixtureNotifications.length),0,'denied permission suppresses OS notifications, not in-app history');
-    await switchList('list-2');await open();
-    assert.deepEqual(await fields('SCB').evaluateAll(nodes=>nodes.map(node=>node.value)),['','','',''],'AC-02 new symbol is opt-in only');
+    await switchList('list-2');await pick('SCB');
+    assert.deepEqual(await fields().evaluateAll(nodes=>nodes.map(node=>node.value)),['','','',''],'AC-02 new symbol is opt-in only');
     await set('above','50','SCB');await refresh();await switchList('list-1');otherLast=51;await refresh();await unchanged();
     assert.deepEqual(requests.at(-1).symbols,['PTT'],'only selected Watchlist is requested');
     await switchList('list-2');await open();await unchanged();
-    assert.equal(await panel.locator('[data-alert-symbol=PTT] [data-field=above]').inputValue(),'103','preferences are Account + Symbol across lists');
+    await pick('PTT');
+    assert.equal(await panel.locator('[data-field=above]').inputValue(),'103','preferences are Account + Symbol across lists');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
     assert.equal(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
-    assert.ok(await fields('PTT').evaluateAll(nodes=>nodes.every(node=>node.getBoundingClientRect().width>60)));
+    assert.ok(await fields().evaluateAll(nodes=>nodes.every(node=>node.getBoundingClientRect().width>60)));
     if(process.env.SETSCOPE_ALERT_EVIDENCE) {
       await fs.mkdir(process.env.SETSCOPE_ALERT_EVIDENCE,{recursive:true});
       await panel.screenshot({path:path.join(process.env.SETSCOPE_ALERT_EVIDENCE,`alerts-${width}-${theme}.png`)});
     }
+    if(await panel.isVisible())await panel.locator('#alert-settings-close').click();
     await page.goto(base+'/?symbol=CPALL&range=1D#chart');await page.locator('#watchlist-add-active').waitFor();
     const addResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/market');
-    await page.locator('#watchlist-add-active').click();await addResponse;await open();
-    assert.deepEqual(await fields('CPALL').evaluateAll(nodes=>nodes.map(node=>node.value)),['','','',''],
+    await page.locator('#watchlist-add-active').click();await addResponse;await pick('CPALL');
+    assert.deepEqual(await fields().evaluateAll(nodes=>nodes.map(node=>node.value)),['','','',''],
       'AC-02 adding a quoted symbol through the UI does not prefill any threshold');await unchanged();
     last=110;await refresh();await unchanged();
     const aPrefs=await page.evaluate(()=>localStorage.getItem('setscope-alert-prefs:user-a'));
-    const logout=async()=>{await page.locator('.side-nav [data-workspace-route=profile]').click();
+    const logout=async()=>{if(await panel.isVisible())await panel.locator('#alert-settings-close').click();
+      await page.locator('.side-nav [data-workspace-route=profile]').click();
       await Promise.all([page.waitForEvent('load'),page.locator('#profile-logout-button').click()]);};
     const login=async owner=>{await page.locator('#login-form input[name=email]').fill(owner+'@example.test');
       await page.locator('#login-form input[name=password]').fill('fixture-password');await page.locator('#login-form button[type=submit]').click();
       await page.waitForSelector('body.authenticated');await page.waitForSelector('#watchlist-mobile [data-sym=PTT]',{state:'attached'});};
     await logout();await login('b');await open();
-    assert.deepEqual(await fields('PTT').evaluateAll(nodes=>nodes.map(node=>node.value)),['','','',''],'AC-01 new account has four blank inputs');
+    assert.deepEqual(await fields().evaluateAll(nodes=>nodes.map(node=>node.value)),['','','',''],'AC-01 new account has four blank inputs');
     assert.equal((await history('b')).length,0);await set('above','103');await refresh();bLast=104;await refresh();
     assert.equal((await history('b')).length,1);await unchanged();
     assert.equal(await page.evaluate(()=>localStorage.getItem('setscope-alert-prefs:user-a')),aPrefs);
     await logout();await login('a');await open();await unchanged();
-    assert.equal(await panel.locator('[data-alert-symbol=PTT] [data-field=above]').inputValue(),'103');
+    assert.equal(await panel.locator('[data-field=above]').inputValue(),'103');
     const ownedStates=await page.evaluate(()=>Object.fromEntries(['a','b'].map(owner=>[owner,JSON.parse(localStorage.getItem('setscope-alert-states:user-'+owner))])));
     assert.equal(ownedStates.a.PTT.above.value,110);assert.equal(ownedStates.b.PTT.above.value,104);
-    last=102;await refresh();await unchanged();await page.locator('#alerts-close').click();last=104;
+    last=102;await refresh();await unchanged();await page.locator('#alert-settings-close').click();last=104;
     const beforePoll=requests.length,pollResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/market');
     await page.clock.fastForward(60000);await pollResponse;
     await page.waitForFunction(()=>!document.querySelector('#watchlist-check').disabled);
     assert.equal(requests.length,beforePoll+1,'existing 60-second polling remains browser-only');
     await added(2);await page.locator('#alert-badge').waitFor({state:'visible'});
-    assert.equal(await page.locator('#alert-badge').textContent(),'2');await open();
+    assert.equal(await page.locator('#alert-badge').textContent(),'2');await page.locator('#alerts-toggle').click();
     assert.equal(await page.locator('#alert-badge').isVisible(),false,'opening the existing bell clears unread state');
     assert.equal(context.serviceWorkers().length,0);
     assert.ok(external.every(origin=>['https://fonts.googleapis.com','https://fonts.gstatic.com'].includes(origin)),
@@ -249,7 +261,7 @@ async function run() {
     const list = page.locator('#watchlist-mobile');
     const visible = () => list.locator('.watch-item').evaluateAll(rows => rows.map(row => row.dataset.sym));
     const checkResult = page.locator('#watchlist-check-result');
-    const checkButton = page.locator('#alerts-panel #watchlist-check');
+    const checkButton = page.locator('#alert-settings-overlay #watchlist-check');
     const signal = page.locator('#watchlist-signal-detail summary');
     const cards = page.locator('#watchlist-signal-content .technical-reason-card');
     const sort = page.locator('#watchlist-sort');
@@ -298,7 +310,7 @@ async function run() {
     await page.locator('#refresh-watchlist-news').click();
     await page.waitForFunction(() => !document.querySelector('#refresh-watchlist-news').disabled);
     assert.deepEqual(news.at(-1), stocks);
-    await page.locator('#alerts-toggle').click();
+    await page.evaluate(()=>document.querySelector('#profile-alerts-button').click());
     assert.equal(await checkButton.textContent(), 'ตรวจเงื่อนไขราคา/เปอร์เซ็นต์');
     assert.equal(await checkButton.isVisible(), true);
     assert.equal(requests.length, initial[0], 'opening alert settings must not run a manual check');
@@ -350,6 +362,7 @@ async function run() {
     assert.equal(await sort.inputValue(), 'price-asc');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.equal(requests.length, beforeResize);
+    await page.locator('#alert-settings-close').click();
     await page.locator('#theme-toggle').click();
     assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -358,11 +371,11 @@ async function run() {
     assert.equal(await checkResult.isVisible(), false);
     await page.waitForFunction(() => document.querySelector('#watchlist-news-list').textContent.includes('PTT รายงาน'));
     const withoutConditions = requests.length;
-    await page.locator('#alerts-toggle').click();
+    await page.evaluate(()=>document.querySelector('#profile-alerts-button').click());
     await checkButton.click();
     assert.match(await checkResult.textContent(), /ตั้งเงื่อนไขราคา/);
     assert.equal(requests.length, withoutConditions);
-    await page.locator('#alerts-close').click();
+    await page.locator('#alert-settings-close').click();
     await page.locator('#watchlist-select-mobile').selectOption('list-1');
     await page.waitForFunction(() => document.querySelector('#watchlist-news-list').textContent.includes('ROJNA รายงาน'));
     const amata = list.locator('[data-sym=AMATA] .watch-select');

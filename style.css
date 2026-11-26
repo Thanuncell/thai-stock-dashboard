@@ -546,3 +546,47 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 @media (max-width: 790px) {
   .technical-refresh-btn { max-width: 104px; white-space: normal; }
 }
+
+/* v1.7.7: minimal Profile settings dialog; existing Bell remains history-only. */
+.alert-settings-overlay[hidden]{display:none}
+.alert-settings-overlay{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:16px;background:#0b1b32a8}
+.alert-settings-dialog{width:min(100%,520px);max-height:calc(100dvh - 32px);overflow-y:auto;box-sizing:border-box;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:14px;box-shadow:0 16px 55px #091b3580;padding:22px}
+.alert-settings-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.alert-settings-heading h2{font-size:18px;line-height:1.4;margin:0;color:var(--ink)}
+.alert-settings-heading button{border:0;background:transparent;color:var(--muted);font-size:24px;cursor:pointer;min-width:36px;min-height:36px}
+.alert-settings-scope{margin:10px 0;color:var(--muted);font-size:11px;line-height:1.5}
+.alert-symbol-label{display:block;font-size:12px;font-weight:700;margin:8px 0 5px}
+#alert-symbol-select{width:100%;min-height:42px;padding:9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);font:600 13px var(--font)}
+.alert-settings-dialog .alerts-settings{margin-top:15px;border-top:1px solid var(--line);padding-top:13px}
+.alert-settings-dialog .alerts-settings h3,.alert-settings-notifications h3{font-size:13px;margin:0 0 5px;color:var(--ink)}
+.alert-settings-hint,.watchlist-check-note{color:var(--muted);font-size:10px;line-height:1.5;margin:3px 0 9px}
+.alert-condition-list{display:grid;gap:9px}
+.alert-condition{display:grid;grid-template-columns:minmax(120px,1fr) minmax(110px,1.1fr) 30px;align-items:center;gap:9px}
+.alert-condition-toggle{display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;min-width:0}
+.alert-condition-toggle input{width:18px;height:18px;accent-color:var(--green);flex:none}
+.alert-condition>input{width:100%;min-width:0;box-sizing:border-box;min-height:36px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);padding:7px 9px;font:12px var(--latin)}
+.alert-condition>input:disabled{opacity:.55}
+.alert-unit{font-size:11px;color:var(--muted)}
+.alert-settings-notifications{border-top:1px solid var(--line);margin-top:15px;padding-top:13px}
+.alert-settings-notifications .notification-permission{margin:7px 0;min-height:38px}
+.alert-settings-notifications .notification-status{font-size:11px;margin:5px 0}
+.alert-settings-notifications .watchlist-check{margin:5px 0 2px;min-height:38px}
+.alert-settings-notifications .watchlist-check-result{font-size:11px;margin:5px 0}
+.alert-settings-actions{display:flex;gap:12px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+.alert-settings-actions button{flex:1;min-height:42px;border-radius:8px;border:1px solid var(--line);font:600 13px var(--font);cursor:pointer;background:var(--paper);color:var(--ink)}
+#alert-settings-save{background:var(--green);border-color:var(--green);color:white}
+#alert-settings-save:disabled{opacity:.5;cursor:not-allowed}
+.alert-settings-error{color:#c84444;font-size:11px;margin:9px 0}
+.alert-settings-error[hidden]{display:none}
+.alerts-history-actions{display:flex;justify-content:flex-end;margin:9px 0}
+.alerts-history-actions button{border:1px solid var(--line);background:var(--paper);color:var(--muted);border-radius:5px;cursor:pointer;font:10px var(--font);padding:5px 7px}
+.alerts-history-actions button:disabled{opacity:.5;cursor:not-allowed}
+.alerts-history{max-height:min(58vh,480px);overflow-y:auto}
+.alert-history-item{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
+.alert-history-content{display:grid;gap:3px;min-width:0;overflow-wrap:anywhere}
+.alert-history-item .watch-remove{flex:none;opacity:1}
+@media(max-width:790px){
+  .alert-settings-heading button,.alert-condition-toggle,.alert-condition>input,.alert-settings-notifications .notification-permission,.alert-settings-notifications .watchlist-check,.alert-settings-actions button{min-height:44px}
+  .alerts-panel #alerts-close,.alerts-panel .alerts-history-actions button,.alerts-panel .alert-history-item button{min-width:44px;min-height:44px}
+}
+@media(max-width:470px){.alert-settings-overlay{padding:10px}.alert-settings-dialog{padding:14px;border-radius:12px;max-height:calc(100dvh - 20px)}.alert-settings-heading h2{font-size:16px}.alert-condition{grid-template-columns:minmax(91px,1fr) minmax(80px,1fr) 21px;gap:5px}.alert-condition-toggle{font-size:11px;gap:4px}.alert-condition-toggle input{width:16px;height:16px}.alert-condition>input{font-size:11px;padding:6px}}
