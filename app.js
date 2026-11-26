@@ -3,7 +3,6 @@ import {
   MAX_WATCHLIST,
   MAX_WATCHLISTS,
   THAI_NAMES,
-  analyseTechnicals,
   alignIndicatorSeries,
   chartPriceAxis,
   chartGeometry,
@@ -39,7 +38,7 @@ import {
   TECHNICAL_DEFAULTS, normalizeTechnicalParameters, trustedMarketBars,
   zoomChartViewport,
   watchlistNewsViewState,
-  usableWatchlistQuote, watchlistView, watchlistThresholds,
+  usableWatchlistQuote, watchlistView, watchlistThresholds, evaluateWatchlistAlert,
   newsDisplayAnalysis,
   canRequestNewsAnalysis,
   retainWatchlistNews as retainWatchlistByPolicy
@@ -579,7 +578,8 @@ function initializeUserScopedState() {
   if (!watchlists.some(list => list.id === activeWatchlistId)) activeWatchlistId = watchlists[0].id;
   watchlist = currentWatchlist().items;
   alertPrefs = readScopedLocal('setscope-alert-prefs', {});
-  alertStates = readScopedLocal('setscope-alert-states', {});
+  // Persisted observations cannot prove a crossing while this page was closed.
+  alertStates = {};
   alertHistory = readScopedLocal('setscope-alert-history', []);
   unreadAlerts = 0;
   latestWatchlistNews = [];
@@ -605,6 +605,7 @@ function switchWatchlist(id, { historyMode = 'push', resetPage = true } = {}) {
   if (!isCurrentPrivateIdentity()) return;
   const chosen = watchlists.find(list => list.id === id); if (!chosen) return;
   activeWatchlistId = id; watchlist = chosen.items; scheduleWatchlistCloudSync();
+  alertStates = {};
   if (resetPage) watchNewsPage = 1;
   if (watchlist.length && !watchlist.some(item => item.symbol === activeSymbol)) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; updateTradingViewChart(); }
   syncTechnicalSearch();
@@ -1310,6 +1311,7 @@ function createWatchlist() {
   if (watchlists.length >= MAX_WATCHLISTS) return;
   const id = `list-${Date.now()}`, name = `Watchlist ${watchlists.length + 1}`;
   watchlists.push({ id, name, items: [] }); activeWatchlistId = id; watchlist = currentWatchlist().items;
+  alertStates = {};
   watchNewsPage = 1;
   saveWatchlist(); renderWatchlistPicker(); renderWatchlist(); renderAlertSettings(); renderMovers([]); getMarket();
   if (document.body.dataset.workspacePage === 'watchlist') writeNavigation('push', 'watchlist');
@@ -1512,7 +1514,7 @@ function saveIndicatorWorkspace(){
   try{writeScopedLocal('setscope-indicator-parameters',technicalParameters);writeScopedLocal('setscope-indicator-display',[...chartIndicators]);}catch{}
   syncIndicatorWorkspace();updateTradingViewChart();drawSignals(latestMarket?.indicatorHistory||latestMarket?.history||[],latestMarket?.levelsHistory||[],latestMarket?.history||[]);
 }
-function getAlertPref(symbol) { return alertPrefs[symbol] || { technical: true, above: '', below: '' }; }
+function getAlertPref(symbol) { return { above: '', below: '', percentAbove: '', percentBelow: '', ...alertPrefs[symbol] }; }
 function renderAlertSettings() {
   if (!isCurrentPrivateIdentity()) return;
   const root = $('#alerts-settings');
@@ -1520,7 +1522,9 @@ function renderAlertSettings() {
   if (!watchlist.length) { root.innerHTML = `<p class="alert-empty">${escapeHtml(currentWatchlist().name)} ยังไม่มีหุ้น · เพิ่มหุ้นก่อนตั้งการเตือน</p>`; return; }
   root.innerHTML = watchlist.map(item => {
     const pref = getAlertPref(item.symbol);
-    return `<article class="alert-stock-setting" data-alert-symbol="${escapeHtml(item.symbol)}"><header><b>${escapeHtml(item.symbol)}</b><span>${escapeHtml(item.name || item.symbol)}</span></header><label class="alert-check"><input type="checkbox" data-field="technical" ${pref.technical ? 'checked' : ''}> เตือนเมื่อสัญญาณเทคนิคเปลี่ยนเป็นซื้อ/ขาย</label><div class="alert-price-fields"><label>สูงกว่า<input type="number" min="0" step="0.01" data-field="above" value="${escapeHtml(pref.above)}" placeholder="ไม่ตั้ง"></label><label>ต่ำกว่า<input type="number" min="0" step="0.01" data-field="below" value="${escapeHtml(pref.below)}" placeholder="ไม่ตั้ง"></label></div></article>`;
+    return `<article class="alert-stock-setting" data-alert-symbol="${escapeHtml(item.symbol)}"><header><b>${escapeHtml(item.symbol)}</b><span>${escapeHtml(item.name || item.symbol)}</span></header><div class="alert-price-fields">${[
+      ['percentAbove', 'Percent ↑ (%)'], ['percentBelow', 'Percent ↓ (%)'], ['above', 'Price ↑ (บาท)'], ['below', 'Price ↓ (บาท)']
+    ].map(([field, label]) => `<label>${label}<input type="number" min="0" step="0.01" data-field="${field}" aria-label="${escapeHtml(item.symbol)} ${label}" value="${escapeHtml(pref[field])}" placeholder="ไม่ตั้งค่า"></label>`).join('')}</div></article>`;
   }).join('');
 }
 function renderAlertHistory() {
@@ -1570,32 +1574,38 @@ async function checkWatchlistPrices() {
   const identity = capturePrivateIdentity();
   if (!isCurrentPrivateIdentity(identity) || watchlistCheck?.pending) return;
   const conditions = () => watchlist.map(({ symbol }) => ({ symbol, ...watchlistThresholds(getAlertPref(symbol)) }))
-    .filter(({ above, below }) => above !== null || below !== null);
+    .filter(({ symbol, ...thresholds }) => Object.values(thresholds).some(value => value !== null));
   if (!conditions().length) {
     watchlistCheck = { scope: watchlistMonitoringScope(), pending: false };
-    showWatchlistCheck('ตั้งเงื่อนไขราคาสูงกว่า/ต่ำกว่าในศูนย์แจ้งเตือนก่อนตรวจ');
+    showWatchlistCheck('ตั้งเงื่อนไขราคา/เปอร์เซ็นต์ในศูนย์แจ้งเตือนก่อนตรวจ');
     return;
   }
   const check = { scope: watchlistMonitoringScope(), pending: true };
   watchlistCheck = check;
   $('#watchlist-check').disabled = true;
-  showWatchlistCheck('กำลังตรวจราคาตามเงื่อนไข…');
+  showWatchlistCheck('กำลังตรวจราคา/เปอร์เซ็นต์ตามเงื่อนไข…');
   try {
     const market = await getMarket();
     if (!isCurrentPrivateIdentity(identity) || watchlistCheck !== check || check.scope !== watchlistMonitoringScope()) return;
-    if (!market) { showWatchlistCheck('ตรวจราคาไม่สำเร็จหรือมีการเปลี่ยนรายการ กรุณาตรวจอีกครั้ง'); return; }
+    if (!market) { showWatchlistCheck('ตรวจเงื่อนไขไม่สำเร็จหรือมีการเปลี่ยนรายการ กรุณาตรวจอีกครั้ง'); return; }
     const quotes = new Map((market.stocks || []).map(row => [row.symbol, usableWatchlistQuote(row)]));
     const hits = [], unknown = [];
     let checked = 0;
-    for (const { symbol, above, below } of conditions()) {
+    for (const { symbol, ...thresholds } of conditions()) {
       const quote = quotes.get(symbol);
       if (!quote) { unknown.push(symbol); continue; }
-      checked++;
-      if ((above !== null && quote.last >= above) || (below !== null && quote.last <= below)) hits.push(symbol);
+      const checks = Object.entries(thresholds).filter(([, threshold]) => threshold !== null).map(([field, threshold]) => {
+        const value = field.startsWith('percent') ? quote.percent : quote.last;
+        return { usable: value !== null, hit: value !== null && (field === 'above' || field === 'percentAbove'
+          ? value >= threshold : value <= (field === 'percentBelow' ? -threshold : threshold)) };
+      });
+      if (checks.some(check => check.usable)) checked++;
+      if (checks.some(check => !check.usable)) unknown.push(symbol);
+      if (checks.some(check => check.hit)) hits.push(symbol);
     }
     const match = hits.length ? hits.join(', ') : 'ไม่มี';
-    const missing = unknown.length ? ` · ตรวจราคาไม่ได้: ${unknown.join(', ')}` : '';
-    showWatchlistCheck(`ตรวจราคาได้ ${checked} หุ้น · ถึงเงื่อนไข: ${match}${missing}`);
+    const missing = unknown.length ? ` · ข้อมูลไม่ครบ: ${unknown.join(', ')}` : '';
+    showWatchlistCheck(`ตรวจราคา/เปอร์เซ็นต์ได้ ${checked} หุ้น · ถึงเงื่อนไข: ${match}${missing}`);
   } finally {
     if (watchlistCheck === check) {
       check.pending = false;
@@ -1606,27 +1616,19 @@ async function checkWatchlistPrices() {
 
 function evaluateWatchlistAlerts(rows) {
   if (!isCurrentPrivateIdentity()) return;
+  const quotes = new Map(rows.map(row => [row.symbol, row]));
   const current = new Set(watchlist.map(item => item.symbol));
+  for (const symbol of Object.keys(alertStates)) if (!current.has(symbol)) delete alertStates[symbol];
   const now = Date.now();
-  rows.filter(row => current.has(row.symbol)).forEach(row => {
-    const quote = usableWatchlistQuote(row);
-    if (!quote) return;
-    const analysis = analyseTechnicals(row.history || []);
-    const price = quote.last;
-    const previous = alertStates[row.symbol];
-    const fresh = previous && now - Number(previous.updatedAt || 0) < 6 * 60 * 60 * 1000;
-    const pref = getAlertPref(row.symbol);
-    if (fresh && analysis && pref.technical && previous.technical && analysis.overall !== previous.technical && analysis.overall !== 'เป็นกลาง') {
-      const side = analysis.overall === 'ซื้อ' ? analysis.reasons.filter(item => item.signal === 'ซื้อ') : analysis.reasons.filter(item => item.signal === 'ขาย');
-      recordAlert(row.symbol, `สัญญาณเอน${analysis.overall}`, `${side.slice(0, 2).map(item => item.key).join(' และ ')} · ราคา ${number(price)}`);
+  for (const symbol of current) {
+    const result = evaluateWatchlistAlert(quotes.get(symbol), getAlertPref(symbol), alertStates[symbol], now);
+    alertStates[symbol] = result.state;
+    for (const crossing of result.crossings) {
+      const percent = crossing.field.startsWith('percent'), upward = crossing.field === 'above' || crossing.field === 'percentAbove';
+      recordAlert(symbol, `ผ่านระดับ${percent ? 'เปอร์เซ็นต์' : 'ราคา'}${upward ? 'ขาขึ้น' : 'ขาลง'}`,
+        `${percent ? 'เปลี่ยนแปลง' : 'ราคา'} ${number(crossing.value)}${percent ? '%' : ''} ${upward ? 'ถึงหรือสูงกว่า' : 'ถึงหรือต่ำกว่า'}ระดับที่ตั้ง ${number(crossing.threshold)}${percent ? '%' : ''}`);
     }
-    const { above, below } = watchlistThresholds(pref);
-    if (fresh && Number(previous.price) > 0) {
-      if (above !== null && previous.price < above && price >= above) recordAlert(row.symbol, 'ผ่านระดับราคาขาขึ้น', `ราคา ${number(price)} สูงกว่าระดับที่ตั้ง ${number(above)}`);
-      if (below !== null && previous.price > below && price <= below) recordAlert(row.symbol, 'ผ่านระดับราคาขาลง', `ราคา ${number(price)} ต่ำกว่าระดับที่ตั้ง ${number(below)}`);
-    }
-    alertStates[row.symbol] = { price, technical: analysis?.overall || previous?.technical || '', updatedAt: now };
-  });
+  }
   writeScopedLocal('setscope-alert-states', alertStates);
 }
 function updateStockCards(rows) {
@@ -1725,6 +1727,7 @@ async function getMarket() {
   } catch (error) {
     if (!isCurrentPrivateIdentity(identity) || !marketRequestSequence.isCurrent(requestId)) return;
     console.warn('Market data refresh failed', error);
+    alertStates = {};
     watchlistQuoteFailure = true;
     renderWatchlist([]);
     setChartLoadState('error', 'โหลดข้อมูลไม่สำเร็จ');
@@ -2353,6 +2356,7 @@ function setupUiEventWiring() {
       event.stopPropagation();
       const symbol = remove.dataset.remove;
       watchlist = watchlist.filter(item => item.symbol !== symbol);
+      delete alertStates[symbol];
       if (activeSymbol === symbol && watchlist.length) { activeSymbol = watchlist[0].symbol; activeName = watchlist[0].name || activeSymbol; syncTechnicalSearch(); }
       watchNewsPage = 1;
       saveWatchlist(); renderWatchlist(latestMarket?.stocks || []); renderAlertSettings(); renderMovers(latestMarket?.stocks || []); updateTradingViewChart(); getMarket();
@@ -2386,21 +2390,20 @@ function setupUiEventWiring() {
     try { await Notification.requestPermission(); } catch (_) {}
     updateNotificationStatus();
   });
-  $('#alerts-settings').addEventListener('change', event => {
+  const updateAlertSetting = event => {
     const field = event.target.dataset.field, stock = event.target.closest('[data-alert-symbol]');
-    if (!field || !stock) return;
+    if (!['above', 'below', 'percentAbove', 'percentBelow'].includes(field) || !stock) return;
     const symbol = stock.dataset.alertSymbol, pref = getAlertPref(symbol);
-    pref[field] = field === 'technical' ? event.target.checked : event.target.value;
+    if (pref[field] !== event.target.value) {
+      if (alertStates[symbol]) delete alertStates[symbol][field];
+      writeScopedLocal('setscope-alert-states', alertStates);
+    }
+    pref[field] = event.target.value;
     alertPrefs[symbol] = pref; writeScopedLocal('setscope-alert-prefs', alertPrefs);
-    if (field !== 'technical' && !watchlistCheck?.pending) clearWatchlistCheck();
-  });
-  $('#alerts-settings').addEventListener('input', event => {
-    const field = event.target.dataset.field, stock = event.target.closest('[data-alert-symbol]');
-    if (!field || field === 'technical' || !stock) return;
-    const symbol = stock.dataset.alertSymbol, pref = getAlertPref(symbol);
-    pref[field] = event.target.value; alertPrefs[symbol] = pref;
-    writeScopedLocal('setscope-alert-prefs', alertPrefs);
-  });
+    if (!watchlistCheck?.pending) clearWatchlistCheck();
+  };
+  $('#alerts-settings').addEventListener('change', updateAlertSetting);
+  $('#alerts-settings').addEventListener('input', updateAlertSetting);
   document.addEventListener('click', event => {
     if (!event.target.closest('.alerts-menu, #profile-alerts-button') && !alertsPanel.hidden) { alertsPanel.hidden = true; $('#alerts-toggle').setAttribute('aria-expanded', 'false'); }
   });
