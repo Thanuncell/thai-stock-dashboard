@@ -221,3 +221,150 @@ test('unavailable 5Y history preserves the existing unavailable state and never 
   assert.deepEqual(market.history,[]);assert.equal(market.dataState,'unavailable');
   for(const timeframe of ['D','W','M']) assert.deepEqual(chart.marketTimeframe(market,timeframe,'5Y').history,[]);
 });
+
+// Synthetic SCB/TISCO-like daily fixtures; prices are test data, not live history.
+function rejectedHistoryFixture(symbol, mutate = () => {}, days = 5 * 365) {
+  const { rows, periods } = barsBetween(received - days * 86400000, received, '1d');
+  const raw = payload(`${symbol}.BK`, '1d', rows, periods), quote = raw.indicators.quote[0];
+  const removed = symbol === 'SCB' ? [1, 2, 3, 4, 351] : [367];
+  if (symbol === 'SCB') {
+    for (const index of removed.slice(0, 4)) for (const field of Object.keys(quote)) quote[field][index] = null;
+    quote.open[351] = 103; quote.high[351] = 103.5; quote.low[351] = 101.5; quote.close[351] = 101;
+  } else {
+    quote.open[367] = 96; quote.high[367] = 96.25; quote.low[367] = 95.25; quote.close[367] = 96.5;
+  }
+  mutate(raw);
+  return { raw, removed };
+}
+
+async function historicalMarket(raw, fiveYearDailyHistory = true) {
+  const calls = [], standard = responder(calls);
+  const service = createMarketService({ env: {}, now: () => received, fetchImpl: async input => {
+    const range = new URL(input).searchParams.get('range');
+    return range === (fiveYearDailyHistory ? '5y' : '1y')
+      ? { ok: true, json: async () => ({ chart: { result: [raw] } }) } : standard(input);
+  } });
+  return service.getMarket([raw.meta.symbol.replace('.BK', '')], raw.meta.symbol.replace('.BK', ''), '1Y', { fiveYearDailyHistory });
+}
+
+for (const symbol of ['SCB', 'TISCO']) test(`5Y ${symbol}-like rejected bars retain evidence and match independently pruned D/W/M analysis`, async () => {
+  const { raw, removed } = rejectedHistoryFixture(symbol), original = structuredClone(raw);
+  const clean = structuredClone(raw);
+  clean.timestamp = clean.timestamp.filter((_, index) => !removed.includes(index));
+  for (const key of Object.keys(clean.indicators.quote[0])) {
+    clean.indicators.quote[0][key] = clean.indicators.quote[0][key].filter((_, index) => !removed.includes(index));
+  }
+  const market = await historicalMarket(raw), control = await historicalMarket(clean);
+  assert.deepEqual(raw, original, 'input prices are never rewritten');
+  assert.equal(Object.hasOwn(market, 'guardReasons'), false, 'top-level API contract is preserved');
+  const expectedReasons = symbol === 'SCB' ? ['INVALID_NUMERIC', 'INVALID_OHLC'] : ['INVALID_OHLC'];
+  for (const key of ['history', 'indicator', 'levels']) {
+    assert.deepEqual(market.technicalMeta[key].historyReasons, []);
+    assert.deepEqual(market.technicalMeta[key].rejectedHistoryReasons, expectedReasons);
+  }
+  for (const field of ['history', 'indicatorHistory', 'levelsHistory']) {
+    assert.equal(market[field].length, raw.timestamp.length - removed.length);
+    assert.deepEqual(market[field], control[field]);
+    assert.ok(market[field].every(row => !removed.some(index => raw.timestamp[index] * 1000 === row.time)));
+    assert.ok(market[field].every(row => ['open','high','low','close'].every(key => Number.isFinite(row[key]) && row[key] > 0)
+      && row.high >= Math.max(row.open, row.close) && row.low <= Math.min(row.open, row.close)));
+  }
+  for (const timeframe of ['D','W','M']) {
+    const options = { symbol, timeframe, historicalRange: '5Y' };
+    const snapshot = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(market, timeframe, '5Y'), ...options });
+    const expected = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(control, timeframe, '5Y'), ...options });
+    assert.equal(snapshot.summary.status, 'ready'); assert.equal(snapshot.summary.actionable, true);
+    assert.equal(snapshot.quality.state, 'usable-with-warnings');
+    assert.deepEqual(snapshot.quality.warnings, expectedReasons.map(reason => 'REJECTED_' + reason));
+    assert.deepEqual(snapshot.signalRows, expected.signalRows);
+    assert.deepEqual(snapshot.signalSeries, expected.signalSeries, 'EMA10, RSI, MACD and all series match the pruned control');
+    assert.deepEqual(snapshot.analysis, expected.analysis);
+    assert.deepEqual({ ...snapshot.summary, reasons: [] }, { ...expected.summary, reasons: [] });
+    assert.deepEqual(snapshot.summary.reasons.map(({ dataQuality, ...reason }) => reason),
+      expected.summary.reasons.map(({ dataQuality, ...reason }) => reason));
+    for (const indicator of ['ema10','rsi','macd']) assert.equal(snapshot.availability[indicator].state, 'available');
+  }
+});
+
+for (const [name, mutate, reason] of [
+  ['retained spike', raw => {
+    const quote = raw.indicators.quote[0];
+    quote.open[600] = 300; quote.high[600] = 301; quote.low[600] = 299; quote.close[600] = 300;
+  }, 'HISTORICAL_ANOMALY'],
+  ['invalid quote OHLC', raw => { raw.meta.regularMarketDayHigh = 90; raw.meta.regularMarketDayLow = 110; }, 'SOURCE_SUSPECT'],
+  ['invalid quote numeric', raw => { raw.meta.regularMarketVolume = 'invalid'; }, 'SOURCE_SUSPECT'],
+  ['split event', raw => { raw.events = { splits: { synthetic: { numerator: 2, denominator: 1 } } }; }, 'CORPORATE_ACTION_REVIEW'],
+  ['unverified identity', raw => { delete raw.meta.symbol; }, 'SOURCE_SUSPECT'],
+  ['quote mismatch plus rejected history', raw => { raw.meta.regularMarketChange = 999; }, 'SOURCE_SUSPECT']
+]) test(`5Y rejected-row classification still blocks ${name} in D/W/M`, async () => {
+  const { raw } = rejectedHistoryFixture('SCB', mutate);
+  // Use the requested identity independently of potentially unverified metadata.
+  const service = createMarketService({ env: {}, now: () => received });
+  const shaped = service.shapeChart(raw, 'SCB', 'chart:5y:1d');
+  const market = { history: shaped.history, indicatorHistory: shaped.history, levelsHistory: shaped.history,
+    fetchedAt: shaped.receivedAt, dataState: shaped.dataState,
+    technicalMeta: Object.fromEntries(['history','indicator','levels'].map(key => [key, {
+      ...shaped.provenance, quoteMetadataOnly: shaped.guardReasons.length === 1 && shaped.guardReasons[0] === 'PRICE_CHANGE_MISMATCH'
+    }])) };
+  if (reason === 'HISTORICAL_ANOMALY') {
+    assert.ok(shaped.history.some(row => row.close === 300), 'suspect spike is retained, unlike rejected malformed OHLC');
+    assert.ok(shaped.provenance.historyReasons.includes(reason));
+  }
+  for (const timeframe of ['D','W','M']) {
+    const snapshot = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(market, timeframe, '5Y'),
+      symbol: 'SCB', timeframe, historicalRange: '5Y' });
+    assert.equal(snapshot.summary.status, 'data-review'); assert.equal(snapshot.summary.actionable, false);
+    assert.ok(snapshot.quality.warnings.includes(reason));
+  }
+});
+
+test('unclassified INVALID_OHLC stays critical even alongside rejected-row evidence', async () => {
+  const { raw } = rejectedHistoryFixture('TISCO'), market = await historicalMarket(raw);
+  for (const timeframe of ['D','W','M']) {
+    const projected = chart.marketTimeframe(market, timeframe, '5Y');
+    for (const extra of [
+      { guardReasons: ['INVALID_OHLC'] },
+      { technicalMeta: { ...projected.technicalMeta, indicator: { ...projected.technicalMeta.indicator, historyReasons: ['INVALID_OHLC'] } } }
+    ]) {
+      const snapshot = technical.createTechnicalSnapshot({ ...projected, symbol: 'TISCO', timeframe, historicalRange: '5Y', ...extra });
+      assert.equal(snapshot.summary.status, 'data-review'); assert.ok(snapshot.quality.warnings.includes('INVALID_OHLC'));
+    }
+  }
+});
+
+test('insufficient or fallback history never receives rejected-row classification', () => {
+  const { raw } = rejectedHistoryFixture('SCB');
+  const short = structuredClone(raw);
+  short.timestamp = short.timestamp.slice(0, 5);
+  for (const key of Object.keys(short.indicators.quote[0])) short.indicators.quote[0][key] = short.indicators.quote[0][key].slice(0, 5);
+  const service = createMarketService({ env: {}, now: () => received });
+  const insufficient = service.shapeChart(short, 'SCB', 'chart:5y:1d');
+  assert.equal(insufficient.historyStatus, 'insufficient');
+  assert.equal(insufficient.provenance.rejectedHistoryReasons, undefined);
+  service.shapeChart(raw, 'SCB', 'chart:5y:1d');
+  raw.meta.symbol = 'OTHER.BK';
+  const fallback = service.shapeChart(raw, 'SCB', 'chart:5y:1d');
+  assert.equal(fallback.fallbackFromLastKnown, true); assert.equal(fallback.dataState, 'stale');
+  assert.equal(fallback.provenance.rejectedHistoryReasons, undefined);
+  assert.ok(fallback.provenance.historyReasons.includes('INVALID_OHLC'));
+});
+
+for (const symbol of ['SCB','TISCO']) test(`1Y ${symbol}-like clean D/W/M behavior and unclassified historical guard remain unchanged`, async () => {
+  const { rows, periods } = barsBetween(received - 365 * 86400000, received, '1d');
+  const raw = payload(`${symbol}.BK`, '1d', rows, periods), market = await historicalMarket(raw, false);
+  assert.deepEqual(market.technicalMeta.indicator.historyReasons, []);
+  assert.equal(market.technicalMeta.indicator.rejectedHistoryReasons, undefined);
+  for (const timeframe of ['D','W','M']) {
+    const snapshot = technical.createTechnicalSnapshot({ ...chart.marketTimeframe(market, timeframe, '1Y'),
+      symbol, timeframe, historicalRange: '1Y' });
+    assert.equal(snapshot.summary.status, timeframe === 'M' ? 'insufficient' : 'ready');
+    assert.deepEqual(snapshot.quality.warnings, []);
+  }
+  raw.indicators.quote[0].high[2] = raw.indicators.quote[0].low[2] - 1;
+  const guarded = await historicalMarket(raw, false);
+  assert.deepEqual(guarded.technicalMeta.indicator.historyReasons, ['INVALID_OHLC']);
+  assert.equal(guarded.technicalMeta.indicator.rejectedHistoryReasons, undefined);
+  for (const timeframe of ['D','W','M']) assert.equal(technical.createTechnicalSnapshot({
+    ...chart.marketTimeframe(guarded, timeframe, '1Y'), symbol, timeframe, historicalRange: '1Y'
+  }).summary.status, 'data-review');
+});

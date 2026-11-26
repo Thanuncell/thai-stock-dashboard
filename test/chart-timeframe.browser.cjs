@@ -39,6 +39,7 @@ const styles = page => page.evaluate(() => Object.fromEntries([
       phase = `${width}-${theme}`;
       const context = await browser.newContext({ viewport:{width,height:950}, isMobile:width<790, hasTouch:width<790 });
       const errors = [], requests = [], providerCalls = [], state = {getOwners:[],putOwners:[]};
+      let historicalQuality = 'rejected';
       const standard = responder(providerCalls);
       const service = createMarketService({env:{},now:()=>received,fetchImpl:async input => {
         const url = new URL(input);
@@ -46,7 +47,17 @@ const styles = page => page.evaluate(() => Object.fromEntries([
         const start = new Date(received); start.setUTCFullYear(start.getUTCFullYear()-5);
         providerCalls.push({range:'5y',interval:url.searchParams.get('interval')});
         const data = barsBetween(+start, received, '1d');
-        return {ok:true,json:async()=>({chart:{result:[payload('PTT.BK','1d',data.rows,data.periods)]}})};
+        const symbol = decodeURIComponent(url.pathname.split('/').at(-1));
+        const raw = payload(symbol,'1d',data.rows,data.periods);
+        if (['SCB.BK','TISCO.BK'].includes(symbol)) {
+          const quote = raw.indicators.quote[0];
+          quote.high[350] = quote.low[350] - 1;
+          if (symbol === 'SCB.BK') for (const key of Object.keys(quote)) quote[key][1] = null;
+          if (historicalQuality === 'retained') {
+            quote.open[600] = 300; quote.high[600] = 301; quote.low[600] = 299; quote.close[600] = 300;
+          }
+        }
+        return {ok:true,json:async()=>({chart:{result:[raw]}})};
       }});
       let hold = null, g3Scenario = 'provisional', lastMarket = null;
       await context.route('**/*', async route => {
@@ -251,6 +262,26 @@ const styles = page => page.evaluate(() => Object.fromEntries([
         const snapshot=await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'); release();
         await page.waitForTimeout(100);
         check(await page.locator('#stock-price-chart').getAttribute('data-snapshot-id'),snapshot,'late response cannot overwrite new timeframe');
+      }
+      for (const symbol of ['SCB','TISCO']) {
+        historicalQuality = 'rejected';
+        await page.goto(base+`/?symbol=${symbol}&range=1Y&timeframe=D&historicalRange=5Y#chart`);
+        await page.waitForSelector('.price-candle');
+        for (const timeframe of ['D','W','M']) {
+          await page.locator(`[data-timeframe="${timeframe}"]`).click(); await waitLabel(`${timeframe} · 5Y`);
+          await page.waitForFunction(()=>document.querySelector('.analysis-panel')?.dataset.signalStatus==='ready');
+          check(await page.locator('.analysis-panel').getAttribute('data-signal-status'),'ready',`${symbol} ${timeframe} excludes rejected rows from the quality block`);
+          check(await page.locator('#overall-signal').textContent() === 'ข้อมูลต้องตรวจสอบ',false);
+          check(Number(await page.locator('#stock-price-chart').getAttribute('data-source-candles')),
+            marketTimeframe(lastMarket,timeframe,'5Y').history.length,'guarded chart candles remain visible');
+        }
+        historicalQuality = 'retained'; await page.reload();
+        for (const timeframe of ['M','W','D']) {
+          await page.locator(`[data-timeframe="${timeframe}"]`).click(); await waitLabel(`${timeframe} · 5Y`);
+          await page.waitForFunction(()=>document.querySelector('.analysis-panel')?.dataset.signalStatus==='data-review');
+          check(await page.locator('.analysis-panel').getAttribute('data-signal-status'),'data-review',`${symbol} ${timeframe} retained anomaly stays blocked`);
+          check(await page.locator('.price-candle').count()>0,true,'quality review does not blank the chart');
+        }
       }
       check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'no horizontal page overflow');
       check(await page.locator('#timeframe-label').textContent(),'Timeframe — ระยะเวลาต่อแท่ง');
