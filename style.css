@@ -587,6 +587,7 @@ html[data-theme="dark"] .news-skeleton-bar{background:#304153}
 .alert-history-item .watch-remove{flex:none;opacity:1}
 @media(max-width:790px){
   .alert-settings-heading button,.alert-condition-toggle,.alert-condition>input,.alert-settings-notifications .notification-permission,.alert-settings-notifications .watchlist-check,.alert-settings-actions button{min-height:44px}
-  .alerts-panel #alerts-close,.alerts-panel .alerts-history-actions button,.alerts-panel .alert-history-item button{min-width:44px;min-height:44px}
+  .alerts-panel #alerts-close,.alerts-panel .alert-history-item button{min-width:44px;min-height:44px}
+  .alerts-panel #alerts-clear-all{min-width:56px;min-height:32px;padding:4px 7px;font-size:9px;line-height:1.4}
 }
 @media(max-width:470px){.alert-settings-overlay{padding:10px}.alert-settings-dialog{padding:14px;border-radius:12px;max-height:calc(100dvh - 20px)}.alert-settings-heading h2{font-size:16px}.alert-condition{grid-template-columns:minmax(91px,1fr) minmax(80px,1fr) 21px;gap:5px}.alert-condition-toggle{font-size:11px;gap:4px}.alert-condition-toggle input{width:16px;height:16px}.alert-condition>input{font-size:11px;padding:6px}}
