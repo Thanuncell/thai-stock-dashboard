@@ -293,8 +293,37 @@ export function watchlistView(items, quotes, { query = '', sort = 'saved' } = {}
 }
 
 export function watchlistThresholds(pref = {}) {
-  const above = toFiniteNumber(pref.above), below = toFiniteNumber(pref.below);
-  return { above: above > 0 ? above : null, below: below > 0 ? below : null };
+  return Object.fromEntries(['above', 'below', 'percentAbove', 'percentBelow'].map(field => {
+    const raw = pref[field], value = typeof raw === 'string' || typeof raw === 'number' ? toFiniteNumber(raw) : null;
+    return [field, value > 0 ? value : null];
+  }));
+}
+
+// Two existing 60-second polling cycles are the limit for a continuous crossing.
+// A missing/rejected quote, skipped observation or source gap starts a new baseline.
+export const WATCHLIST_ALERT_MAX_GAP_MS = 2 * 60000;
+export function evaluateWatchlistAlert(row, pref = {}, previous = {}, now = Date.now()) {
+  const state = {}, crossings = [], quote = usableWatchlistQuote(row);
+  const quotedAt = row?.time == null ? Date.parse(row?.asOf || '') : row.time;
+  if (!quote || !Number.isFinite(now) || !Number.isFinite(quotedAt) || quotedAt <= 0
+    || !Number.isFinite(new Date(quotedAt).getTime())) return { state, crossings };
+  const session = new Date(quotedAt + 7 * 3600000).toISOString().slice(0, 10);
+  for (const [field, threshold] of Object.entries(watchlistThresholds(pref))) {
+    if (threshold === null) continue;
+    const percent = field.startsWith('percent'), value = percent ? quote.percent : quote.last;
+    if (!Number.isFinite(value)) continue;
+    const old = previous?.[field], upward = field === 'above' || field === 'percentAbove';
+    const level = field === 'percentBelow' ? -threshold : threshold;
+    const continuous = old?.threshold === threshold && Number.isFinite(old.value)
+      && Number.isFinite(old.observedAt) && now >= old.observedAt && now - old.observedAt <= WATCHLIST_ALERT_MAX_GAP_MS
+      && Number.isFinite(old.quotedAt) && quotedAt >= old.quotedAt && quotedAt - old.quotedAt <= WATCHLIST_ALERT_MAX_GAP_MS
+      && (!percent || old.prior === row.prior && old.session === session);
+    if (continuous && (upward ? old.value < level && value >= level : old.value > level && value <= level)) {
+      crossings.push({ field, threshold: level, value });
+    }
+    state[field] = { threshold, value, observedAt: now, quotedAt, ...(percent ? { prior: row.prior, session } : {}) };
+  }
+  return { state, crossings };
 }
 
 export function marketBreadthRows(groups = []) {

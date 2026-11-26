@@ -483,7 +483,92 @@ test('Watchlist sorts both ways with stable ties, missing criteria last and save
 });
 
 test('manual monitoring and crossing alerts share positive finite thresholds', () => {
-  assert.deepEqual(domain.watchlistThresholds({ above: '2.50', below: 1 }), { above: 2.5, below: 1 });
-  assert.deepEqual(domain.watchlistThresholds({ above: '-5', below: Infinity }), { above: null, below: null });
-  assert.deepEqual(domain.watchlistThresholds({ above: '', below: 0 }), { above: null, below: null });
+  assert.deepEqual(domain.watchlistThresholds({ above: '2.50', below: 1, percentAbove: '3', percentBelow: 5 }),
+    { above: 2.5, below: 1, percentAbove: 3, percentBelow: 5 });
+  for (const invalid of ['', 0, -5, Infinity, NaN, true, null, 'invalid']) assert.deepEqual(
+    domain.watchlistThresholds(Object.fromEntries(['above','below','percentAbove','percentBelow'].map(key=>[key,invalid]))),
+    { above: null, below: null, percentAbove: null, percentBelow: null });
+});
+
+const alertNow = Date.UTC(2026,10,26,4);
+const alertQuote = (last, prior = 100, extra = {}) => ({ symbol:'PTT',last,prior,time:alertNow,
+  provider:'Yahoo Finance',guardStatus:'accepted',quoteStatus:'accepted',identityStatus:'accepted',dataState:'delayed',...extra });
+const observeAlert = (last, pref, previous, extra = {}, now = alertNow) => domain.evaluateWatchlistAlert(alertQuote(last,100,extra),pref,previous,now);
+
+test('AC-01/02/13/15 alert opt-in ignores technical flags and legacy state while retaining explicit price thresholds', () => {
+  for (const pref of [{},{technical:true},{above:'',below:'',percentAbove:'',percentBelow:''}]) {
+    assert.deepEqual(observeAlert(120,pref,{price:90,technical:'ขาย',updatedAt:alertNow}),{state:{},crossings:[]});
+  }
+  const legacy = {technical:true,above:'103',below:'95'}, before=JSON.stringify(legacy);
+  assert.deepEqual(domain.watchlistThresholds(legacy),{above:103,below:95,percentAbove:null,percentBelow:null});
+  assert.deepEqual(observeAlert(110,legacy,{price:99,technical:'ขาย',updatedAt:alertNow}).crossings,[]);
+  assert.equal(JSON.stringify(legacy),before);
+});
+
+for (const [ac,field,threshold,baseline,target] of [
+  ['AC-03','percentAbove',3,102,103], ['AC-04','percentBelow',5,96,95],
+  ['AC-05','above',103,102,103], ['AC-05','below',95,96,95]
+]) test(`${ac} ${field}: first baseline, exact boundary, no repeats and re-arm`, () => {
+  const pref = {[field]:threshold}; let state;
+  const sample = price => {const result=observeAlert(price,pref,state);state=result.state;return result.crossings;};
+  assert.deepEqual(sample(target),[],'first observation already beyond a threshold is only a baseline');
+  assert.deepEqual(sample(baseline),[]);
+  assert.equal(sample(target).length,1);
+  assert.deepEqual(sample(target),[],'equality does not repeatedly trigger');
+  assert.deepEqual(sample(baseline),[]);
+  assert.equal(sample(target).length,1,'exit and re-entry re-arm the same condition');
+});
+
+test('AC-06/07 four independent conditions reset only the edited or removed threshold', () => {
+  const pref={above:103,below:95,percentAbove:3,percentBelow:5};
+  const baseline=observeAlert(102,pref).state;
+  assert.deepEqual(observeAlert(103,pref,baseline).crossings.map(item=>item.field),['above','percentAbove']);
+  const changed={...pref,above:101}, edited=observeAlert(103,changed,baseline);
+  assert.deepEqual(edited.crossings.map(item=>item.field),['percentAbove'],'edited price condition baselines without resetting Percent');
+  assert.equal(edited.state.above.threshold,101);
+  const removed=observeAlert(103,{...pref,above:''},baseline);
+  assert.deepEqual(removed.crossings.map(item=>item.field),['percentAbove']); assert.equal(removed.state.above,undefined);
+  const low=observeAlert(96,pref).state;
+  assert.deepEqual(observeAlert(95,pref,low).crossings.map(item=>item.field),['below','percentBelow']);
+});
+
+test('AC-10 missing/invalid prior resets Percent only and never fabricates a zero reference', () => {
+  for(const prior of [null,undefined,0,-1,NaN,Infinity,'100']) {
+    const pref={above:103,percentAbove:3}, baseline=observeAlert(102,pref).state;
+    const result=observeAlert(104,pref,baseline,{prior});
+    assert.deepEqual(result.crossings.map(item=>item.field),['above']);
+    assert.equal(result.state.percentAbove,undefined);
+    assert.deepEqual(observeAlert(104,pref,result.state).crossings,[],'prior recovery starts a new Percent baseline');
+  }
+});
+
+for(const [name,patch] of [
+  ['stale',{stale:true}],['suspect',{guardStatus:'suspect'}],['quarantined',{quoteStatus:'quarantined'}],
+  ['unavailable',{dataState:'unavailable'}],['fallback',{fallbackFromLastKnown:true}],
+  ['invalid last',{last:NaN}],['invalid zero',{last:0}],['invalid time',{time:NaN}],['identity',{identityStatus:'quarantined'}]
+]) test(`AC-11 rejected ${name} quote clears baselines before usable-data recovery`, () => {
+  const pref={above:103,percentAbove:3}, baseline=observeAlert(102,pref).state;
+  const invalid=observeAlert(104,pref,baseline,patch);
+  assert.deepEqual(invalid,{state:{},crossings:[]});
+  assert.deepEqual(observeAlert(104,pref,invalid.state).crossings,[]);
+});
+
+test('AC-11 missing quotes and time/observation gaps cannot assert an unobserved crossing', () => {
+  const pref={above:103,percentAbove:3}, baseline=observeAlert(102,pref).state;
+  assert.deepEqual(domain.evaluateWatchlistAlert(undefined,pref,baseline,alertNow),{state:{},crossings:[]});
+  const gap=domain.WATCHLIST_ALERT_MAX_GAP_MS+1;
+  assert.deepEqual(observeAlert(104,pref,baseline,{},alertNow+gap).crossings,[],'browser missed polling observations');
+  assert.deepEqual(observeAlert(104,pref,baseline,{time:alertNow+gap},alertNow+1).crossings,[],'source jumped across an unobserved gap');
+  assert.deepEqual(observeAlert(104,pref,baseline,{time:alertNow-1}).crossings,[],'out-of-order source quote');
+  assert.deepEqual(observeAlert(104,pref,baseline,{},alertNow-1).crossings,[],'clock moved backwards');
+});
+
+test('AC-12 previous-close and exchange-session rollover reset Percent without mixing Price state', () => {
+  const pref={above:101,percentAbove:3};
+  const baseline=observeAlert(100,pref).state;
+  const newPrior=observeAlert(103,pref,baseline,{prior:99});
+  assert.deepEqual(newPrior.crossings.map(item=>item.field),['above']);
+  const midnight=Date.UTC(2026,10,26,17), previous=observeAlert(102,pref,undefined,{time:midnight-60000},midnight-60000).state;
+  const next=observeAlert(104,pref,previous,{time:midnight},midnight);
+  assert.equal(next.crossings.some(item=>item.field==='percentAbove'),false,'same prior on a new exchange date still resets Percent');
 });

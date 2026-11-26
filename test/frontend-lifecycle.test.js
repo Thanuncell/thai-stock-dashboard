@@ -321,7 +321,7 @@ test('Chart receipt label uses recorded response time, distinguishes the candle 
 });
 
 test('suspect or stale market rows cannot drive alerts or mover rankings as fresh data', () => {
-  assert.match(appSource, /const quote = usableWatchlistQuote\(row\);\s+if \(!quote\) return;/);
+  assert.match(appSource, /evaluateWatchlistAlert\(quotes\.get\(symbol\), getAlertPref\(symbol\), alertStates\[symbol\], now\)/);
   assert.match(appSource, /item\.quote\?\.guardStatus === 'accepted'/);
   assert.match(appSource, /rows\)\.map\(row => \[row\.symbol, usableWatchlistQuote\(row\)\]\)/);
 });
