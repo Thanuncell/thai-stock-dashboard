@@ -202,10 +202,17 @@ function createMarketService({ env = process.env, fetchImpl = globalThis.fetch, 
       }) : value.history;
       const sessionEvidence = dense ? { sessionStatus: historySessionStatus(rows) } : {};
       const historyReasons = [...(value.historyReasons || [])];
+      // These reasons are emitted only on normalizeHistory's rejected-row paths.
+      // Keep their evidence separate from warnings about retained analysis bars.
+      const rejectedHistoryReasons = contextKey === 'chart:5y:1d' && !value.fallbackFromLastKnown
+        && value.identityStatus === 'accepted' && ['usable', 'usable_with_warnings'].includes(value.historyStatus)
+        && value.rejectedBars > 0 ? historyReasons.filter(reason => ['INVALID_NUMERIC', 'INVALID_OHLC'].includes(reason)) : [];
       const history=temporalBars(rows,{interval,observedAt:value.receivedAt,regularStart:start,regularEnd:end,timeZone});
       const shaped = {...value,history,validatedHistory:history,historyReasons,provenance:{provider:'Yahoo Finance',priceBasis:'provider-quote-ohlc',adjustment:'provider-defined; no local adjustment',
         interval,receivedAt:value.receivedAt,timestampKind:'bar-open',regularStart:start,regularEnd:end,timeZone,corporateActionCount:Object.keys(result?.events?.splits||{}).length,
-        dividendCount:Object.keys(result?.events?.dividends||{}).length,adjustedClosePresent:Array.isArray(result?.indicators?.adjclose?.[0]?.adjclose),historyReasons,...sessionEvidence}};
+        dividendCount:Object.keys(result?.events?.dividends||{}).length,adjustedClosePresent:Array.isArray(result?.indicators?.adjclose?.[0]?.adjclose),
+        historyReasons:historyReasons.filter(reason=>!rejectedHistoryReasons.includes(reason)),
+        ...(rejectedHistoryReasons.length ? {rejectedHistoryReasons} : {}),...sessionEvidence}};
       if (interval === '1d') onDailyHistory?.(symbol, meta, shaped);
       return shaped;
     }
