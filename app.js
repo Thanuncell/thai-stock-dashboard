@@ -1108,6 +1108,8 @@ function setChartZoom(factor, anchorRatio = .5) {
 }
 
 function resetChartViewport() {
+  drawings?.cancelGesture();
+  cancelChartGestures();
   chartViewport = null;
   chartViewportKey = '';
   updateTradingViewChart();
@@ -1194,6 +1196,8 @@ function setupChartGestures() {
           return;
         }
         chartGesture.type = 'pan';
+        // Keep touch capture on the stable host when the SVG is redrawn.
+        host.setPointerCapture?.(event.pointerId);
       }
       if (chartGesture?.type === 'vertical') return;
       if (chartGesture?.type !== 'pan') return;
