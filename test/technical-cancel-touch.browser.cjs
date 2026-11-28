@@ -75,6 +75,37 @@ const frames=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
     b=await canvas();await swipe({x:b.x+b.width*.37,y:b.y+120},{x:b.x+b.width*.67,y:b.y+120});check(await span(),n,'next single finger pans rather than pinches after '+edge);await captureClear();
     await resetView();const initial=await span();b=await canvas();await swipe({x:b.x+b.width*.37,y:b.y+120},{x:b.x+b.width*.67,y:b.y+120});check(await span(),initial,'Reset then pan retains default span after '+edge);await captureClear();check(errors,[],'no inactive-pointer capture errors');
    }
+   // Release real browser capture while native touch remains down. Losing capture
+   // must cancel that pointer, not wait for an outside pointerup the host cannot see.
+   const loseCapture=async(points)=>{
+    const id=await page.evaluate(()=>window.__gestureAudit.pointer);
+    await page.locator('#stock-price-chart').evaluate((host,id)=>{
+     window.__activeLoss=null;
+     host.addEventListener('lostpointercapture',function observe(event){
+      if(event.target!==host||event.pointerId!==id)return;
+      window.__activeLoss={id,active:window.__gestureAudit.active.includes(id)};
+      host.removeEventListener('lostpointercapture',observe);
+     });
+     host.releasePointerCapture(id);
+    },id);
+    await send('touchMove',points);await frames(page);
+    check(await page.evaluate(()=>window.__activeLoss?.active),true,'capture loss occurs while native pointer is still active');
+    check(await page.locator('#stock-price-chart').evaluate((host,id)=>host.hasPointerCapture(id),id),false,'lost pointer is no longer captured');
+    return id;
+   };
+   for(const edge of ['right','left','top','bottom']){
+    phase=`${width}-${theme}-active-capture-loss-${edge}`;await resetView();await pinch();const n=await span(),a=await horizontalStart();
+    await loseCapture([{...a,x:a.x+5}]);const h=await page.locator('#stock-price-chart').boundingBox();
+    await send('touchMove',[{x:edge==='left'?h.x-8:edge==='right'?h.x+h.width+8:a.x,y:edge==='top'?h.y-8:edge==='bottom'?h.y+h.height+8:a.y,id:1}]);await frames(page);await send('touchEnd',[]);await captureClear();
+    b=await canvas();await swipe({x:b.x+b.width*.37,y:b.y+120},{x:b.x+b.width*.67,y:b.y+120});check(await span(),n,'single finger after active capture loss and outside '+edge+' remains a pan');await captureClear();check(errors,[],'active capture loss leaves no inactive-pointer capture errors');
+   }
+   phase=`${width}-${theme}-pinch-capture-loss`;await resetView();b=await canvas();const lx=b.x+b.width*.55,ly=b.y+130;
+   await send('touchStart',[{x:lx-30,y:ly,id:1},{x:lx+30,y:ly,id:2}]);await send('touchMove',[{x:lx-60,y:ly,id:1},{x:lx+60,y:ly,id:2}]);await frames(page);const lossPinchSpan=await span();
+   await loseCapture([{x:lx-59,y:ly,id:1},{x:lx+61,y:ly,id:2}]);check(await page.evaluate(()=>window.__gestureAudit.active.length),2,'capture loss does not fake a native finger lift');
+   await send('touchEnd',[{x:lx+60,y:ly,id:2}]);await send('touchMove',[{x:lx-40,y:ly,id:1}]);await frames(page);await send('touchMove',[{x:lx-20,y:ly,id:1}]);await frames(page);await send('touchEnd',[]);await captureClear();check(await span(),lossPinchSpan,'remaining captured pinch finger rebases to pan after peer capture loss');
+   phase=`${width}-${theme}-capture-loss-drawing`;await clear();await mode('trend');b=await canvas();const lossDraft={x:b.x+b.width*.4,y:b.y+80,id:1},lossSaved=await saved();
+   await send('touchStart',[lossDraft]);await send('touchMove',[{...lossDraft,x:lossDraft.x+30,y:lossDraft.y+30}]);await frames(page);await loseCapture([{...lossDraft,x:lossDraft.x+35,y:lossDraft.y+35}]);
+   check(await items(),0,'capture loss cancels uncommitted drawing');check(await saved(),lossSaved,'capture loss does not persist a draft');await send('touchEnd',[]);await captureClear();await clear();
    phase=`${width}-${theme}-reset-during-pan`;await resetView();const initialSpan=await span();await pinch();let held=await horizontalStart();await resetView();check(await span(),initialSpan,'Reset restores default span while touch is active');
    await send('touchMove',[{...held,x:held.x+20}]);await send('touchEnd',[]);await frames(page);check(await span(),initialSpan,'old pan baseline cannot return after Reset');await captureClear();
    phase=`${width}-${theme}-pinch-to-one`;await resetView();b=await canvas();const cx=b.x+b.width*.55,cy=b.y+130;
@@ -88,6 +119,9 @@ const frames=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    phase=`${width}-${theme}-escape-move`;await commit();original=await saved();let beforeHandles=await page.locator('.drawing-handle').evaluateAll(nodes=>nodes.map(n=>[n.getAttribute('cx'),n.getAttribute('cy')]));
    await canvas();let line=await page.locator('.drawing.selected .drawing-hit').boundingBox();await page.mouse.move(line.x+line.width*.5,line.y+line.height*.5);await page.mouse.down();await page.mouse.move(line.x+line.width*.5+15,line.y+line.height*.5+12,{steps:3});await page.keyboard.press('Escape');await page.mouse.up();await frames(page);check(await saved(),original,'cancel whole move retains both committed anchors');check(await page.locator('.drawing-handle').evaluateAll(nodes=>nodes.map(n=>[n.getAttribute('cx'),n.getAttribute('cy')])),beforeHandles,'visual state agrees with committed storage after Escape');await captureClear();
    phase=`${width}-${theme}-reset-anchor`;await mode('select');await canvas();let resetHandle=await page.locator('.drawing-handle').first().boundingBox();await send('touchStart',[{x:resetHandle.x+7,y:resetHandle.y+7,id:1}]);await send('touchMove',[{x:resetHandle.x+18,y:resetHandle.y+18,id:1}]);await frames(page);await resetView();const anchorOutside=await page.locator('#stock-price-chart').boundingBox();await send('touchMove',[{x:anchorOutside.x+anchorOutside.width+8,y:anchorOutside.y+100,id:1}]);await send('touchEnd',[]);await captureClear();check(await saved(),original,'Reset during anchor edit preserves committed drawing');check(await page.locator('.drawing-handle').evaluateAll(nodes=>nodes.map(n=>[n.getAttribute('cx'),n.getAttribute('cy')])),beforeHandles,'Reset restores committed anchors without a ghost edit');
+   phase=`${width}-${theme}-capture-loss-anchor`;await mode('select');await canvas();let lossHandle=await page.locator('.drawing-handle').first().boundingBox();
+   await send('touchStart',[{x:lossHandle.x+7,y:lossHandle.y+7,id:1}]);await send('touchMove',[{x:lossHandle.x+18,y:lossHandle.y+18,id:1}]);await frames(page);await loseCapture([{x:lossHandle.x+20,y:lossHandle.y+20,id:1}]);await send('touchEnd',[]);await captureClear();
+   check(await saved(),original,'capture loss during anchor edit retains committed storage');check(await page.locator('.drawing-handle').evaluateAll(nodes=>nodes.map(n=>[n.getAttribute('cx'),n.getAttribute('cy')])),beforeHandles,'capture loss restores committed anchor positions');
    phase=`${width}-${theme}-cancel-anchor`;await mode('select');await canvas();let handle=await page.locator('.drawing-handle').first().boundingBox();await page.mouse.move(handle.x+7,handle.y+7);await page.mouse.down();await page.mouse.move(handle.x+18,handle.y+18,{steps:3});const pointer=await page.evaluate(()=>window.__gestureAudit.pointer);await page.locator('#stock-price-chart').dispatchEvent('pointercancel',{pointerId:pointer,pointerType:'mouse'});await page.mouse.up();await frames(page);check(await saved(),original,'pointercancel restores edited anchor');check(await page.locator('.drawing-handle').evaluateAll(nodes=>nodes.map(n=>[n.getAttribute('cx'),n.getAttribute('cy')])),beforeHandles);await captureClear();
    phase=`${width}-${theme}-touch-edit`;await canvas();line=await page.locator('.drawing.selected .drawing-hit').boundingBox();let mid={x:line.x+line.width*.5,y:line.y+line.height*.5};await page.touchscreen.tap(mid.x,mid.y);await frames(page);check(await page.locator('.drawing.selected').count(),1,'touch selects a drawing');
    const beforeTouchMove=JSON.parse(await saved())[0];await swipe(mid,{x:mid.x+10,y:mid.y+12});const afterTouchMove=JSON.parse(await saved())[0];check(afterTouchMove.a.price!==beforeTouchMove.a.price,true,'touch moves the selected drawing');check(Math.abs((afterTouchMove.a.price-beforeTouchMove.a.price)-(afterTouchMove.b.price-beforeTouchMove.b.price))<1e-10,true,'touch move preserves both-anchor relationship');await captureClear();

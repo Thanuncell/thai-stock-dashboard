@@ -1210,7 +1210,7 @@ function setupChartGestures() {
   }, { passive: false });
   const finish = event => {
     const inspect=event.type==='pointerup'&&event.pointerType==='touch'&&chartPointers.size===1&&chartGesture?.type==='pending'&&drawings?.tool==='pan';
-    drawings?.pointerUp(event,event.type==='pointercancel');
+    drawings?.pointerUp(event,event.type!=='pointerup');
     chartPointers.delete(event.pointerId);
     if (host.hasPointerCapture?.(event.pointerId)) host.releasePointerCapture?.(event.pointerId);
     if (chartPointers.size) beginChartGesture(); else chartGesture = null;
@@ -1218,6 +1218,9 @@ function setupChartGestures() {
   };
   host.addEventListener('pointerup', finish);
   host.addEventListener('pointercancel', finish);
+  host.addEventListener('lostpointercapture', event => {
+    if (event.target === host && chartPointers.has(event.pointerId)) finish(event);
+  });
   host.addEventListener('pointerleave',event=>{if(event.pointerType!=='touch')hideChartCrosshair();});
   host.addEventListener('blur',hideChartCrosshair);
   host.addEventListener('keydown',event=>{
