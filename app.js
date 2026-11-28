@@ -1108,6 +1108,8 @@ function setChartZoom(factor, anchorRatio = .5) {
 }
 
 function resetChartViewport() {
+  drawings?.cancelGesture();
+  cancelChartGestures();
   chartViewport = null;
   chartViewportKey = '';
   updateTradingViewChart();
@@ -1194,6 +1196,8 @@ function setupChartGestures() {
           return;
         }
         chartGesture.type = 'pan';
+        // Keep touch capture on the stable host when the SVG is redrawn.
+        host.setPointerCapture?.(event.pointerId);
       }
       if (chartGesture?.type === 'vertical') return;
       if (chartGesture?.type !== 'pan') return;
@@ -1206,7 +1210,7 @@ function setupChartGestures() {
   }, { passive: false });
   const finish = event => {
     const inspect=event.type==='pointerup'&&event.pointerType==='touch'&&chartPointers.size===1&&chartGesture?.type==='pending'&&drawings?.tool==='pan';
-    drawings?.pointerUp(event,event.type==='pointercancel');
+    drawings?.pointerUp(event,event.type!=='pointerup');
     chartPointers.delete(event.pointerId);
     if (host.hasPointerCapture?.(event.pointerId)) host.releasePointerCapture?.(event.pointerId);
     if (chartPointers.size) beginChartGesture(); else chartGesture = null;
@@ -1214,6 +1218,9 @@ function setupChartGestures() {
   };
   host.addEventListener('pointerup', finish);
   host.addEventListener('pointercancel', finish);
+  host.addEventListener('lostpointercapture', event => {
+    if (event.target === host && chartPointers.has(event.pointerId)) finish(event);
+  });
   host.addEventListener('pointerleave',event=>{if(event.pointerType!=='touch')hideChartCrosshair();});
   host.addEventListener('blur',hideChartCrosshair);
   host.addEventListener('keydown',event=>{

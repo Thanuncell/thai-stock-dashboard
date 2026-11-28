@@ -1,7 +1,8 @@
 'use strict';
 // Offline browser acceptance: all prices/accounts are synthetic; external traffic is blocked.
 const assert=require('node:assert/strict'),fs=require('node:fs'),http=require('node:http'),path=require('node:path');
-const {chromium}=require(process.env.SETSCOPE_PLAYWRIGHT_MODULE||'playwright');
+const engine=process.env.SETSCOPE_TECHNICAL_ENGINE||'chromium';
+const browserType=require(process.env.SETSCOPE_PLAYWRIGHT_MODULE||'playwright')[engine];
 const {mockRequest,seedPage}=require('./account-isolation.browser.cjs');
 const {rankingRows,roleRankingRows,scarceRows}=require('./fixtures/technical-ranking.cjs');
 let checks=0,phase='setup';
@@ -15,10 +16,11 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
  });let browser;
  try{
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+server.address().port;
-  browser=await chromium.launch({headless:true,executablePath:process.env.SETSCOPE_BROWSER_EXECUTABLE||undefined});
+  browser=await browserType.launch({headless:true,executablePath:process.env.SETSCOPE_BROWSER_EXECUTABLE||undefined});
   for(const width of (process.env.SETSCOPE_TECHNICAL_WIDTHS||'320,360,390,430,1366').split(',').map(Number))for(const theme of ['light','dark']){
    phase=`${width}-${theme}-setup`;
-   const context=await browser.newContext({viewport:{width,height:900},isMobile:width<790,hasTouch:width<790});
+   const touch=engine==='webkit'?width<1100:width<790;
+   const context=await browser.newContext({viewport:{width,height:900},isMobile:touch,hasTouch:touch});
    const state={getOwners:[],putOwners:[]},errors=[],marketCalls=[];let short=false,pending=null,dailyState='closed',qualityWarning=false,ranking=null,priceOffset=0;
    await context.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url());
@@ -184,7 +186,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      individualValue:style('.reason-group li strong').fontSize,
      compactText:['#technical-plan','#levels-basis','.disclaimer','#analysis-note'].map(selector=>{
       const text=style(selector);
-      return [text.fontSize,text.lineHeight];
+      return [text.fontSize,`${Math.round(parseFloat(text.lineHeight)*1000)/1000}px`];
      }),
      family:style('.technical-reason-text').fontFamily.includes('IBM Plex Sans Thai'),
      evidenceColumnsFit:columns===expectedColumns,
@@ -331,7 +333,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    const draw=async(type,touch=false)=>{
     await page.locator(`[data-draw-tool=${type}]`).click();await page.locator('#stock-price-chart').scrollIntoViewIfNeeded();
     const box=await page.locator('.price-chart-svg').boundingBox(),from={x:box.x+box.width*.35,y:box.y+70},to={x:box.x+box.width*.65,y:box.y+140};
-    if(touch){const cdp=await context.newCDPSession(page);for(const [type,p]of [['touchStart',from],['touchMove',to],['touchEnd',null]])await cdp.send('Input.dispatchTouchEvent',{type,touchPoints:p?[{x:p.x,y:p.y}]:[]});await cdp.detach();}
+    if(touch&&engine==='chromium'){const cdp=await context.newCDPSession(page);for(const [type,p]of [['touchStart',from],['touchMove',to],['touchEnd',null]])await cdp.send('Input.dispatchTouchEvent',{type,touchPoints:p?[{x:p.x,y:p.y}]:[]});await cdp.detach();}
     else{await page.mouse.move(from.x,from.y);await page.mouse.down();await page.mouse.move(to.x,to.y,{steps:4});await page.mouse.up();}
     await pause(page);
    };
@@ -352,11 +354,11 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    await page.mouse.move(line.x+line.width*.5,line.y+line.height*.5);await page.mouse.down();await page.mouse.move(line.x+line.width*.5+8,line.y+line.height*.5+8,{steps:3});await page.mouse.up();await pause(page);
    const movingAfter=await page.evaluate(key=>JSON.parse(localStorage.getItem(key))[0],key);check(movingAfter.a.price!==movingBefore.a.price,true,'move entire drawing');check(Math.abs((movingAfter.a.price-movingBefore.a.price)-(movingAfter.b.price-movingBefore.b.price))<1e-10,true,'move preserves the slope');
    const anchored=await page.evaluate(key=>localStorage.getItem(key),key);await page.locator('[data-draw-tool=pan]').click();await page.locator('#chart-zoom-in').click();await pause(page);check(await page.evaluate(key=>localStorage.getItem(key),key),anchored,'zoom cannot change time/price anchors');
-   await page.locator('#chart-reset').click();await pause(page);check(await page.locator('[data-draw-list] button').count(),3);
+   if(engine==='webkit'&&touch)await page.locator('#chart-reset').tap();else await page.locator('#chart-reset').click();await pause(page);check(await page.locator('[data-draw-list] button').count(),3);
    await page.locator('#stock-price-chart').scrollIntoViewIfNeeded();const panBox=await page.locator('.price-chart-svg').boundingBox(),firstTitle=await page.locator('.price-candle title').first().textContent(),callsBeforePan=marketCalls.length;
    await page.mouse.move(panBox.x+panBox.width*.5,panBox.y+110);await page.mouse.down();await page.mouse.move(panBox.x+panBox.width*.8,panBox.y+110,{steps:4});await page.mouse.up();await pause(page);
    check((await page.locator('.price-candle title').first().textContent())!==firstTitle,true,'pan still changes cached viewport');check(marketCalls.length,callsBeforePan,'pan makes no API call');
-   if(width<790){const cdp=await context.newCDPSession(page),cy=panBox.y+130,cx=panBox.x+panBox.width*.5,beforePinch=await page.locator('.price-candle').count();await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:cx-35,y:cy},{x:cx+35,y:cy}]});await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:cx-65,y:cy},{x:cx+65,y:cy}]});await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await pause(page);check(await page.locator('.price-candle').count()<beforePinch,true,'two-finger pinch still zooms cached bars');await cdp.detach();}
+   if(width<790&&engine==='chromium'){const cdp=await context.newCDPSession(page),cy=panBox.y+130,cx=panBox.x+panBox.width*.5,beforePinch=await page.locator('.price-candle').count();await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:cx-35,y:cy},{x:cx+35,y:cy}]});await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:cx-65,y:cy},{x:cx+65,y:cy}]});await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await pause(page);check(await page.locator('.price-candle').count()<beforePinch,true,'two-finger pinch still zooms cached bars');await cdp.detach();}
    await page.reload();await page.waitForSelector('.price-candle');check(await page.locator('[data-draw-list] button').count(),3,'same account reload restores drawings');await parity();
    await page.locator('[data-draw-list] button').first().click();await page.locator('#stock-price-chart').focus();await page.keyboard.press('Delete');await pause(page);check(await page.locator('[data-draw-list] button').count(),2,'keyboard delete');
    await page.locator('[data-draw-reset]').click();await pause(page);check(await page.locator('[data-draw-list] button').count(),0);
@@ -404,7 +406,7 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     await host.scrollIntoViewIfNeeded();
     const box = await svg.boundingBox(), beforePan = await firstTitle();
     const x = box.x + box.width * .42, y = box.y + 100;
-    if (width<790) {
+    if (width<790&&engine==='chromium') {
      const cdp=await context.newCDPSession(page);
      await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:x+60,y}]});
@@ -419,6 +421,8 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
     } else {
      await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+60,y,{steps:4});await page.mouse.up();
      await page.waitForFunction(title=>document.querySelector('.price-candle title')?.textContent!==title,beforePan);
+     // Mobile WebKit exposes native tap, but not wheel or multi-touch injection.
+     if(engine==='chromium'||!touch){
      const scrollY=await page.evaluate(()=>window.scrollY), beforeWheel=await candles.count();
      await page.mouse.move(x,y);
      await page.mouse.wheel(0,100);
@@ -430,6 +434,11 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
      await page.keyboard.down('Control');
      try { await page.mouse.wheel(0,-120); } finally { await page.keyboard.up('Control'); }
      await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length<count,beforeWheel);
+     } else {
+      // Exercise the same post-pan zoom through the supported UI, not a fake wheel.
+      const before=await candles.count();await page.locator('#chart-zoom-in').click();
+      await page.waitForFunction(count=>document.querySelectorAll('.price-candle').length<count,before);
+     }
     }
     check(await host.getAttribute('data-snapshot-id'),initialSnapshot,'viewport changes keep the analysis snapshot');
     check(marketCalls.length,callsBeforeZoom,'zoom, pan and pointer gestures use cached rows');
@@ -571,8 +580,8 @@ const pause=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame((
    }
    check(await page.locator('[data-draw-list] button').count(),0,'account B never sees account A drawings');check(await page.locator('#indicator-settings input[name=rsi]').inputValue(),'14','account B never inherits account A parameters');
    check(await page.evaluate(()=>Object.keys(localStorage).some(key=>key.startsWith('setscope-drawings:')&&!/user-[ab]$/.test(key))),false,'no unscoped drawing storage');check(errors,[]);
-   console.log(JSON.stringify({width,theme,result:'PASS',checks}));await context.close();
+   console.log(JSON.stringify({engine,width,theme,result:'PASS',checks,nativeTouchPanPinch:engine==='chromium'&&touch?'VERIFIED':'NOT VERIFIED',nativeWheel:touch?'NOT VERIFIED in this touch context':'VERIFIED',physicalDevices:'NOT RUN'}));await context.close();
   }
-  console.log(JSON.stringify({technicalBrowser:'PASS',checks,liveProviderRequests:0}));
+  console.log(JSON.stringify({technicalBrowser:'PASS',engine,checks,liveProviderRequests:0,nativeTouchPanPinch:engine==='webkit'?'NOT VERIFIED — harness supports native tap only':'Chromium mobile cases verified',physicalDevices:'NOT RUN'}));
  }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}
 })().catch(error=>{console.error(JSON.stringify({technicalBrowser:'FAIL',phase,name:error.name,message:error.message}));process.exitCode=1;});
