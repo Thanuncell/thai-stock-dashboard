@@ -307,7 +307,7 @@ html[data-theme="dark"] .news-refresh-btn:hover:not(:disabled){background:#27433
 .drawing-line{stroke:#b37410;stroke-width:2;fill:none;pointer-events:none}
 .drawing-hit{stroke:transparent;stroke-width:18;pointer-events:stroke}
 .drawing-handle{stroke:#b37410;fill:var(--paper);stroke-width:2;cursor:move}
-.drawing.selected .drawing-line{stroke:#2674dd}.drawing-label{fill:var(--text);font-size:11px;pointer-events:none}
+.drawing.selected .drawing-line{stroke:#2674dd}.drawing-label{fill:var(--ink);font-size:11px;pointer-events:none}
 .bb-chart-line,.rsi-chart-line,.atr-chart-line{fill:none;stroke-width:1.6;stroke:#8b62d7;pointer-events:none}
 .atr-chart-line{stroke:#bf7910}.bb-chart-line{stroke:#8b62d7;stroke-dasharray:5 3}
 .compact-reasons{padding-left:22px;line-height:1.7}.compact-reasons li{margin:8px 0}
@@ -370,9 +370,9 @@ html[data-theme="dark"] .news-title-link:hover{color:#8ed2b9}
 .news-pager{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;margin-top:12px}
 .news-pager>span{color:var(--muted);padding:0 2px}
 .page-btn{min-width:40px;min-height:38px;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);font:600 9px var(--font);cursor:pointer}
-.page-btn:hover:not(:disabled){border-color:#72bba4;color:#24745f}
-.page-btn.active{border-color:#2f8c73;background:#2f8c73;color:#fff}
-.page-btn:disabled{opacity:.4;cursor:default}
+.page-btn:hover:not(:disabled){border-color:var(--green);color:var(--ink)}
+.news-pager .page-btn.active{border-color:var(--ink);background:var(--ink);color:var(--paper)}
+.page-btn:disabled{opacity:.65;cursor:default}
 .promo-tag{display:inline-flex;align-items:center;border-radius:4px;padding:2px 6px;background:#fff3dc;color:#9b681f;font-size:8px;line-height:1.35}
 .rsi-meter{display:flex;flex-direction:column;gap:6px;margin:10px 0;color:var(--muted);font-size:9px}
 .rsi-meter .rsi-track{position:relative;height:6px;margin:0;border-radius:4px;background:linear-gradient(90deg,#22c55e 0%,#65c83b 20%,#d7ca22 40%,#eab308 50%,#f1a21a 65%,#ef7138 82%,#ef4444 100%)}
